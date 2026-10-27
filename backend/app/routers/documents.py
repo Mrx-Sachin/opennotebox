@@ -21,7 +21,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from app.database import get_db
-from app.models import (User, Document, ExtractedText, Summary, TTSCache, Podcast, Notebook, LibraryEntry, Note, Bookmark, Flashcard)
+from app.models import (User, Document, ExtractedText, Summary, Notebook, LibraryEntry)
 from app.schemas import (
     DocumentResponse,
     DocumentLibraryResponse,
@@ -35,7 +35,7 @@ from app.config import settings
 from app.tasks.pdf_tasks import parse_pdf_document, parse_txt, parse_md, reparse_pdf_document
 from app.tasks.doc_tasks import parse_docx, parse_pptx
 from app.tasks.epub_tasks import parse_epub
-from app.services.summarizer import summarizer
+from app.services.document_sections import ensure_section_stubs
 from app.services.library_access import (get_document_for_user, get_library_entry, document_response)
 
 logger = logging.getLogger(__name__)
@@ -220,73 +220,6 @@ def _save_uploaded_asset(db: Session, user: User, title: str, fmt: str, file_pat
         return reused, False
     db.refresh(asset)
     return asset, True
-
-
-def _ensure_section_stubs(db: Session, doc: Document, user_id: int) -> None:
-    """Backfill section detection for documents processed before on-demand
-    chapter summaries existed, or whose only stored "section" is the old
-    heading-heuristic single blob ("Full Document" / "Remaining"). Cheap: no
-    LLM calls, just PDF outline/heading parsing, safe to run on a GET.
-    """
-    if doc.processing_status not in _EXTRACTED_STATUSES:
-        return
-
-    existing = db.query(Summary).filter(
-        Summary.document_id == doc.id, Summary.mode == "section", Summary.user_id == user_id
-    ).all()
-    has_real_sections = any(
-        s.section_title not in (None, "Full Document", "Remaining") for s in existing
-    )
-    # Old rows generated before the `level` column existed are stored with
-    # level=NULL and are level-0-only (no nested chapters) - self-heal those
-    # by re-running detection so any level-1 chapters get picked up too.
-    all_levels_null = bool(existing) and all(s.level is None for s in existing)
-    if has_real_sections and not all_levels_null:
-        return
-
-    if not existing:
-        source = db.query(Summary.section_title, Summary.start_page, Summary.end_page,
-                          Summary.level, Summary.page_number).filter(
-            Summary.document_id == doc.id, Summary.mode == "section",
-            Summary.user_id == doc.user_id,
-        ).all() if doc.user_id is not None else []
-        if source:
-            for row in source:
-                db.add(Summary(document_id=doc.id, user_id=user_id, mode="section", content="",
-                               section_title=row.section_title, start_page=row.start_page,
-                               end_page=row.end_page, level=row.level, page_number=row.page_number))
-            db.commit()
-            return
-
-    pages = db.query(ExtractedText).filter(
-        ExtractedText.document_id == doc.id
-    ).order_by(ExtractedText.page_number).all()
-    if not pages:
-        return
-
-    page_texts = [p.content for p in pages]
-    page_headings = [p.headings for p in pages]
-    page_numbers = [p.page_number for p in pages]
-
-    sections_meta = summarizer.detect_sections_metadata(
-        page_texts,
-        page_headings,
-        page_numbers,
-        file_path=doc.file_path if doc.format == "pdf" else None,
-        fmt=doc.format,
-    )
-    if len(sections_meta) <= 1:
-        return
-
-    from app.tasks.summary_tasks import persist_section_stubs
-
-    # Replace the old single low-value stub (never generated) with the real
-    # chapter list; leave anything that already has generated content alone.
-    for s in existing:
-        if not s.content:
-            db.delete(s)
-    db.flush()
-    persist_section_stubs(db, doc.id, sections_meta, user_id=user_id)
 
 
 @router.get("/library", response_model=DocumentLibraryResponse)
@@ -962,7 +895,7 @@ def get_document_summaries(
     doc = get_document_for_user(db, user.id, doc_id)
 
     if mode is None or mode == "section":
-        _ensure_section_stubs(db, doc, user.id)
+        ensure_section_stubs(db, doc, user.id)
 
     query = db.query(Summary).filter(
         Summary.document_id == doc_id,
@@ -989,7 +922,7 @@ def generate_section_summary(
     """
     doc = get_document_for_user(db, user.id, doc_id)
 
-    _ensure_section_stubs(db, doc, user.id)
+    ensure_section_stubs(db, doc, user.id)
     _lock_library_entry(db, user.id, doc_id)
 
     summary = db.query(Summary).filter(
@@ -1112,44 +1045,9 @@ def delete_document(
     db: Session = Depends(get_db),
 ):
     """Remove the requester's library entry while retaining other users' book data."""
-    doc = get_document_for_user(db, user.id, doc_id)
-    doc = db.query(Document).filter(Document.id == doc_id).with_for_update().one()
-    entry = get_library_entry(db, user.id, doc_id)
-    from app.services.asset_lifecycle import asset_has_active_jobs, delete_unreferenced_asset, remove_asset_files
-    had_active_jobs = asset_has_active_jobs(db, doc)
-    removable_audio = []
-    for model in (TTSCache, Podcast):
-        for row in db.query(model).filter(model.document_id == doc_id, model.user_id == user.id).all():
-            path = row.audio_path
-            if path:
-                removable_audio.append(path)
-            db.delete(row)
-    for model in (Note, Bookmark, Flashcard, Summary):
-        db.query(model).filter(model.document_id == doc_id, model.user_id == user.id).delete(synchronize_session=False)
-    db.delete(entry)
-    if doc.shared_by_user_id == user.id:
-        doc.is_shared = False
-        doc.shared_by_user_id = None
-    db.flush()
-    remaining = db.query(LibraryEntry.id).filter(LibraryEntry.document_id == doc_id).count()
-    asset_path = None
-    if remaining == 0 and not doc.is_shared and not had_active_jobs:
-        asset_path = delete_unreferenced_asset(db, doc)
-    db.commit()
-    # Removing a file only after its last committed reference avoids deleting a retained asset.
-    for path in removable_audio:
-        try:
-            Path(path).unlink(missing_ok=True)
-        except OSError:
-            logger.warning("Could not remove personal audio artifact", exc_info=True)
-    if asset_path:
-        remove_asset_files(doc_id, asset_path)
-    elif remaining == 0 and not doc.is_shared:
-        from app.tasks.asset_tasks import collect_unreferenced_asset
-        try:
-            collect_unreferenced_asset.apply_async(args=[doc_id], countdown=300)
-        except Exception:
-            logger.warning("Could not queue asset collection for %s", doc_id, exc_info=True)
+    from app.services.asset_lifecycle import retire_document_membership
+
+    retire_document_membership(db, user_id=user.id, doc_id=doc_id)
     return {"detail": "Document removed from your library"}
 
 

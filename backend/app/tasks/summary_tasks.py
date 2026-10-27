@@ -7,6 +7,7 @@ from app.celery_app import celery_app
 from app.database import SessionLocal
 from app.models import Document, ExtractedText, LibraryEntry, Summary
 from app.services.summarizer import summarizer
+from app.services.document_sections import persist_section_stubs
 from app.services.llm_settings import get_active_llm
 from app.services.library_access import accessible_document_query, get_document_for_user
 from app.tasks.shared import run_async
@@ -289,53 +290,6 @@ def generate_single_page_summary(
         raise
     finally:
         db.close()
-
-
-def persist_section_stubs(
-    db: Session, doc_id: int, sections_meta: list, user_id: int | None = None
-) -> int:
-    """Insert empty-content Summary "stub" rows for newly detected sections, so
-    the chapter list is visible immediately without generating any content.
-    Idempotent: a section whose title already has a row (stub or generated)
-    keeps its content untouched. Returns the number of new stubs created.
-
-    A row that already has generated content is never deleted (that would
-    throw away real work), but if it predates the `level` column (level is
-    NULL) and a freshly detected section has the same title, its level is
-    backfilled in place - level is just a display/indent hint, safe to set
-    without touching content.
-    """
-    existing_rows = {
-        row.section_title: row
-        for row in db.query(Summary).filter(
-            Summary.document_id == doc_id,
-            Summary.user_id == user_id,
-            Summary.mode == "section",
-        ).all()
-    }
-    created = 0
-    for section in sections_meta:
-        title = section["title"]
-        existing = existing_rows.get(title)
-        if existing is not None:
-            if existing.level is None:
-                existing.level = section.get("level", 0)
-            continue
-        new_row = Summary(
-            document_id=doc_id,
-            user_id=user_id,
-            mode="section",
-            section_title=title,
-            content="",
-            start_page=section.get("start_page"),
-            end_page=section.get("end_page"),
-            level=section.get("level", 0),
-        )
-        db.add(new_row)
-        existing_rows[title] = new_row  # dedupe a repeated title later in this same list
-        created += 1
-    db.commit()
-    return created
 
 
 @celery_app.task(bind=True, max_retries=2, soft_time_limit=120, time_limit=180)

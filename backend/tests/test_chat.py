@@ -548,3 +548,232 @@ class TestUpdateScope:
             json={"content": ""},
         )
         assert resp.status_code == 404
+
+
+class TestChatTurnParity:
+    """Parity tests ensuring streaming and nonstreaming endpoints behave identically."""
+
+    async def test_scope_resolution_and_persistence_parity(
+        self, client, auth_header, test_user, test_document, db
+    ):
+        conv_json = Conversation(user_id=test_user.id, title="JSON Chat")
+        conv_stream = Conversation(user_id=test_user.id, title="Stream Chat")
+        db.add_all([conv_json, conv_stream])
+        db.commit()
+        db.refresh(conv_json)
+        db.refresh(conv_stream)
+        conv_json_id = conv_json.id
+        conv_stream_id = conv_stream.id
+        doc_id = test_document.id
+        doc_title = test_document.title
+
+        scope_payload = {
+            "content": "Analyze pages 1 and 2",
+            "document_ids": [doc_id],
+            "page_scope": {"pages": [1, 2]},
+        }
+        mock_result = {
+            "content": "Analysis completed for pages 1 and 2.",
+            "citations": [
+                {
+                    "n": 1,
+                    "doc_id": doc_id,
+                    "doc_title": doc_title,
+                    "page": 1,
+                    "excerpt": "This is page 1",
+                }
+            ],
+            "token_count": 12,
+        }
+
+        with patch("app.routers.chat.SessionLocal", return_value=db):
+            with patch(
+                "app.routers.chat.chat_engine.answer",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ):
+                json_resp = await client.post(
+                    f"/api/chat/sessions/{conv_json_id}/messages",
+                    headers=auth_header,
+                    json=scope_payload,
+                )
+
+        assert json_resp.status_code == 200
+
+        async def stream_answer(*, question, doc_ids, page_scope, history, user_id, rag_mode, on_token):
+            await on_token(mock_result["content"])
+            return mock_result
+
+        with patch("app.routers.chat.SessionLocal", return_value=db):
+            with patch(
+                "app.routers.chat.chat_engine.answer",
+                new_callable=AsyncMock,
+                side_effect=stream_answer,
+            ):
+                stream_resp = await client.post(
+                    f"/api/chat/sessions/{conv_stream_id}/messages/stream",
+                    headers=auth_header,
+                    json=scope_payload,
+                )
+
+        assert stream_resp.status_code == 200
+
+        json_conv = db.query(Conversation).filter(Conversation.id == conv_json_id).first()
+        stream_conv = db.query(Conversation).filter(Conversation.id == conv_stream_id).first()
+        assert json_conv.document_ids == [doc_id]
+        assert stream_conv.document_ids == [doc_id]
+        assert json_conv.page_scope == {"pages": [1, 2]}
+        assert stream_conv.page_scope == {"pages": [1, 2]}
+
+        json_messages_resp = await client.get(
+            f"/api/chat/sessions/{conv_json_id}/messages",
+            headers=auth_header,
+        )
+        stream_messages_resp = await client.get(
+            f"/api/chat/sessions/{conv_stream_id}/messages",
+            headers=auth_header,
+        )
+        assert json_messages_resp.status_code == 200
+        assert stream_messages_resp.status_code == 200
+
+        json_messages = json_messages_resp.json()
+        stream_messages = stream_messages_resp.json()
+        assert len(json_messages) == 2
+        assert len(stream_messages) == 2
+
+        assert json_messages[0]["role"] == "user"
+        assert stream_messages[0]["role"] == "user"
+        assert json_messages[0]["content"] == scope_payload["content"]
+        assert stream_messages[0]["content"] == scope_payload["content"]
+
+        assert json_messages[1]["role"] == "assistant"
+        assert stream_messages[1]["role"] == "assistant"
+        assert json_messages[1]["content"] == mock_result["content"]
+        assert stream_messages[1]["content"] == mock_result["content"]
+        assert json_messages[1]["citations"] == mock_result["citations"]
+        assert stream_messages[1]["citations"] == mock_result["citations"]
+        assert json_messages[1]["token_count"] == mock_result["token_count"]
+        assert stream_messages[1]["token_count"] == mock_result["token_count"]
+
+    async def test_bounded_history_parity(
+        self, client, auth_header, test_user, db
+    ):
+        conv_json = Conversation(user_id=test_user.id, title="History JSON")
+        conv_stream = Conversation(user_id=test_user.id, title="History Stream")
+        db.add_all([conv_json, conv_stream])
+        db.commit()
+        db.refresh(conv_json)
+        db.refresh(conv_stream)
+        conv_json_id = conv_json.id
+        conv_stream_id = conv_stream.id
+
+        for message_index in range(8):
+            role = "user" if message_index % 2 == 0 else "assistant"
+            db.add(Message(
+                conversation_id=conv_json_id, role=role, content=f"json-msg-{message_index}",
+            ))
+            db.add(Message(
+                conversation_id=conv_stream_id, role=role, content=f"stream-msg-{message_index}",
+            ))
+        db.commit()
+
+        captured_json_history = None
+        captured_stream_history = None
+
+        async def capture_json_answer(*, question, history, user_id):
+            nonlocal captured_json_history
+            captured_json_history = history
+            return {"content": "ok", "citations": [], "token_count": 1}
+
+        async def capture_stream_answer(*, question, history, user_id, on_token):
+            nonlocal captured_stream_history
+            captured_stream_history = history
+            await on_token("ok")
+            return {"content": "ok", "citations": [], "token_count": 1}
+
+        with patch("app.routers.chat.SessionLocal", return_value=db):
+            with patch(
+                "app.routers.chat.chat_engine.answer_general",
+                new_callable=AsyncMock,
+                side_effect=capture_json_answer,
+            ):
+                await client.post(
+                    f"/api/chat/sessions/{conv_json_id}/messages",
+                    headers=auth_header,
+                    json={"content": "New question"},
+                )
+
+        with patch("app.routers.chat.SessionLocal", return_value=db):
+            with patch(
+                "app.routers.chat.chat_engine.answer_general",
+                new_callable=AsyncMock,
+                side_effect=capture_stream_answer,
+            ):
+                await client.post(
+                    f"/api/chat/sessions/{conv_stream_id}/messages/stream",
+                    headers=auth_header,
+                    json={"content": "New question"},
+                )
+
+        assert captured_json_history is not None
+        assert captured_stream_history is not None
+        assert len(captured_json_history) == 6
+        assert len(captured_stream_history) == 6
+
+        expected_json_contents = [f"json-msg-{message_index}" for message_index in range(2, 8)]
+        expected_stream_contents = [f"stream-msg-{message_index}" for message_index in range(2, 8)]
+        assert [entry["content"] for entry in captured_json_history] == expected_json_contents
+        assert [entry["content"] for entry in captured_stream_history] == expected_stream_contents
+        assert [entry["role"] for entry in captured_json_history] == [
+            entry["role"] for entry in captured_stream_history
+        ]
+
+
+class TestChatTurnsService:
+    """Targeted tests for chat_turns service functions."""
+
+    def test_assert_documents_accessible_unauthorized(
+        self, db, test_user, second_document
+    ):
+        from fastapi import HTTPException
+        from app.services.chat_turns import assert_documents_accessible
+
+        with pytest.raises(HTTPException) as exc_info:
+            assert_documents_accessible(db, test_user.id, [second_document.id])
+        assert exc_info.value.status_code == 404
+
+    def test_get_authorized_conversation_unauthorized(self, db, test_user, second_user):
+        from fastapi import HTTPException
+        from app.services.chat_turns import get_authorized_conversation
+
+        conv = Conversation(user_id=second_user.id, title="Other")
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_authorized_conversation(db, conv.id, test_user.id)
+        assert exc_info.value.status_code == 404
+
+    def test_save_assistant_message(self, db, test_user):
+        from app.services.chat_turns import save_assistant_message
+
+        conv = Conversation(user_id=test_user.id, title="Save Test")
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+        conv_id = conv.id
+
+        msg = save_assistant_message(
+            session_id=conv_id,
+            content="Generated answer",
+            citations=[{"n": 1, "page": 1}],
+            token_count=8,
+            session_factory=lambda: db,
+        )
+        assert msg.id is not None
+        assert msg.conversation_id == conv_id
+        assert msg.role == "assistant"
+        assert msg.content == "Generated answer"
+        assert msg.citations == [{"n": 1, "page": 1}]
+        assert msg.token_count == 8

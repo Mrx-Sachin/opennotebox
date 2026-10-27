@@ -15,7 +15,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, get_db
-from app.models import User, Conversation, Message, Document
+from app.models import User, Conversation, Message
 from app.schemas import (
     ChatMessageCreate,
     ChatScopeUpdate,
@@ -24,8 +24,13 @@ from app.schemas import (
 )
 from app.routers.auth import get_current_user_from_token
 from app.services.chat_engine import chat_engine, OllamaUnreachableError
+from app.services.chat_turns import (
+    get_authorized_conversation,
+    prepare_chat_turn,
+    save_assistant_message,
+    update_conversation_scope,
+)
 from app.services.llm_semaphore import LLMAdmissionTimeout, LLMAdmissionUnavailable
-from app.services.library_access import accessible_document_query
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -101,33 +106,6 @@ def _get_user_id(user: User) -> int:
     return user.id
 
 
-def _assert_documents_accessible(db: Session, user_id: int, doc_ids: List[int]) -> None:
-    """Reject a chat scope naming any document outside the caller's library.
-
-    document_ids arrive straight from the request body, and the RAG path
-    downstream (services/chat_engine.py) loads documents and their extracted
-    text by id with no user filter of its own. Without this check any
-    authenticated user could name another user's document id in an ordinary
-    chat request and get answers, citations and verbatim excerpts synthesized
-    out of a private document. The router is the trust boundary where the
-    caller's identity is actually known, so the constraint belongs here.
-
-    404 rather than 403: whether a given document id exists is itself not
-    something one user should be able to probe for.
-    """
-    if not doc_ids:
-        return
-    accessible = {
-        d.id
-        for d in accessible_document_query(db, user_id)
-        .filter(Document.id.in_(doc_ids))
-        .all()
-    }
-    missing = [i for i in doc_ids if i not in accessible]
-    if missing:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-
 @router.post("/sessions", response_model=ConversationResponse)
 def create_conversation(
     user: User = Depends(get_current_user_from_token),
@@ -178,40 +156,14 @@ async def chat(
     user_id = _get_user_id(user)
     _check_chat_rate(user_id)
 
-    conv = db.query(Conversation).filter(
-        Conversation.id == session_id,
-        Conversation.user_id == user_id,
-    ).first()
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    doc_ids = message.document_ids or (conv.document_ids or [])
-    _assert_documents_accessible(db, user_id, doc_ids)
-    page_scope = message.page_scope or conv.page_scope
-
-    # Save document scope to conversation if not already set
-    if message.document_ids and not conv.document_ids:
-        conv.document_ids = message.document_ids
-    if message.page_scope and not conv.page_scope:
-        conv.page_scope = message.page_scope
-
-    user_msg = Message(
-        conversation_id=session_id,
-        role="user",
+    prepared = prepare_chat_turn(
+        db=db,
+        session_id=session_id,
+        user_id=user_id,
         content=message.content,
+        document_ids=message.document_ids,
+        page_scope=message.page_scope,
     )
-    db.add(user_msg)
-    db.commit()
-    db.refresh(user_msg)
-    user_msg_id = user_msg.id
-
-    prior = db.query(Message).filter(
-        Message.conversation_id == session_id,
-        Message.id < user_msg_id,
-    ).order_by(Message.id.desc()).limit(6).all()
-    history = [
-        {"role": m.role, "content": m.content} for m in reversed(prior)
-    ]
 
     # Release the Depends-managed connection before the long LLM await.
     # get_db's finally will close again; Session.close() is idempotent.
@@ -223,16 +175,16 @@ async def chat(
     engine_call = (
         chat_engine.answer(
             question=message.content,
-            doc_ids=doc_ids,
-            page_scope=page_scope,
-            history=history,
+            doc_ids=prepared.doc_ids,
+            page_scope=prepared.page_scope,
+            history=prepared.history,
             user_id=user_id,
             rag_mode=message.rag_mode,
         )
-        if doc_ids
+        if prepared.doc_ids
         else chat_engine.answer_general(
             question=message.content,
-            history=history,
+            history=prepared.history,
             user_id=user_id,
         )
     )
@@ -243,7 +195,7 @@ async def chat(
         # closed) - nothing to send a response to. Just stop cleanly;
         # the user's message stays in history as a real thing they sent,
         # matching what already happens on every other failure path here.
-        logger.info(f"Chat message {user_msg_id} cancelled by client disconnect")
+        logger.info(f"Chat message {prepared.user_message_id} cancelled by client disconnect")
         raise HTTPException(status_code=499, detail="Request cancelled")
     except OllamaUnreachableError as e:
         # The message names the failing backend (e.g. "AI backend 'Grok' is
@@ -255,23 +207,13 @@ async def chat(
     citations = result["citations"]
     token_count = result.get("token_count", 0)
 
-    db = SessionLocal()
-    try:
-        ai_msg = Message(
-            conversation_id=session_id,
-            role="assistant",
-            content=ai_content,
-            citations=citations,
-            token_count=token_count,
-        )
-        db.add(ai_msg)
-        db.commit()
-        db.refresh(ai_msg)
-        # Detach so the response model can be read after this session closes.
-        db.expunge(ai_msg)
-        return ai_msg
-    finally:
-        db.close()
+    return save_assistant_message(
+        session_id=session_id,
+        content=ai_content,
+        citations=citations,
+        token_count=token_count,
+        session_factory=SessionLocal,
+    )
 
 
 @router.post("/sessions/{session_id}/messages/stream")
@@ -290,38 +232,14 @@ async def chat_stream(
     user_id = _get_user_id(user)
     _check_chat_rate(user_id)
 
-    conv = db.query(Conversation).filter(
-        Conversation.id == session_id,
-        Conversation.user_id == user_id,
-    ).first()
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    doc_ids = message.document_ids or (conv.document_ids or [])
-    _assert_documents_accessible(db, user_id, doc_ids)
-    page_scope = message.page_scope or conv.page_scope
-    if message.document_ids and not conv.document_ids:
-        conv.document_ids = message.document_ids
-    if message.page_scope and not conv.page_scope:
-        conv.page_scope = message.page_scope
-
-    user_msg = Message(
-        conversation_id=session_id,
-        role="user",
+    prepared = prepare_chat_turn(
+        db=db,
+        session_id=session_id,
+        user_id=user_id,
         content=message.content,
+        document_ids=message.document_ids,
+        page_scope=message.page_scope,
     )
-    db.add(user_msg)
-    db.commit()
-    db.refresh(user_msg)
-    user_msg_id = user_msg.id
-
-    prior = db.query(Message).filter(
-        Message.conversation_id == session_id,
-        Message.id < user_msg_id,
-    ).order_by(Message.id.desc()).limit(6).all()
-    history = [
-        {"role": item.role, "content": item.content} for item in reversed(prior)
-    ]
     db.close()
 
     async def event_stream():
@@ -332,13 +250,13 @@ async def chat_stream(
 
         # Build the actual engine coroutine here so it can receive the async
         # callback without invoking the model before the response is streamed.
-        if doc_ids:
+        if prepared.doc_ids:
             answer_task = asyncio.create_task(
                 chat_engine.answer(
                     question=message.content,
-                    doc_ids=doc_ids,
-                    page_scope=page_scope,
-                    history=history,
+                    doc_ids=prepared.doc_ids,
+                    page_scope=prepared.page_scope,
+                    history=prepared.history,
                     user_id=user_id,
                     rag_mode=message.rag_mode,
                     on_token=on_token,
@@ -348,7 +266,7 @@ async def chat_stream(
             answer_task = asyncio.create_task(
                 chat_engine.answer_general(
                     question=message.content,
-                    history=history,
+                    history=prepared.history,
                     user_id=user_id,
                     on_token=on_token,
                 )
@@ -409,41 +327,34 @@ async def chat_stream(
             if not streamed_any and result["content"]:
                 yield _sse_event({"type": "token", "content": result["content"]})
 
-            session = SessionLocal()
-            try:
-                ai_msg = Message(
-                    conversation_id=session_id,
-                    role="assistant",
-                    content=result["content"],
-                    citations=result["citations"],
-                    token_count=result.get("token_count", 0),
-                )
-                session.add(ai_msg)
-                session.commit()
-                session.refresh(ai_msg)
-                final_message = {
-                    "id": ai_msg.id,
-                    "conversation_id": ai_msg.conversation_id,
-                    "role": ai_msg.role,
-                    "content": ai_msg.content,
-                    "citations": ai_msg.citations,
-                    "token_count": ai_msg.token_count,
-                }
-            finally:
-                session.close()
+            ai_msg = save_assistant_message(
+                session_id=session_id,
+                content=result["content"],
+                citations=result["citations"],
+                token_count=result.get("token_count", 0),
+                session_factory=SessionLocal,
+            )
+            final_message = {
+                "id": ai_msg.id,
+                "conversation_id": ai_msg.conversation_id,
+                "role": ai_msg.role,
+                "content": ai_msg.content,
+                "citations": ai_msg.citations,
+                "token_count": ai_msg.token_count,
+            }
             yield _sse_event({"type": "final", "message": final_message})
         except asyncio.CancelledError:
             answer_task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await answer_task
-            logger.info(f"Chat stream {user_msg_id} cancelled by client disconnect")
+            logger.info(f"Chat stream {prepared.user_message_id} cancelled by client disconnect")
             raise
         except (LLMAdmissionTimeout, LLMAdmissionUnavailable) as e:
             yield _sse_event({"type": "error", "detail": str(e)})
         except OllamaUnreachableError as e:
             yield _sse_event({"type": "error", "detail": str(e) or "AI backend is unreachable"})
         except Exception as e:
-            logger.exception(f"Chat stream {user_msg_id} failed: {e}")
+            logger.exception(f"Chat stream {prepared.user_message_id} failed: {e}")
             yield _sse_event({"type": "error", "detail": str(e) or "Chat failed"})
         finally:
             if token_wait_task is not None and not token_wait_task.done():
@@ -479,16 +390,16 @@ def get_messages(
     db: Session = Depends(get_db),
 ):
     """Get messages in a conversation, paginated."""
-    conv = db.query(Conversation).filter(
-        Conversation.id == session_id,
-        Conversation.user_id == user.id,
-    ).first()
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    get_authorized_conversation(db, session_id=session_id, user_id=user.id)
 
-    messages = db.query(Message).filter(
-        Message.conversation_id == session_id
-    ).order_by(Message.id).offset(offset).limit(limit).all()
+    messages = (
+        db.query(Message)
+        .filter(Message.conversation_id == session_id)
+        .order_by(Message.id)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
     return messages
 
 
@@ -501,19 +412,13 @@ def update_scope(
 ):
     """Update document scope for a conversation."""
     user_id = _get_user_id(user)
-    conv = db.query(Conversation).filter(
-        Conversation.id == session_id,
-        Conversation.user_id == user_id,
-    ).first()
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
-    if scope.document_ids:
-        _assert_documents_accessible(db, user_id, scope.document_ids)
-        conv.document_ids = scope.document_ids
-    if scope.page_scope:
-        conv.page_scope = scope.page_scope
-    db.commit()
+    update_conversation_scope(
+        db=db,
+        session_id=session_id,
+        user_id=user_id,
+        document_ids=scope.document_ids,
+        page_scope=scope.page_scope,
+    )
     return {"status": "updated"}
 
 
@@ -524,12 +429,7 @@ def delete_conversation(
     db: Session = Depends(get_db),
 ):
     """Delete a conversation."""
-    conv = db.query(Conversation).filter(
-        Conversation.id == session_id,
-        Conversation.user_id == user.id,
-    ).first()
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    conv = get_authorized_conversation(db, session_id=session_id, user_id=user.id)
     db.delete(conv)
     db.commit()
     return {"detail": "Deleted"}
