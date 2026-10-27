@@ -144,3 +144,66 @@ async def test_health_endpoint_reports_per_backend_status(
     # A backend with no configured endpoint is reported, never probed.
     assert by_name["empty-url"]["status"] == "unhealthy"
     assert "No endpoint" in by_name["empty-url"]["error"]
+
+
+async def test_probe_lists_models_without_saving(
+    client: AsyncClient, auth_header: dict
+):
+    with patch(
+        "app.routers.settings.check_llm_health",
+        return_value=dict(HEALTHY_PROBE),
+    ) as mocked:
+        res = await client.post(
+            "/api/settings/llm/probe",
+            headers=auth_header,
+            json={"base_url": "http://alpha:8000/v1", "api_key": "key-a"},
+        )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "healthy"
+    assert body["available_models"] == ["model-a", "other"]
+    mocked.assert_called_once()
+    assert mocked.call_args.args[0] == "http://alpha:8000/v1"
+
+
+async def test_probe_rejects_non_http_url(
+    client: AsyncClient, auth_header: dict
+):
+    res = await client.post(
+        "/api/settings/llm/probe",
+        headers=auth_header,
+        json={"base_url": "not-a-url"},
+    )
+    assert res.status_code == 400
+    res = await client.post(
+        "/api/settings/llm/probe",
+        headers=auth_header,
+        json={"base_url": "ftp://example.com/v1"},
+    )
+    assert res.status_code == 400
+
+
+async def test_probe_endpoint_unauthenticated(client: AsyncClient):
+    res = await client.post(
+        "/api/settings/llm/probe",
+        json={"base_url": "https://api.openai.com/v1"},
+    )
+    assert res.status_code == 401
+
+
+def test_check_llm_health_cap_and_parsing():
+    from unittest.mock import MagicMock
+    from app.services.llm_monitor import check_llm_health
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "data": [{"id": f"model-{i}"} for i in range(250)]
+    }
+
+    with patch("httpx.get", return_value=mock_resp):
+        res = check_llm_health("https://api.openai.com/v1", api_key="sk-test")
+    assert res["status"] == "healthy"
+    assert len(res["available_models"]) == 200
+    assert res["available_models"][0] == "model-0"
+    assert res["available_models"][199] == "model-199"

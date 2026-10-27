@@ -34,11 +34,10 @@ class Settings(BaseSettings):
     # Same Ollama endpoint, different model tag.
     ollama_model_qwen: str = "qwen2.5:32b"
 
-    # vLLM (or any OpenAI-compatible server). This is the seeded default
-    # backend (vllm-h100). Empty base_url means "not configured yet".
-    vllm_base_url: str = ""
-    vllm_model: str = "Qwen/Qwen3.8-27B"
-    vllm_api_key: str = "EMPTY"
+    # OpenAI-compatible LLM endpoint (default: local OmniRoute route via bridge).
+    vllm_base_url: str = "http://host.docker.internal:8766/v1"
+    vllm_model: str = "antigravity/gemini-3.8-flash-tiered"
+    vllm_api_key: str = "not-needed"
 
     # JWT
     jwt_secret: str = "CHANGE_ME"
@@ -74,6 +73,7 @@ class Settings(BaseSettings):
     # your own network is a deliberate need.
     download_allow_private_hosts: bool = False
     tts_cache_max_gib: int = 2
+    tts_cache_max_age_days: int = 7
     data_dir: str = "/app/data"
     # Root of the opt-in "export to folder" mirror (see services/export_service.py).
     # A browser cannot grant this container arbitrary host filesystem access -

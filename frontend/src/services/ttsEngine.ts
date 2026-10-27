@@ -158,10 +158,11 @@ interface ChunkAtom {
   sentenceIdx: number
 }
 
-function atomsFrom(sentences: Sentence[], startIndex: number): ChunkAtom[] {
+function atomsFrom(sentences: Sentence[], startIndex: number, entryMax: number): ChunkAtom[] {
   const atoms: ChunkAtom[] = []
   for (let i = startIndex; i < sentences.length; i++) {
-    for (const piece of splitLongSentence(sentences[i].text.trim())) {
+    const max = i === startIndex ? entryMax : SENTENCE_HARD_SPLIT_CHARS
+    for (const piece of splitLongSentence(sentences[i].text.trim(), max)) {
       atoms.push({ text: piece, sentenceIdx: i })
     }
   }
@@ -178,7 +179,7 @@ function atomsFrom(sentences: Sentence[], startIndex: number): ChunkAtom[] {
  * that's what keeps highlighting landing on the right sentence even when
  * one sentence spans several chunks. */
 function buildChunks(sentences: Sentence[], startIndex: number, entryChars: number, restChars: number): Chunk[] {
-  const atoms = atomsFrom(sentences, startIndex)
+  const atoms = atomsFrom(sentences, startIndex, entryChars)
   const chunks: Chunk[] = []
   let from = startIndex
   let to = startIndex
@@ -226,6 +227,10 @@ class TtsEngine {
   private pageSentencesCache = new Map<string, Promise<PageSentences>>()
   private prepared = new Map<string, PrepEntry>()
   private summaryBlobUrl: string | null = null
+  /** Voice+speed+text cache that survives click generations. Keying prepare
+   * on playToken used to resynthesize the same sentence on every click. */
+  private blobCache = new Map<string, PreparedChunk>()
+  private static readonly BLOB_CACHE_MAX = 48
 
   // Leading+trailing debounce state for click/seek entry points (readPage,
   // seekToSentence). See debounceClick.
@@ -302,11 +307,26 @@ class TtsEngine {
     for (const [key, entry] of this.prepared) {
       if (entry.token !== token) {
         entry.controller.abort()
-        entry.promise.then((p) => URL.revokeObjectURL(p.blobUrl)).catch(() => {})
         this.prepared.delete(key)
       }
     }
     return token
+  }
+
+  private blobCacheKey(text: string, nativeSpeed: number): string {
+    return `${this.voice || "default"}:${nativeSpeed}:${text}`
+  }
+
+  private rememberBlob(key: string, chunk: PreparedChunk) {
+    if (this.blobCache.has(key)) this.blobCache.delete(key)
+    this.blobCache.set(key, chunk)
+    while (this.blobCache.size > TtsEngine.BLOB_CACHE_MAX) {
+      const oldest = this.blobCache.keys().next().value
+      if (oldest === undefined) break
+      const drop = this.blobCache.get(oldest)
+      this.blobCache.delete(oldest)
+      if (drop) URL.revokeObjectURL(drop.blobUrl)
+    }
   }
 
   /** Leading+trailing debounce for click/seek entry points. The first
@@ -356,13 +376,19 @@ class TtsEngine {
    * correct residual regardless of when it was prepared relative to the
    * current speed setting. */
   private prepareChunk(docId: number, pageNum: number, chunk: Chunk, idx: number, token: number): Promise<PreparedChunk> {
+    const nativeSpeed = nativeSpeedFor(useReader.getState().tts.speed)
+    const cacheKey = this.blobCacheKey(chunk.text, nativeSpeed)
+    const cached = this.blobCache.get(cacheKey)
+    if (cached) {
+      this.rememberBlob(cacheKey, cached)
+      return Promise.resolve(cached)
+    }
     // Voice in the key so a mid-read voice change cannot reuse audio for a
     // different speaker.
     const voiceKey = this.voice || "default"
     const key = `${token}:${docId}:${pageNum}:${idx}:${voiceKey}`
     let entry = this.prepared.get(key)
     if (!entry) {
-      const nativeSpeed = nativeSpeedFor(useReader.getState().tts.speed)
       const controller = new AbortController()
       const newEntry: PrepEntry = {
         controller,
@@ -374,6 +400,7 @@ class TtsEngine {
       newEntry.promise = streamTts(chunk.text, this.voice, nativeSpeed, controller.signal).then((res) => {
         const result: PreparedChunk = { blobUrl: res.blobUrl, duration: res.duration, nativeSpeed }
         newEntry.result = result
+        this.rememberBlob(cacheKey, result)
         return result
       })
       newEntry.promise.catch(() => {
@@ -486,16 +513,21 @@ class TtsEngine {
    * (see debounceClick): this is the entry point clicking a line goes
    * through, so a burst of clicks costs at most two of these actually
    * running. */
-  readPage(docId: number, pageNum: number, fromSentence = 0) {
-    this.debounceClick(() => this.readPageNow(docId, pageNum, fromSentence))
+  readPage(docId: number, pageNum: number, fromSentence = 0, sentences?: Sentence[]) {
+    this.debounceClick(() => this.readPageNow(docId, pageNum, fromSentence, sentences))
   }
 
   /** Undebounced readPage - a genuinely new generation (cancels/revokes
    * whatever the previous one had prepared). Used by the debounced public
    * readPage, and by seekToSentence's cross-chunk fallback. */
-  private readPageNow(docId: number, pageNum: number, fromSentence: number) {
+  private readPageNow(
+    docId: number,
+    pageNum: number,
+    fromSentence: number,
+    sentences?: Sentence[],
+  ) {
     const token = this.bumpGeneration()
-    void this.startPage(docId, pageNum, fromSentence, token)
+    void this.startPage(docId, pageNum, fromSentence, token, false, sentences)
   }
 
   private async startPage(
@@ -504,6 +536,7 @@ class TtsEngine {
     fromSentence: number,
     token: number,
     preserveFollow = false,
+    sentences?: Sentence[],
   ): Promise<void> {
     const audio = this.ensureAudio()
     audio.pause()
@@ -517,7 +550,12 @@ class TtsEngine {
     this.set({ status: "preparing", docId, page: pageNum, sentenceIndex: fromSentence })
 
     try {
-      const ps = await this.loadPageSentences(docId, pageNum)
+      const ps = sentences?.length
+        ? {
+            sentences,
+            totalChars: sentences.reduce((n, s) => n + s.text.trim().length, 0) || 1,
+          }
+        : await this.loadPageSentences(docId, pageNum)
       if (token !== this.playToken) return
       if (ps.sentences.length === 0) {
         this.advance(docId, pageNum, token)
@@ -617,10 +655,15 @@ class TtsEngine {
     audio.playbackRate = requestedSpeed / prep.nativeSpeed
     audio.muted = useReader.getState().tts.muted
 
-    await new Promise<void>((resolve, reject) => {
-      audio.onloadedmetadata = () => resolve()
-      audio.onerror = () => reject(new Error("Audio failed to load"))
-    })
+    const waitMeta = () =>
+      audio.readyState >= 1
+        ? Promise.resolve()
+        : new Promise<void>((resolve, reject) => {
+            audio.onloadedmetadata = () => resolve()
+            audio.onerror = () => reject(new Error("Audio failed to load"))
+          })
+    // Local blob URLs usually already have metadata; only wait when they don't.
+    if (audio.readyState < 1) await waitMeta()
     if (token !== this.playToken) return
 
     this.chunkDuration = audio.duration || prep.duration
@@ -803,7 +846,7 @@ class TtsEngine {
       if (res.status === "cached" && res.cache_id != null) {
         resolved = { url: getAudioUrl(res.cache_id), duration: res.duration ?? 0 }
       } else {
-        for (let i = 0; i < 60; i++) {
+        for (let i = 0; i < 120; i++) {
           await new Promise((r) => setTimeout(r, 500))
           if (token !== this.playToken) return
           const status = await getTtsCacheStatus(res.text_hash)

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Search, Check, Loader2, Cpu, X } from "lucide-react"
-import { LlmBackend } from "@/services/api"
+import { LlmBackend, getLlmHealth } from "@/services/api"
 
 /** Port of the local CLI bridge a backend points at, or null if it isn't one.
  * Bridges always run on the user's own machine, so only host-local hostnames
@@ -81,15 +81,39 @@ export default function ModelPicker({
     return () => clearTimeout(t)
   }, [open])
 
-  // Ask each local bridge what it can actually run. A bridge that is down
-  // simply contributes nothing and its backend falls back to its one
-  // configured model, so a stopped CLI degrades instead of erroring.
+  // Catalogue: server-side /llm/health lists models for every backend (CORS-
+  // safe, works for OpenAI/Groq/vLLM). Local CLI bridges are also probed from
+  // the browser so Grok/Claude can refresh live without waiting on the API.
   useEffect(() => {
     if (!open) return
     let cancelled = false
+    setProbing(Object.fromEntries(backends.map((b) => [b.name, true])))
+
+    getLlmHealth()
+      .then((h) => {
+        if (cancelled) return
+        const models: Record<string, string[]> = {}
+        const off: Record<string, boolean> = {}
+        for (const b of h.backends) {
+          if (b.available_models?.length) models[b.name] = b.available_models
+          off[b.name] = b.status === "unhealthy"
+        }
+        setCliModels((c) => ({ ...models, ...c }))
+        setOffline((o) => ({ ...off, ...o }))
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (cancelled) return
+        setProbing((p) => {
+          const next = { ...p }
+          for (const b of backends) {
+            if (!bridgePort(b.base_url)) next[b.name] = false
+          }
+          return next
+        })
+      })
+
     const bridges = backends.filter((b) => bridgePort(b.base_url))
-    if (!bridges.length) return
-    setProbing(Object.fromEntries(bridges.map((b) => [b.name, true])))
     bridges.forEach(async (b) => {
       const port = bridgePort(b.base_url)!
       try {
@@ -105,9 +129,8 @@ export default function ModelPicker({
         if (!cancelled && ids.length) setCliModels((c) => ({ ...c, [b.name]: ids }))
         if (!cancelled) setOffline((o) => ({ ...o, [b.name]: false }))
       } catch {
-        // Bridge not running - flag it so its group can show an Offline
-        // pill instead of silently offering a model the user can't reach.
-        if (!cancelled) setOffline((o) => ({ ...o, [b.name]: true }))
+        // Local probe failed (CORS, bridge down). Keep the health-endpoint
+        // status rather than flipping the group Offline over a browser CORS miss.
       } finally {
         if (!cancelled) setProbing((p) => ({ ...p, [b.name]: false }))
       }

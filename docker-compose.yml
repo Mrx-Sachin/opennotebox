@@ -109,9 +109,9 @@ services:
       - OLLAMA_MODEL_SUMMARY=${OLLAMA_MODEL_SUMMARY:-gemma3:27b}
       - OLLAMA_MODEL_CHAT=${OLLAMA_MODEL_CHAT:-qwen2.5:32b}
       - OLLAMA_MODEL_QWEN=${OLLAMA_MODEL_QWEN:-qwen2.5:32b}
-      - VLLM_BASE_URL=${VLLM_BASE_URL:-}
-      - VLLM_MODEL=${VLLM_MODEL:-}
-      - VLLM_API_KEY=${VLLM_API_KEY:-EMPTY}
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://host.docker.internal:8766/v1}
+      - VLLM_MODEL=${VLLM_MODEL:-antigravity/gemini-3.8-flash-tiered}
+      - VLLM_API_KEY=${VLLM_API_KEY:-not-needed}
       - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env - generate one with "openssl rand -hex 32"}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
@@ -119,7 +119,9 @@ services:
       # Closed by default - the first registrant becomes admin (see
       # .env.example). Set true only while creating the initial account.
       - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-false}
+      - LOGIN_MAX_ATTEMPTS=${LOGIN_MAX_ATTEMPTS:-30}
       - TTS_CACHE_MAX_GIB=${TTS_CACHE_MAX_GIB:-2}
+      - TTS_CACHE_MAX_AGE_DAYS=${TTS_CACHE_MAX_AGE_DAYS:-7}
       - DATA_DIR=/app/data
       # Root of the opt-in "export to folder" mirror (services/export_service.py).
       # Empty/unset means export is unavailable on this deployment regardless
@@ -162,13 +164,14 @@ services:
       - OLLAMA_MODEL_SUMMARY=${OLLAMA_MODEL_SUMMARY:-gemma3:27b}
       - OLLAMA_MODEL_CHAT=${OLLAMA_MODEL_CHAT:-qwen2.5:32b}
       - OLLAMA_MODEL_QWEN=${OLLAMA_MODEL_QWEN:-qwen2.5:32b}
-      - VLLM_BASE_URL=${VLLM_BASE_URL:-}
-      - VLLM_MODEL=${VLLM_MODEL:-}
-      - VLLM_API_KEY=${VLLM_API_KEY:-EMPTY}
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://host.docker.internal:8766/v1}
+      - VLLM_MODEL=${VLLM_MODEL:-antigravity/gemini-3.8-flash-tiered}
+      - VLLM_API_KEY=${VLLM_API_KEY:-not-needed}
       - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - TTS_CACHE_MAX_GIB=${TTS_CACHE_MAX_GIB:-2}
+      - TTS_CACHE_MAX_AGE_DAYS=${TTS_CACHE_MAX_AGE_DAYS:-7}
       - DATA_DIR=/app/data
     extra_hosts: *llm-extra-hosts
     depends_on:
@@ -204,13 +207,14 @@ services:
       - OLLAMA_MODEL_SUMMARY=${OLLAMA_MODEL_SUMMARY:-gemma3:27b}
       - OLLAMA_MODEL_CHAT=${OLLAMA_MODEL_CHAT:-qwen2.5:32b}
       - OLLAMA_MODEL_QWEN=${OLLAMA_MODEL_QWEN:-qwen2.5:32b}
-      - VLLM_BASE_URL=${VLLM_BASE_URL:-}
-      - VLLM_MODEL=${VLLM_MODEL:-}
-      - VLLM_API_KEY=${VLLM_API_KEY:-EMPTY}
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://host.docker.internal:8766/v1}
+      - VLLM_MODEL=${VLLM_MODEL:-antigravity/gemini-3.8-flash-tiered}
+      - VLLM_API_KEY=${VLLM_API_KEY:-not-needed}
       - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - TTS_CACHE_MAX_GIB=${TTS_CACHE_MAX_GIB:-2}
+      - TTS_CACHE_MAX_AGE_DAYS=${TTS_CACHE_MAX_AGE_DAYS:-7}
       - DATA_DIR=/app/data
     extra_hosts: *llm-extra-hosts
     depends_on:
@@ -239,6 +243,8 @@ services:
       - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - TTS_CACHE_MAX_GIB=${TTS_CACHE_MAX_GIB:-2}
+      - TTS_CACHE_MAX_AGE_DAYS=${TTS_CACHE_MAX_AGE_DAYS:-7}
       - DATA_DIR=/app/data
       - EXPORT_DIR=${EXPORT_DIR:-/app/exports}
     extra_hosts: *llm-extra-hosts
@@ -297,6 +303,15 @@ services:
               count: 1
               capabilities: [gpu]
     restart: always
+
+  # Local OmniRoute bridge (routes host.docker.internal:8766 -> localhost:20130 / :20128)
+  omniroute-bridge:
+    image: python:3.11-slim
+    restart: always
+    network_mode: host
+    volumes:
+      - ./tools/omniroute_bridge.py:/app/omniroute_bridge.py:ro
+    command: python3 /app/omniroute_bridge.py
 
 volumes:
   pg_data:

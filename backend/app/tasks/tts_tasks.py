@@ -1,8 +1,9 @@
 """Celery tasks for TTS generation."""
 import hashlib
 import os
+import time
 import wave
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -144,71 +145,160 @@ def generate_tts(
         db.close()
 
 
+ACTIVE_PLAYBACK_GRACE_SECONDS = 900  # 15 minutes to protect active playback
+
+
+def _to_timestamp(dt: Optional[datetime]) -> Optional[float]:
+    """Convert a naive or timezone-aware datetime to a UTC timestamp."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
 @celery_app.task
-def evict_tts_cache() -> dict:
-    """LRU-evict on-disk TTS audio until total cache size is back under
-    settings.tts_cache_max_gib. Registered on the Celery beat schedule to
-    run hourly (see celery_app.py) - this setting existed but was wired up
-    nowhere, so the cache only ever grew (391MB / 511 files observed on disk
-    before this task existed).
+def evict_tts_cache(db: Optional[Session] = None) -> dict:
+    """Bounded automatic TTS cache cleanup and expiry.
 
-    Two passes:
-    1. Backfill size_bytes for any row that predates that column (or whose
-       size was never recorded for some other reason) via os.path.getsize,
-       so the running total below is accurate.
-    2. Delete rows (and their .wav files) ordered by last_accessed ascending
-       - least-recently-used first - until under budget.
+    Keeps on-disk TTS audio bounded in size (settings.tts_cache_max_gib) and age
+    (settings.tts_cache_max_age_days), cleans orphaned or aborted files, and
+    protects active playback and legitimate user audio (podcasts, uploads).
 
-    Row and file are always deleted together: leaving either behind is
-    exactly the orphaning bug this task exists to clean up (see also the
-    delete_document cascade fix in routers/documents.py, which handles the
-    same failure mode at document-delete time instead of on a timer).
+    Execution passes:
+    1. Stale temporary file cleanup (.text_hash.*.tmp older than grace period).
+    2. Missing DB row cleanup (entries pointing to missing files older than grace).
+    3. Orphaned file cleanup (*.wav in tts-cache with no DB row, older than grace).
+    4. TTL-based expiration (entries older than settings.tts_cache_max_age_days).
+    5. LRU size eviction (least-recently-accessed first when exceeding size cap,
+       protecting recently accessed items).
     """
-    db: Session = SessionLocal()
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
     try:
-        unsized = db.query(TTSCache).filter(TTSCache.size_bytes.is_(None)).all()
-        for row in unsized:
+        now_ts = time.time()
+        grace_cutoff_ts = now_ts - ACTIVE_PLAYBACK_GRACE_SECONDS
+        max_age_days = getattr(settings, "tts_cache_max_age_days", 7)
+        ttl_cutoff_ts = now_ts - (max_age_days * 86400)
+
+        cache_dir = os.path.realpath(os.path.join(settings.data_dir, "tts-cache"))
+        os.makedirs(cache_dir, exist_ok=True)
+
+        stale_tmp_removed = 0
+        orphans_removed = 0
+        missing_pruned = 0
+        expired_ttl = 0
+        evicted_lru = 0
+
+        # Pass 1: Clean stale temporary files (.hash.*.tmp)
+        try:
+            for entry in os.scandir(cache_dir):
+                if entry.name.startswith(".") and entry.name.endswith(".tmp") and entry.is_file():
+                    try:
+                        if entry.stat().st_mtime < grace_cutoff_ts:
+                            os.remove(entry.path)
+                            stale_tmp_removed += 1
+                    except OSError:
+                        pass
+        except OSError as e:
+            logger.warning(f"evict_tts_cache: failed scanning temp files in {cache_dir}: {e}")
+
+        # Pass 2: Backfill size_bytes and prune missing rows
+        all_rows = db.query(TTSCache).all()
+        unsized_count = 0
+        for row in all_rows:
             if row.audio_path and os.path.exists(row.audio_path):
-                try:
-                    row.size_bytes = os.path.getsize(row.audio_path)
-                except OSError:
-                    pass
+                if row.size_bytes is None or row.size_bytes <= 0:
+                    try:
+                        row.size_bytes = os.path.getsize(row.audio_path)
+                        unsized_count += 1
+                    except OSError:
+                        pass
             else:
-                # No file on disk and no recorded size - nothing left to
-                # account for; treat as empty rather than leaving it NULL
-                # forever (NULL would otherwise make it re-scan every run).
-                row.size_bytes = 0
-        if unsized:
+                created_ts = _to_timestamp(row.created_at)
+                if created_ts is not None and created_ts < grace_cutoff_ts:
+                    db.delete(row)
+                    missing_pruned += 1
+        if unsized_count or missing_pruned:
             db.commit()
 
+        # Pass 3: Clean orphaned .wav files not in database
+        valid_paths = set()
+        for r in db.query(TTSCache.audio_path).filter(TTSCache.audio_path.isnot(None)).all():
+            if r[0]:
+                valid_paths.add(os.path.realpath(r[0]))
+
+        try:
+            for entry in os.scandir(cache_dir):
+                if entry.name.endswith(".wav") and entry.is_file():
+                    real_path = os.path.realpath(entry.path)
+                    if real_path not in valid_paths:
+                        try:
+                            if entry.stat().st_mtime < grace_cutoff_ts:
+                                os.remove(entry.path)
+                                orphans_removed += 1
+                        except OSError:
+                            pass
+        except OSError as e:
+            logger.warning(f"evict_tts_cache: failed scanning orphaned files in {cache_dir}: {e}")
+
+        # Pass 4: TTL expiration (older than max_age_days)
+        remaining_rows = db.query(TTSCache).all()
+        for row in remaining_rows:
+            last_ts = _to_timestamp(row.last_accessed) or _to_timestamp(row.created_at)
+            if last_ts is not None and last_ts < ttl_cutoff_ts:
+                # Protect if accessed within active playback grace
+                if last_ts >= grace_cutoff_ts:
+                    continue
+                if row.audio_path and os.path.exists(row.audio_path):
+                    try:
+                        os.remove(row.audio_path)
+                    except OSError:
+                        pass
+                db.delete(row)
+                expired_ttl += 1
+        if expired_ttl:
+            db.commit()
+
+        # Pass 5: LRU size eviction
         max_bytes = settings.tts_cache_max_gib * (1024 ** 3)
-        total = db.query(func.coalesce(func.sum(TTSCache.size_bytes), 0)).scalar()
+        total = db.query(func.coalesce(func.sum(TTSCache.size_bytes), 0)).scalar() or 0
 
-        if total <= max_bytes:
-            return {"evicted": 0, "backfilled": len(unsized), "total_bytes": int(total)}
+        if total > max_bytes:
+            candidates = (
+                db.query(TTSCache)
+                .order_by(TTSCache.last_accessed.asc().nullsfirst())
+                .all()
+            )
+            for row in candidates:
+                if total <= max_bytes:
+                    break
+                last_ts = _to_timestamp(row.last_accessed) or _to_timestamp(row.created_at)
+                if last_ts is not None and last_ts >= grace_cutoff_ts:
+                    continue  # protect active playback
+                if row.audio_path and os.path.exists(row.audio_path):
+                    try:
+                        os.remove(row.audio_path)
+                    except OSError:
+                        pass
+                total -= (row.size_bytes or 0)
+                db.delete(row)
+                evicted_lru += 1
+            db.commit()
 
-        evicted = 0
-        # nullsfirst: any row somehow still missing last_accessed (shouldn't
-        # happen - the column has a default) is evicted before anything with
-        # an actual recency signal, since we have no better information.
-        candidates = (
-            db.query(TTSCache)
-            .order_by(TTSCache.last_accessed.asc().nullsfirst())
-            .all()
-        )
-        for row in candidates:
-            if total <= max_bytes:
-                break
-            if row.audio_path and os.path.exists(row.audio_path):
-                try:
-                    os.remove(row.audio_path)
-                except OSError as e:
-                    logger.warning(f"evict_tts_cache: could not remove {row.audio_path}: {e}")
-            total -= (row.size_bytes or 0)
-            db.delete(row)
-            evicted += 1
-        db.commit()
-
-        return {"evicted": evicted, "backfilled": len(unsized), "total_bytes": int(total)}
+        total = db.query(func.coalesce(func.sum(TTSCache.size_bytes), 0)).scalar() or 0
+        return {
+            "evicted": evicted_lru + expired_ttl,
+            "evicted_lru": evicted_lru,
+            "expired_ttl": expired_ttl,
+            "orphans_removed": orphans_removed,
+            "stale_tmp_removed": stale_tmp_removed,
+            "missing_pruned": missing_pruned,
+            "backfilled": unsized_count,
+            "total_bytes": int(total),
+        }
     finally:
-        db.close()
+        if should_close:
+            db.close()

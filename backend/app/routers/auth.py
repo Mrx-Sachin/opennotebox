@@ -1,4 +1,5 @@
 """Authentication router."""
+import os
 import time
 from collections import defaultdict, deque
 
@@ -31,7 +32,7 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 # also capped, not just one username from many IPs. Counting ALL attempts
 # (not just failures) is deliberate: the cost to deny is the bcrypt work,
 # which happens before we know the answer is wrong.
-_LOGIN_MAX_ATTEMPTS = 10
+_LOGIN_MAX_ATTEMPTS = int(os.environ.get("LOGIN_MAX_ATTEMPTS", 10))
 _LOGIN_WINDOW = 60.0
 _REGISTER_MAX_ATTEMPTS = 5
 _REGISTER_WINDOW = 900.0

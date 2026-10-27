@@ -1,13 +1,13 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useViewport } from "@/hooks/useViewport"
 import { getFileUrl, getPage } from "@/services/api"
 import { useReader } from "@/stores/reader"
 import LoadingSpinner from "@/components/ui/LoadingSpinner"
 import { ttsEngine } from "@/services/ttsEngine"
 import { splitSentences, Sentence } from "@/lib/sentences"
-import { filterNarratable } from "@/lib/narrationFilter"
+import { filterNarratable, dehyphenateForSpeech } from "@/lib/narrationFilter"
 import {
   normalizeWithMap,
   findRange,
@@ -164,7 +164,9 @@ async function buildOutlineFn (pdf: any, items: any[]): Promise<OutlineItem[]> {
  * 600-page book mounts 600 React trees (effects, observers, store subs) and
  * every library click / panel toggle pays that tax before paint. */
 const PAGE_MOUNT_BUFFER = 5
-/** Vertical gap between pages - matches `gap-6` (1.5rem) on the scroll stack. */
+/** Vertical gap between pages - matches `gap-6` (1.5rem) on the scroll stack.
+ * Must stay in lockstep with the scroll container's `gap-*` class; a mismatch
+ * makes zoom/page-step math drift so the viewport jumps to the wrong page. */
 const PAGE_STACK_GAP_PX = 24
 
 export default function PdfViewer({ docId }: PdfViewerProps) {
@@ -207,6 +209,9 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
   const [mountRange, setMountRange] = useState({ lo: 1, hi: PAGE_MOUNT_BUFFER * 2 + 1 })
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const suppressObserverRef = useRef(false)
+  // Restored in useLayoutEffect after a zoom so the same page+offset stays
+  // on screen. Pixel scrollTop is wrong the moment page height changes.
+  const pendingZoomScrollRef = useRef<{ pageIndex: number; offsetRatio: number } | null>(null)
 
   // Reading in progress + the user scrolled themselves: stop following.
   // wheel/touch only fire for user-initiated scrolling, so programmatic
@@ -413,6 +418,39 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
     [pageBase, scale]
   )
 
+  const applyZoom = useCallback(
+    (nextOverride: number | null) => {
+      const container = scrollContainerRef.current
+      const oldScale = scale
+      const newScale = nextOverride ?? fitScale
+      if (container && pageBase && oldScale > 0 && newScale > 0 && oldScale !== newScale) {
+        const oldPageH = pageBase.height * oldScale
+        const oldStep = oldPageH + PAGE_STACK_GAP_PX
+        const pageIndex = Math.floor(container.scrollTop / Math.max(oldStep, 1))
+        const offset = container.scrollTop - pageIndex * oldStep
+        pendingZoomScrollRef.current = {
+          pageIndex,
+          offsetRatio: oldPageH > 0 ? offset / oldPageH : 0,
+        }
+        suppressObserverRef.current = true
+      }
+      setZoomOverride(nextOverride)
+    },
+    [scale, fitScale, pageBase]
+  )
+
+  useLayoutEffect(() => {
+    const pending = pendingZoomScrollRef.current
+    const container = scrollContainerRef.current
+    if (!pending || !container || !pageBase) return
+    pendingZoomScrollRef.current = null
+    const pageH = pageBase.height * scale
+    const step = pageH + PAGE_STACK_GAP_PX
+    container.scrollTop = pending.pageIndex * step + pending.offsetRatio * pageH
+    suppressObserverRef.current = false
+    syncMountRangeFromScroll()
+  }, [scale, pageBase, syncMountRangeFromScroll])
+
   // External page changes (chat citations, bottom bar, bookmarks, TTS advance)
   const lastScrolledPage = useRef(currentPage)
   useEffect(() => {
@@ -586,7 +624,7 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
           </button>
           <div className="h-4 w-px bg-surface" />
           <button
-            onClick={() => setZoomOverride(Math.max(scale - 0.25, 0.5))}
+            onClick={() => applyZoom(Math.max(scale - 0.25, 0.5))}
             disabled={scale <= 0.5}
             className="rounded p-1.5 text-cream-dim hover:bg-surface hover:text-cream disabled:opacity-30"
           >
@@ -596,14 +634,14 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
             {Math.round(scale * 100)}%
           </span>
           <button
-            onClick={() => setZoomOverride(Math.min(scale + 0.25, 3))}
+            onClick={() => applyZoom(Math.min(scale + 0.25, 3))}
             disabled={scale >= 3}
             className="rounded p-1.5 text-cream-dim hover:bg-surface hover:text-cream disabled:opacity-30"
           >
             <ZoomIn className="h-4 w-4" />
           </button>
           <button
-            onClick={() => setZoomOverride(null)}
+            onClick={() => applyZoom(null)}
             className={`rounded p-1.5 transition-colors ${
               zoomOverride === null
                 ? "bg-indigo/15 text-indigo"
@@ -699,7 +737,7 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
 
         <div
           ref={scrollContainerRef}
-          className="reader-scroll relative flex min-w-0 flex-1 flex-col items-center gap-4 overflow-auto p-2 sm:gap-6 sm:p-6"
+          className="reader-scroll relative flex min-w-0 flex-1 flex-col items-center gap-6 overflow-auto p-2 sm:p-6"
         >
           {!followReading && (ttsStatus === "playing" || ttsStatus === "paused") && (
             <button
@@ -738,7 +776,7 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
                   <div
                     key={pageNum}
                     id={`pdf-page-container-${pageNum}`}
-                    className={`relative shrink-0 rounded border border-surface shadow-lg ${
+                    className={`relative shrink-0 overflow-hidden rounded border border-surface shadow-lg ${
                       invertPdf ? "bg-[#101014]" : "bg-white"
                     }`}
                     style={{
@@ -807,6 +845,13 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
   const hoverLink = hoverLinkKey ? links.find((l) => l.key === hoverLinkKey) ?? null : null
   const renderInFlightRef = useRef(false)
   const isIntersectingRef = useRef(false)
+  const lastRenderedScaleRef = useRef<number | null>(null)
+  const renderTaskRef = useRef<{ cancel: () => void } | null>(null)
+  const scaleRef = useRef(scale)
+  scaleRef.current = scale
+  const ensureRenderedRef = useRef<() => Promise<void>>(async () => {})
+  const tearDownRef = useRef<() => void>(() => {})
+  const isPendingTargetRef = useRef(false)
 
   // Per-span [start, end) offsets within the concatenated text-layer string
   const spanDataRef = useRef<{
@@ -840,8 +885,17 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
   }, [pdfDoc, pageNum, scale])
 
   const tearDown = useCallback(() => {
+    if (renderTaskRef.current) {
+      try {
+        renderTaskRef.current.cancel()
+      } catch {
+        /* already finished */
+      }
+      renderTaskRef.current = null
+    }
     setRendered(false)
     setTextReady(false)
+    lastRenderedScaleRef.current = null
     spanDataRef.current = null
     setLinks([])
     setHoverLinkKey(null)
@@ -852,12 +906,28 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
   }, [])
 
   const ensureRendered = useCallback(async () => {
-    if (textReady || renderInFlightRef.current || !canvasRef.current) return
+    if (!canvasRef.current) return
+    if (textReady && lastRenderedScaleRef.current === scale) return
+    if (renderInFlightRef.current && lastRenderedScaleRef.current === scale) return
+
+    if (renderTaskRef.current) {
+      try {
+        renderTaskRef.current.cancel()
+      } catch {
+        /* already finished */
+      }
+      renderTaskRef.current = null
+    }
+
+    const genScale = scale
     renderInFlightRef.current = true
+    // Keep the previous bitmap on screen while the new scale renders so zoom
+    // does not flash a blank "Page N" placeholder.
     setRendered(true)
     try {
       const pdfjs = await import("pdfjs-dist")
       const page = await pdfDoc.getPage(pageNum)
+      if (genScale !== scaleRef.current) return
       // Two viewports, and conflating them was a real bug: `viewport` is the
       // page's CSS box, `renderViewport` is the canvas backing store, drawn at
       // SUPERSAMPLE times the size so text stays crisp. The old code sized the
@@ -865,38 +935,47 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
       // wider than its own zoom level - a 612pt page occupied 918px at "100%"
       // and overflowed any column narrower than that. Fit-to-width could not
       // help, because the number it fitted was not the number used for layout.
-      const viewport = page.getViewport({ scale })
-      const renderViewport = page.getViewport({ scale: scale * SUPERSAMPLE })
+      const viewport = page.getViewport({ scale: genScale })
+      const renderViewport = page.getViewport({ scale: genScale * SUPERSAMPLE })
       const canvas = canvasRef.current
-      if (!canvas) {
-        renderInFlightRef.current = false
-        return
-      }
-      const ctx = canvas.getContext("2d")
-      if (!ctx) {
-        renderInFlightRef.current = false
-        return
-      }
-      canvas.width = renderViewport.width
-      canvas.height = renderViewport.height
-      // The backing store is bigger than the box it is shown in; without an
-      // explicit CSS size the canvas would display at its attribute width.
+      if (!canvas) return
+
+      // Draw offscreen, then swap. Assigning canvas.width clears the bitmap,
+      // which is the zoom flash.
+      const offscreen = document.createElement("canvas")
+      offscreen.width = renderViewport.width
+      offscreen.height = renderViewport.height
+      const offCtx = offscreen.getContext("2d")
+      if (!offCtx) return
+
+      const task = page.render({ canvasContext: offCtx, viewport: renderViewport })
+      renderTaskRef.current = task
+      await task.promise
+      renderTaskRef.current = null
+      if (genScale !== scaleRef.current) return
+
+      canvas.width = offscreen.width
+      canvas.height = offscreen.height
       canvas.style.width = `${viewport.width}px`
       canvas.style.height = `${viewport.height}px`
-      await page.render({ canvasContext: ctx, viewport: renderViewport }).promise
+      const liveCtx = canvas.getContext("2d")
+      liveCtx?.drawImage(offscreen, 0, 0)
 
       const layerDiv = textLayerRef.current
       if (layerDiv) {
-        layerDiv.innerHTML = ""
-        layerDiv.style.setProperty("--scale-factor", String(viewport.scale))
+        const staging = document.createElement("div")
+        staging.style.setProperty("--scale-factor", String(viewport.scale))
         const textLayer = new pdfjs.TextLayer({
           textContentSource: page.streamTextContent(),
-          container: layerDiv,
+          container: staging,
           viewport,
         })
         await textLayer.render()
-        disableNonReadingHits(layerDiv)
-        ensureEndOfContent(layerDiv)
+        if (genScale !== scaleRef.current) return
+        disableNonReadingHits(staging)
+        ensureEndOfContent(staging)
+        layerDiv.style.setProperty("--scale-factor", String(viewport.scale))
+        layerDiv.replaceChildren(...Array.from(staging.childNodes))
 
         const spans = leafTextSpans(layerDiv)
         const ranges: [number, number][] = []
@@ -922,6 +1001,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
       // drop straight into CSS with no further scaling.
       try {
         const annotations = await page.getAnnotations({ intent: "display" })
+        if (genScale !== scaleRef.current) return
         setLinks(
           annotations
             .filter((a: any) => a.subtype === "Link" && (a.url || a.dest))
@@ -942,17 +1022,24 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
         // A page without an annotation dictionary just has no links.
       }
 
+      lastRenderedScaleRef.current = genScale
       setTextReady(true)
     } catch (err) {
+      const name = (err as { name?: string } | null)?.name
+      if (name === "RenderingCancelledException" || name === "AbortException") return
       console.error("Render failed for page:", pageNum, err)
       tearDown()
     } finally {
-      renderInFlightRef.current = false
+      if (genScale === scaleRef.current) renderInFlightRef.current = false
     }
   }, [pdfDoc, pageNum, scale, textReady, tearDown])
 
-  // Lazy render on visibility. Keep the page mounted while it is the citation
-  // jump target so the text layer is not torn down mid-highlight.
+  ensureRenderedRef.current = ensureRendered
+  tearDownRef.current = tearDown
+  isPendingTargetRef.current = isPendingTarget
+
+  // Lazy render on visibility. Observer identity is stable across zoom so a
+  // scale change cannot disconnect/reconnect and tear the page down mid-render.
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -961,9 +1048,9 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
         entries.forEach((entry) => {
           isIntersectingRef.current = entry.isIntersecting
           if (entry.isIntersecting) {
-            void ensureRendered()
-          } else if (!isPendingTarget) {
-            tearDown()
+            void ensureRenderedRef.current()
+          } else if (!isPendingTargetRef.current) {
+            tearDownRef.current()
           }
         })
       },
@@ -971,11 +1058,12 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
     )
     observer.observe(container)
     return () => observer.disconnect()
-  }, [ensureRendered, pageNum, isPendingTarget, tearDown])
+  }, [pageNum])
 
-  // Pre-render the citation target even before the scroll settles into view
+  // Re-render when scale changes (or a citation jump targets this page) without
+  // relying on the observer firing again.
   useEffect(() => {
-    if (isPendingTarget) void ensureRendered()
+    if (isPendingTarget || isIntersectingRef.current) void ensureRendered()
   }, [isPendingTarget, ensureRendered])
 
   // After the citation flash is done (pending cleared), drop off-screen pages
@@ -1014,7 +1102,12 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
         sentenceIdx = pageText.sentences.findIndex((s) => range.start < s.end)
         if (sentenceIdx === -1) sentenceIdx = 0
       }
-      void ttsEngine.readPage(docId, pageNum, sentenceIdx)
+      void ttsEngine.readPage(
+        docId,
+        pageNum,
+        sentenceIdx,
+        dehyphenateForSpeech(pageText.sentences),
+      )
     } catch (err) {
       console.error("Click-to-read failed:", err)
     }
@@ -1263,6 +1356,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
           clearTimeout(ttsClickTimer.current)
           ttsClickTimer.current = null
         }
+        ttsEngine.stop()
         openBarFromSelection(e.clientX, e.clientY)
       }
       return
@@ -1283,16 +1377,13 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
       return
     }
     const target = e.target as HTMLElement
-    const startRead = () => {
-      if (target.tagName === "SPAN") void readFromSpan(target)
-      else readFromPoint(e.clientX, e.clientY)
-    }
-    if (ttsClickTimer.current) clearTimeout(ttsClickTimer.current)
-    ttsClickTimer.current = setTimeout(() => {
+    if (ttsClickTimer.current) {
+      clearTimeout(ttsClickTimer.current)
       ttsClickTimer.current = null
-      if (selectionQuote()) return
-      startRead()
-    }, 280)
+    }
+    if (selectionQuote()) return
+    if (target.tagName === "SPAN") void readFromSpan(target)
+    else readFromPoint(e.clientX, e.clientY)
   }
 
   const handleAuxClick = (e: React.MouseEvent) => {
@@ -1446,7 +1537,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
     <div
       ref={containerRef}
       id={`pdf-page-container-${pageNum}`}
-      className={`relative shrink-0 rounded border border-surface shadow-lg ${
+      className={`relative shrink-0 overflow-hidden rounded border border-surface shadow-lg ${
         invertPdf ? "bg-[#101014]" : "bg-white"
       }`}
       style={{

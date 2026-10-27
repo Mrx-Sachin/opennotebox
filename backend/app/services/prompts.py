@@ -8,7 +8,20 @@ from typing import Dict
 from loguru import logger
 
 
-PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "prompts")
+def _prompts_dir() -> str:
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.normpath(os.path.join(here, "..", "..", "prompts")),
+        os.path.normpath(os.path.join(here, "..", "..", "..", "prompts")),
+        "/app/prompts",
+    ]
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+    return candidates[0]
+
+
+PROMPTS_DIR = _prompts_dir()
 
 
 def load_template(template_name: str) -> str:

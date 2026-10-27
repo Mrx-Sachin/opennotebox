@@ -26,6 +26,8 @@ off-limits here (owned by another engineer); see HANDOFF.md TODO.
 """
 import asyncio
 
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -40,6 +42,8 @@ from app.schemas import (
     ExportSettings,
     LLMBackendHealthOut,
     LLMHealthResponse,
+    LLMProbeIn,
+    LLMProbeOut,
 )
 from app.routers.auth import get_current_user_from_token
 from app.services.export_service import EXPORT_KEY
@@ -223,6 +227,42 @@ async def get_llm_health(
 
     results = await asyncio.gather(*[probe(b) for b in backends])
     return LLMHealthResponse(active=active, backends=list(results))
+
+
+def _probe_base_url(raw: str) -> str:
+    url = (raw or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="base_url must be an http(s) URL")
+    if len(url) > 500:
+        raise HTTPException(status_code=400, detail="base_url is too long")
+    return url.rstrip("/")
+
+
+@router.post("/llm/probe", response_model=LLMProbeOut)
+async def probe_llm_endpoint(
+    body: LLMProbeIn,
+    _user: User = Depends(get_current_user_from_token),
+):
+    """List models on an OpenAI-compatible endpoint before it is saved.
+
+    The browser cannot call most providers' /v1/models (CORS); Grok/CLI
+    bridges work only because they listen on loopback. This probe runs from
+    the API container so adding a custom model is the same shape as
+    connecting Grok: enter URL + key, pick from the list the endpoint
+    actually serves.
+    """
+    base_url = _probe_base_url(body.base_url)
+    result = await asyncio.to_thread(
+        check_llm_health, base_url, "", body.api_key or "ollama"
+    )
+    return LLMProbeOut(
+        status=result.get("status", "unhealthy"),
+        latency_ms=result.get("latency_ms"),
+        available_models=result.get("available_models"),
+        error=result.get("error"),
+        http_status=result.get("http_status"),
+    )
 
 
 @router.put("", response_model=SettingsResponse)

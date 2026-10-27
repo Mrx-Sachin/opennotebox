@@ -1,0 +1,15 @@
+[Unit]
+Description=DeepRead OmniRoute Bridge (0.0.0.0:8766 -> localhost:20130)
+After=network-online.target omniroute.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/mrx/local/github/deepread
+ExecStart=/usr/bin/python3 /home/mrx/local/github/deepread/tools/omniroute_bridge.py
+Restart=always
+RestartSec=3
+KillMode=mixed
+
+[Install]
+WantedBy=default.target

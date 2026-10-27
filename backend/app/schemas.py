@@ -327,7 +327,7 @@ class LLMBackendHealthOut(BaseModel):
     # with an unexpected status), or "unhealthy" (no response at all).
     status: str
     latency_ms: Optional[float] = None
-    # healthy: the endpoint's model list (first 10); unhealthy: the probe
+    # healthy: the endpoint's model list (capped); unhealthy: the probe
     # error; degraded: http_status is set instead.
     available_models: Optional[List[str]] = None
     error: Optional[str] = None
@@ -340,6 +340,21 @@ class LLMHealthResponse(BaseModel):
     bridge as dead instead of showing a stale "Connected"."""
     active: str
     backends: List[LLMBackendHealthOut]
+
+
+class LLMProbeIn(BaseModel):
+    """Body for POST /api/settings/llm/probe: list models on an endpoint
+    that is not necessarily saved in the registry yet."""
+    base_url: str
+    api_key: Optional[str] = None
+
+
+class LLMProbeOut(BaseModel):
+    status: str
+    latency_ms: Optional[float] = None
+    available_models: Optional[List[str]] = None
+    error: Optional[str] = None
+    http_status: Optional[int] = None
 
 
 class ProgressEvent(BaseModel):

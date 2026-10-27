@@ -485,13 +485,23 @@ def release_kokoro():
     Used at shutdown and by the idle-release timer. gc.collect() is
     mandatory: ONNX Runtime's C++ objects are only freed when Python
     releases the last reference, and the GIL/ref-count dance can leave them
-    hanging indefinitely without an explicit collection pass."""
+    hanging indefinitely without an explicit collection pass.
+
+    Must wait for in-flight inference (same lock as _schedule_kokoro_rebuild):
+    dropping _kokoro_gate while a request is in _create_with_oom_retry made
+    `_kokoro_gate.acquire()` raise AttributeError and 500 the click.
+    """
     global _kokoro, _kokoro_gate, _kokoro_request_count
-    if _kokoro is not None:
+    with _kokoro_session_cond:
+        if not _kokoro_session_cond.wait_for(lambda: _kokoro_inflight == 0, timeout=5):
+            print("WARNING: release_kokoro timed out waiting for in-flight inference")
+            return
+        if _kokoro is None:
+            return
         _kokoro = None
         _kokoro_gate = None
         _kokoro_request_count = 0
-        gc.collect()
+    gc.collect()
 
 
 # Deferred proactive recycle: the KOKORO_RECYCLE_AFTER-th request runs its

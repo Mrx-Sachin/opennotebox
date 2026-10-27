@@ -5,7 +5,7 @@ import os
 import subprocess
 from datetime import datetime
 
-BASE = "/home/mrx/local/github/deep_read/open-notebox"
+BASE = "/home/mrx/local/github/deepread"
 LOG = "/tmp/opencode/progress.log"
 
 def check_backend():

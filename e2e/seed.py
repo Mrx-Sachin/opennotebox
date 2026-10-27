@@ -61,7 +61,7 @@ def _json(method: str, path: str, body: dict | None = None, token: str | None = 
 
 def register_or_login() -> str:
     status, _ = _json("POST", "/api/auth/register", {"username": USER, "password": PASSWORD})
-    if status not in (200, 400):
+    if status not in (200, 400, 403):
         raise SystemExit(f"register failed: {status}")
     status, body = _json("POST", "/api/auth/login", {"username": USER, "password": PASSWORD})
     if status != 200 or not body or "access_token" not in body:

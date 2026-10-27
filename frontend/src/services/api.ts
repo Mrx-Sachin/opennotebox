@@ -502,6 +502,22 @@ export interface LlmHealth {
 export const getLlmHealth = () =>
   api.get<LlmHealth>("/api/settings/llm/health").then((r) => r.data)
 
+export interface LlmProbeResult {
+  status: string
+  latency_ms?: number | null
+  available_models?: string[] | null
+  error?: string | null
+  http_status?: number | null
+}
+
+export const probeLlm = (baseUrl: string, apiKey?: string) =>
+  api
+    .post<LlmProbeResult>("/api/settings/llm/probe", {
+      base_url: baseUrl,
+      ...(apiKey ? { api_key: apiKey } : {}),
+    })
+    .then((r) => r.data)
+
 export const updateSettings = (patch: {
   llm?: {
     active?: string

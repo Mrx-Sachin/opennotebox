@@ -2,7 +2,7 @@
 
 **Last Updated**: 2026-07-12  
 **Status**: Active / Ready for Verification  
-**Workspace**: `/home/mrx/local/github/deep_read/open-notebox/`
+**Workspace**: `/home/mrx/local/github/deepread/`
 
 ---
 

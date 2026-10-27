@@ -55,16 +55,16 @@ _user_cache: dict[int, dict] = {}
 def _seed_backends() -> list[dict]:
     """Default LLM backend registry, seeded from config.py on first read.
 
-    Single default: vllm-h100 running Qwen/Qwen3.8-27B on the H100.
+    Single default: omniroute running antigravity/gemini-3.8-flash-tiered via local route.
     Extra backends can still be added from Settings; they are just not
     pre-seeded anymore.
     """
     return [
         {
-            "name": "vllm-h100",
+            "name": "omniroute",
             "base_url": settings.vllm_base_url,
             "model": settings.vllm_model,
-            "api_key": settings.vllm_api_key or "EMPTY",
+            "api_key": settings.vllm_api_key or "not-needed",
         },
     ]
 

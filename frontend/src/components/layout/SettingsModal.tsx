@@ -33,10 +33,12 @@ import {
   fetchAudioBlobUrl,
   getAudioUrl,
   exportNow,
+  probeLlm,
 } from "@/services/api"
 import { copyText } from "@/lib/clipboard"
 import { ttsEngine } from "@/services/ttsEngine"
 import { useReader } from "@/stores/reader"
+import { useAuth } from "@/stores/auth"
 
 const SAMPLE_TEXT =
   "The quick brown fox jumps over the lazy dog, while the sun sets gently behind the hills."
@@ -77,6 +79,14 @@ const CLI_PRESETS = [
 const LEGACY_PLACEHOLDER_MODELS = new Set<string>(["claude", "codex", "opencode", "grok"])
 const CLI_PRESET_NAMES = new Set<string>(CLI_PRESETS.map((p) => p.label))
 
+const ENDPOINT_PRESETS = [
+  { id: "openai", label: "OpenAI", name: "OpenAI", base_url: "https://api.openai.com/v1" },
+  { id: "groq", label: "Groq", name: "Groq", base_url: "https://api.groq.com/openai/v1" },
+  { id: "openrouter", label: "OpenRouter", name: "OpenRouter", base_url: "https://openrouter.ai/api/v1" },
+  { id: "ollama", label: "Ollama", name: "Ollama", base_url: "http://host.docker.internal:11434/v1" },
+  { id: "custom", label: "Custom", name: "", base_url: "" },
+] as const
+
 export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [voices, setVoices] = useState<TtsVoice[]>([])
@@ -90,6 +100,11 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [showAddForm, setShowAddForm] = useState(false)
   const [newBackend, setNewBackend] = useState({ name: "", base_url: "", model: "", api_key: "" })
   const [adding, setAdding] = useState(false)
+  const [endpointPreset, setEndpointPreset] = useState<(typeof ENDPOINT_PRESETS)[number]["id"]>("custom")
+  const [probedModels, setProbedModels] = useState<string[]>([])
+  const [probingModels, setProbingModels] = useState(false)
+  const [probeError, setProbeError] = useState<string | null>(null)
+  const isAdmin = useAuth((s) => s.user?.is_admin) === true
   const [connectingPreset, setConnectingPreset] = useState<string | null>(null)
   const [detected, setDetected] = useState<Record<string, boolean>>({})
   const [copiedLauncher, setCopiedLauncher] = useState(false)
@@ -242,6 +257,52 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
     }
   }
 
+  const resetAddForm = () => {
+    setNewBackend({ name: "", base_url: "", model: "", api_key: "" })
+    setEndpointPreset("custom")
+    setProbedModels([])
+    setProbeError(null)
+    setShowAddForm(false)
+  }
+
+  const pickEndpointPreset = (id: (typeof ENDPOINT_PRESETS)[number]["id"]) => {
+    const preset = ENDPOINT_PRESETS.find((p) => p.id === id)
+    if (!preset) return
+    setEndpointPreset(id)
+    setProbedModels([])
+    setProbeError(null)
+    setNewBackend((n) => ({
+      ...n,
+      name: preset.name || n.name,
+      base_url: preset.base_url || n.base_url,
+    }))
+  }
+
+  const loadEndpointModels = async () => {
+    if (!newBackend.base_url.trim()) return
+    setProbingModels(true)
+    setProbeError(null)
+    try {
+      const result = await probeLlm(newBackend.base_url.trim(), newBackend.api_key.trim() || undefined)
+      const models = result.available_models?.filter(Boolean) ?? []
+      setProbedModels(models)
+      if (result.status !== "healthy") {
+        setProbeError(result.error || "Could not list models on that endpoint.")
+        return
+      }
+      if (models.length && !newBackend.model.trim()) {
+        setNewBackend((n) => ({ ...n, model: models[0] }))
+      }
+      if (!models.length) {
+        setProbeError("Endpoint is up, but it listed no models. Type a model id below.")
+      }
+    } catch {
+      setProbeError("Could not reach that endpoint from the server.")
+    } finally {
+      setProbingModels(false)
+    }
+  }
+
   const addBackend = async () => {
     if (!settings || !newBackend.name.trim() || !newBackend.base_url.trim() || !newBackend.model.trim()) return
     setAdding(true)
@@ -255,8 +316,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
     try {
       const updated = await updateSettings({ llm: { backends } })
       setSettings(updated)
-      setNewBackend({ name: "", base_url: "", model: "", api_key: "" })
-      setShowAddForm(false)
+      resetAddForm()
       flashSaved()
     } catch {
       // leave form open so the user can retry
@@ -316,9 +376,13 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
       const updated = await updateSettings({ llm: { backends, active: entry.name } })
       setSettings(updated)
       flashSaved()
-    } catch {
-      // leave it unconnected so the user can retry
-      setSaveError(`Couldn't connect ${preset.label}. Is the bridge still running?`)
+    } catch (err) {
+      const status = (err as { response?: { status?: number } })?.response?.status
+      if (status === 403) {
+        setSaveError(`Connecting ${preset.label} requires an admin account.`)
+      } else {
+        setSaveError(`Couldn't connect ${preset.label}. Is the bridge still running?`)
+      }
     } finally {
       setConnectingPreset(null)
     }
@@ -596,7 +660,12 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                             ) : (
                               <button
                                 onClick={() => connectPreset(preset)}
-                                disabled={!isDetected || connectingPreset === preset.id}
+                                disabled={!isAdmin || !isDetected || connectingPreset === preset.id}
+                                title={
+                                  !isAdmin
+                                    ? "An admin account is required to add this backend"
+                                    : undefined
+                                }
                                 className="shrink-0 rounded-md px-2.5 py-1 text-xs font-medium text-indigo hover:bg-indigo/10 disabled:opacity-30 disabled:hover:bg-transparent"
                               >
                                 {connectingPreset === preset.id ? "Connecting…" : "Connect"}
@@ -655,6 +724,25 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                   {showAddForm ? (
                     <div className="mt-3 space-y-2 rounded-lg border border-surface p-3">
                       <p className="text-xs font-medium text-cream">Add endpoint</p>
+                      <p className="text-[11px] text-cream-dim">
+                        Pick a provider, load its models, then save - same idea as connecting Grok.
+                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        {ENDPOINT_PRESETS.map((preset) => (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            onClick={() => pickEndpointPreset(preset.id)}
+                            className={`rounded-md px-2 py-1 text-[11px] ${
+                              endpointPreset === preset.id
+                                ? "bg-indigo/15 text-indigo"
+                                : "text-cream-dim hover:bg-surface hover:text-cream"
+                            }`}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
                       <div className="grid grid-cols-2 gap-2">
                         <input
                           value={newBackend.name}
@@ -662,16 +750,36 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                           placeholder="Name"
                           className="rounded-md bg-void px-3 py-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo/30"
                         />
-                        <input
-                          value={newBackend.model}
-                          onChange={(e) => setNewBackend((n) => ({ ...n, model: e.target.value }))}
-                          placeholder="Model"
-                          className="rounded-md bg-void px-3 py-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo/30"
-                        />
+                        {probedModels.length > 0 ? (
+                          <select
+                            value={newBackend.model}
+                            onChange={(e) => setNewBackend((n) => ({ ...n, model: e.target.value }))}
+                            className="rounded-md bg-void px-3 py-2 text-xs text-cream focus:outline-none focus:ring-1 focus:ring-indigo/30"
+                          >
+                            {probedModels.map((m) => (
+                              <option key={m} value={m}>
+                                {m}
+                              </option>
+                            ))}
+                            {newBackend.model && !probedModels.includes(newBackend.model) && (
+                              <option value={newBackend.model}>{newBackend.model}</option>
+                            )}
+                          </select>
+                        ) : (
+                          <input
+                            value={newBackend.model}
+                            onChange={(e) => setNewBackend((n) => ({ ...n, model: e.target.value }))}
+                            placeholder="Model"
+                            className="rounded-md bg-void px-3 py-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo/30"
+                          />
+                        )}
                       </div>
                       <input
                         value={newBackend.base_url}
-                        onChange={(e) => setNewBackend((n) => ({ ...n, base_url: e.target.value }))}
+                        onChange={(e) => {
+                          setNewBackend((n) => ({ ...n, base_url: e.target.value }))
+                          setProbedModels([])
+                        }}
                         placeholder="Base URL"
                         className="w-full rounded-md bg-void px-3 py-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo/30"
                       />
@@ -682,7 +790,16 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                         placeholder="API key (optional)"
                         className="w-full rounded-md bg-void px-3 py-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo/30"
                       />
+                      {probeError && <p className="text-[11px] text-[#f87171]">{probeError}</p>}
                       <div className="flex items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={loadEndpointModels}
+                          disabled={probingModels || !newBackend.base_url.trim()}
+                          className="rounded-md px-3 py-1.5 text-xs font-medium text-indigo hover:bg-indigo/10 disabled:opacity-50"
+                        >
+                          {probingModels ? "Loading models…" : "Load models"}
+                        </button>
                         <button
                           onClick={addBackend}
                           disabled={adding || !newBackend.name.trim() || !newBackend.base_url.trim() || !newBackend.model.trim()}
@@ -691,14 +808,14 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                           {adding ? "Saving..." : "Save"}
                         </button>
                         <button
-                          onClick={() => setShowAddForm(false)}
+                          onClick={resetAddForm}
                           className="rounded-md px-3 py-1.5 text-xs text-cream-dim hover:text-cream"
                         >
                           Cancel
                         </button>
                       </div>
                     </div>
-                  ) : (
+                  ) : isAdmin ? (
                     <button
                       onClick={() => setShowAddForm(true)}
                       className="flex items-center gap-1.5 text-xs text-cream-dim hover:text-cream transition-colors"
@@ -706,6 +823,11 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                       <Plus className="h-3 w-3" />
                       Add endpoint
                     </button>
+                  ) : (
+                    <p className="text-[11px] text-cream-dim">
+                      An admin can add OpenAI-compatible endpoints here. You can still pick a model
+                      on any endpoint already connected.
+                    </p>
                   )}
                   </div>
                 </div>
