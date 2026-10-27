@@ -3,14 +3,16 @@ import asyncio
 import os
 import hashlib
 import uuid
+import inspect
+import anyio
 from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -22,8 +24,35 @@ from app.services.llm_settings import get_default_voice
 from app.services.markdown_strip import strip_markdown
 from app.services.library_access import get_document_for_user
 from app.tasks.tts_tasks import generate_tts as generate_tts_task, _wav_duration
+from app.services.reading_audio import (
+    register_producer,
+    unregister_producer,
+    register_reader,
+    unregister_reader,
+    claim_session_chunk,
+    release_session_chunks,
+    cleanup_aborted_or_abandoned_stream,
+    is_chunk_claimed_by_session,
+    heartbeat_session,
+)
+
 
 router = APIRouter(prefix="/api/tts", tags=["tts"])
+
+
+class ReadingAudioResponse(StreamingResponse):
+    def __init__(self, *args, on_finish, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.on_finish = on_finish
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                finish_result = self.on_finish()
+                if inspect.isawaitable(finish_result):
+                    await finish_result
 
 # Mirrors tts/main.py's VOICE_MODELS registry, for the UI voice picker/lab.
 # "high" quality tier sounds markedly less robotic than "medium" but is
@@ -159,8 +188,8 @@ async def release_gpu(user: User = Depends(get_current_user_from_token)):
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             await client.post(f"{settings.piper_tts_url}/release-gpu")
-    except Exception as e:
-        logger.warning(f"TTS release-gpu proxy failed: {e}")
+    except Exception as release_error:
+        logger.warning(f"TTS release-gpu proxy failed: {release_error}")
     return {"status": "ok"}
 
 
@@ -199,6 +228,26 @@ class StreamRequest(BaseModel):
     text: str = Field(..., max_length=TEXT_MAX_CHARS)
     voice: Optional[str] = None
     speed: Optional[float] = Field(None, ge=0.1, le=4.0)
+    session_id: Optional[str] = Field(None, min_length=1, max_length=128)
+
+
+class ReleaseAudioRequest(BaseModel):
+    session_id: Optional[str] = Field(None, min_length=1, max_length=128)
+    cache_ids: Optional[list[int]] = Field(None, max_length=256)
+    all_session: Optional[bool] = False
+
+    @field_validator("cache_ids")
+    @classmethod
+    def validate_cache_ids(cls, cache_ids_val):
+        if cache_ids_val is not None:
+            for item in cache_ids_val:
+                if item <= 0:
+                    raise ValueError("cache_ids must contain positive integers")
+        return cache_ids_val
+
+
+class HeartbeatAudioRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=128)
 
 
 def _cache_dir() -> str:
@@ -206,9 +255,9 @@ def _cache_dir() -> str:
 
 
 def _iter_file(path: str, chunk_size: int = 65536):
-    with open(path, "rb") as f:
+    with open(path, "rb") as path_file:
         while True:
-            chunk = f.read(chunk_size)
+            chunk = path_file.read(chunk_size)
             if not chunk:
                 break
             yield chunk
@@ -245,20 +294,58 @@ async def stream_tts(
     cache = db.query(TTSCache).filter(
         TTSCache.text_hash == text_hash,
         TTSCache.user_id == user.id,
-    ).first()
+    ).populate_existing().with_for_update().first()
 
     if cache and cache.audio_path and os.path.exists(cache.audio_path):
-        # Cache hit: bump recency (feeds the LRU eviction sweep, see
-        # tts_tasks.evict_tts_cache) and stream the existing file straight
-        # back - no proxy round trip needed.
-        cache.last_accessed = datetime.now(timezone.utc)
-        db.commit()
-        headers = {
-            "X-TTS-Duration": str(cache.duration or 0),
-            "X-TTS-Cache-Id": str(cache.id),
-            "X-TTS-Cached": "hit",
-        }
-        return StreamingResponse(_iter_file(cache.audio_path), media_type="audio/wav", headers=headers)
+        claim_succeeded = True
+        if body.session_id:
+            try:
+                claim_session_chunk(user.id, body.session_id, cache.id)
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Session does not belong to authenticated user")
+            except ValueError:
+                raise HTTPException(status_code=410, detail="Reading session has ended")
+
+        if claim_succeeded:
+            cache.last_accessed = datetime.now(timezone.utc)
+            register_reader(cache.id)
+            try:
+                db.commit()
+            except BaseException:
+                unregister_reader(cache.id)
+                raise
+            headers = {
+                "X-TTS-Duration": str(cache.duration or 0),
+                "X-TTS-Cache-Id": str(cache.id),
+                "X-TTS-Cached": "hit",
+            }
+            hit_cache_id = cache.id
+            hit_finished = False
+
+            def finish_hit_stream():
+                nonlocal hit_finished
+                if hit_finished:
+                    return
+                hit_finished = True
+                unregister_reader(hit_cache_id)
+                cleanup_db = SessionLocal()
+                try:
+                    cleanup_aborted_or_abandoned_stream(cleanup_db, user.id, text_hash, hit_cache_id)
+                finally:
+                    cleanup_db.close()
+
+            def _iter_hit_stream(hit_path: str):
+                try:
+                    with open(hit_path, "rb") as hit_file:
+                        while True:
+                            hit_chunk = hit_file.read(65536)
+                            if not hit_chunk:
+                                break
+                            yield hit_chunk
+                finally:
+                    finish_hit_stream()
+
+            return ReadingAudioResponse(_iter_hit_stream(cache.audio_path), media_type="audio/wav", headers=headers, on_finish=finish_hit_stream)
 
     # Cache miss. Reserve a TTSCache row up front (audio_path/duration/
     # size_bytes all NULL) so we have a real row id to hand back in
@@ -288,22 +375,35 @@ async def stream_tts(
         last_accessed=now,
     ).on_conflict_do_nothing(index_elements=["text_hash", "user_id"])
     db.execute(stmt)
-    db.commit()
 
     cache = db.query(TTSCache).filter(
         TTSCache.text_hash == text_hash,
         TTSCache.user_id == user.id,
-    ).first()
+    ).populate_existing().with_for_update().first()
     cache_id = cache.id
+
+    if body.session_id:
+        try:
+            claim_session_chunk(user.id, body.session_id, cache_id)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Session does not belong to authenticated user")
+        except ValueError:
+            raise HTTPException(status_code=410, detail="Reading session has ended")
+
+    register_producer(user.id, text_hash)
+    register_reader(cache_id)
+    try:
+        db.commit()
+    except BaseException:
+        unregister_reader(cache_id)
+        unregister_producer(user.id, text_hash)
+        raise
 
     output_dir = _cache_dir()
     os.makedirs(output_dir, exist_ok=True)
-    final_path = os.path.join(output_dir, f"{text_hash}.wav")
-    # Unique per-request temp name (not just per-hash) so two concurrent
-    # identical requests each write their own file - neither can see the
-    # other's partial bytes, and the final os.rename is atomic so whichever
-    # finishes second simply wins the rename with an equally valid file.
-    tmp_path = os.path.join(output_dir, f".{text_hash}.{uuid.uuid4().hex}.tmp")
+    producer_id = uuid.uuid4().hex
+    final_path = os.path.join(output_dir, f"{cache_id}_{text_hash}_{producer_id}.wav")
+    tmp_path = os.path.join(output_dir, f".{cache_id}_{text_hash}.{producer_id}.tmp")
 
     # Connect to the tts service and check its status BEFORE returning a
     # StreamingResponse. Once a streaming response has begun, its headers -
@@ -326,20 +426,60 @@ async def stream_tts(
     )
     try:
         resp = await stream_ctx.__aenter__()
-    except Exception as exc:
-        await client.aclose()
+    except BaseException as exc:
+        with anyio.CancelScope(shield=True):
+            await client.aclose()
+        unregister_reader(cache_id)
+        unregister_producer(user.id, text_hash)
+        cleanup_aborted_or_abandoned_stream(db, user.id, text_hash, cache_id, session_id=body.session_id)
+        if not isinstance(exc, Exception):
+            raise
         logger.error(f"tts service unreachable: {exc}")
         raise HTTPException(status_code=502, detail="TTS service is unreachable")
 
     if resp.status_code != 200:
-        error_body = await resp.aread()
-        await stream_ctx.__aexit__(None, None, None)
-        await client.aclose()
+        try:
+            error_body = await resp.aread()
+        finally:
+            try:
+                with anyio.CancelScope(shield=True):
+                    await stream_ctx.__aexit__(None, None, None)
+                    await client.aclose()
+            finally:
+                unregister_reader(cache_id)
+                unregister_producer(user.id, text_hash)
+                cleanup_aborted_or_abandoned_stream(db, user.id, text_hash, cache_id, session_id=body.session_id)
         detail = error_body[:300].decode("utf-8", "replace")
         logger.error(f"tts service returned {resp.status_code}: {detail}")
         raise HTTPException(status_code=502, detail=f"TTS synthesis failed: {detail}")
 
+    stream_finished = False
+    stream_published = False
+
+    async def finish_stream():
+        nonlocal stream_finished
+        if stream_finished:
+            return
+        stream_finished = True
+        try:
+            with anyio.CancelScope(shield=True):
+                await resp.aclose()
+                await client.aclose()
+        finally:
+            unregister_reader(cache_id)
+            unregister_producer(user.id, text_hash)
+            cleanup_db = SessionLocal()
+            try:
+                cleanup_aborted_or_abandoned_stream(
+                    cleanup_db, user.id, text_hash, cache_id,
+                    tmp_path=tmp_path,
+                    session_id=None if stream_published else body.session_id,
+                )
+            finally:
+                cleanup_db.close()
+
     async def _proxy_and_cache():
+        nonlocal stream_published
         # Watchdog for client disconnect. Without it, an aborted request
         # (user clicked a new line, superseding this one) would keep the
         # tts-service connection open for the rest of the synthesis: the
@@ -349,16 +489,16 @@ async def stream_tts(
         # request the user is actually waiting on. Closing the upstream
         # connection as soon as the disconnect is seen lets the tts side
         # cancel within one poll tick.
-        client_gone = asyncio.Event()
+        client_disconnected = asyncio.Event()
+        watcher_done = asyncio.Event()
 
         async def _watch_client():
-            while not client_gone.is_set():
+            while not watcher_done.is_set():
                 try:
                     if await request.is_disconnected():
-                        client_gone.set()
+                        client_disconnected.set()
                         return
                 except Exception:
-                    client_gone.set()
                     return
                 await asyncio.sleep(0.25)
 
@@ -372,11 +512,11 @@ async def stream_tts(
             # re-calling aiter_bytes() each loop would re-read chunk 1 forever.
             body_iter = resp.aiter_bytes()
             try:
-                with open(tmp_path, "wb") as f:
+                with open(tmp_path, "wb") as tmp_file:
                     while True:
                         if read_task is None:
                             read_task = asyncio.ensure_future(anext(body_iter))
-                        done, _ = await asyncio.wait(
+                        done, pending_tasks = await asyncio.wait(
                             {read_task},
                             timeout=0.25,
                             return_when=asyncio.FIRST_COMPLETED,
@@ -384,7 +524,7 @@ async def stream_tts(
                         if not done:
                             # No upstream byte this tick - did the client
                             # go away while we were waiting?
-                            if client_gone.is_set():
+                            if client_disconnected.is_set():
                                 read_task.cancel()
                                 return
                             continue
@@ -396,7 +536,7 @@ async def stream_tts(
                         read_task = None
                         if not chunk:
                             continue
-                        f.write(chunk)
+                        tmp_file.write(chunk)
                         total_bytes += len(chunk)
                         yield chunk
                 wrote_complete = True
@@ -406,46 +546,38 @@ async def stream_tts(
                 # Close the upstream tts connection no matter how we got
                 # here - on a client disconnect this is what lets the tts
                 # service notice and abort its in-flight synthesis.
-                await stream_ctx.__aexit__(None, None, None)
-                await client.aclose()
-                client_gone.set()
+                with anyio.CancelScope(shield=True):
+                    await stream_ctx.__aexit__(None, None, None)
+                    await client.aclose()
+                watcher_done.set()
                 watcher.cancel()
         finally:
-            if wrote_complete:
-                # Only rename into place - making the file visible to future
-                # cache-hit lookups - once the full body has actually been
-                # received. This is the crux of "never leave a truncated
-                # file behind": a client disconnect or upstream error raises
-                # inside the `with client.stream(...)` block above, skips
-                # this branch entirely, and falls into the cleanup below
-                # instead, so a half-written file is never left at
-                # final_path for a later request to mistake for a real hit.
-                os.rename(tmp_path, final_path)
+            try:
+                session_claims_chunk = True
+                if body.session_id:
+                    session_claims_chunk = is_chunk_claimed_by_session(body.session_id, cache_id)
 
-                # The request-scoped `db` session (from Depends(get_db)) may
-                # already be closed by the time this generator resumes after
-                # yielding the last chunk - FastAPI/Starlette finalize
-                # dependencies once the endpoint function returns the
-                # Response object, not once a StreamingResponse finishes
-                # iterating. Use a fresh session instead, same pattern as
-                # the Celery task in tts_tasks.py.
-                write_db = SessionLocal()
-                try:
-                    row = write_db.query(TTSCache).filter(TTSCache.id == cache_id).first()
-                    if row:
-                        row.audio_path = final_path
-                        row.size_bytes = total_bytes
-                        row.duration = _wav_duration(final_path)
-                        row.last_accessed = datetime.now(timezone.utc)
-                        write_db.commit()
-                finally:
-                    write_db.close()
-            else:
-                if os.path.exists(tmp_path):
+                if wrote_complete and session_claims_chunk and not client_disconnected.is_set():
+                    write_db = SessionLocal()
                     try:
-                        os.remove(tmp_path)
-                    except OSError:
-                        pass
+                        row = write_db.query(TTSCache).filter(TTSCache.id == cache_id).with_for_update().first()
+                        if row:
+                            if row.audio_path and os.path.exists(row.audio_path):
+                                os.remove(tmp_path)
+                            else:
+                                os.replace(tmp_path, final_path)
+                                row.audio_path = final_path
+                                row.size_bytes = total_bytes
+                                row.duration = _wav_duration(final_path)
+                            row.last_accessed = datetime.now(timezone.utc)
+                            write_db.commit()
+                            stream_published = True
+                        elif os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                    finally:
+                        write_db.close()
+            finally:
+                await finish_stream()
 
     headers = {
         # Duration is genuinely unknown until the full body has been
@@ -456,7 +588,42 @@ async def stream_tts(
         "X-TTS-Cache-Id": str(cache_id),
         "X-TTS-Cached": "miss",
     }
-    return StreamingResponse(_proxy_and_cache(), media_type="audio/wav", headers=headers)
+    return ReadingAudioResponse(_proxy_and_cache(), media_type="audio/wav", headers=headers, on_finish=finish_stream)
+
+
+@router.post("/heartbeat")
+def heartbeat_reading_audio(
+    body: HeartbeatAudioRequest,
+    user: User = Depends(get_current_user_from_token),
+):
+    renewed_status = heartbeat_session(user.id, body.session_id)
+    return {
+        "status": "ok",
+        "renewed": renewed_status,
+    }
+
+
+@router.post("/release")
+def release_reading_audio(
+    body: ReleaseAudioRequest,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    try:
+        released_count, deleted_count = release_session_chunks(
+            db_session=db,
+            user_id=user.id,
+            session_id=body.session_id,
+            cache_ids=body.cache_ids,
+            release_all_session=bool(body.all_session),
+        )
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Session does not belong to authenticated user")
+    return {
+        "status": "ok",
+        "released_count": released_count,
+        "deleted_count": deleted_count,
+    }
 
 
 @router.post("/play/{summary_id}")
@@ -495,6 +662,7 @@ def play_summary(
 @router.get("/audio/{cache_id}")
 def get_audio(
     cache_id: int,
+    session_id: Optional[str] = None,
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
@@ -502,7 +670,7 @@ def get_audio(
     cache = db.query(TTSCache).filter(
         TTSCache.id == cache_id,
         TTSCache.user_id == user.id,
-    ).first()
+    ).populate_existing().with_for_update().first()
 
     if (
         not cache
@@ -514,14 +682,56 @@ def get_audio(
     if not os.path.exists(cache.audio_path):
         raise HTTPException(status_code=404, detail="Audio file missing")
 
-    # Bump recency so this row isn't picked as an eviction candidate while
-    # it's still actively being played (see tts_tasks.evict_tts_cache).
-    cache.last_accessed = datetime.now(timezone.utc)
-    db.commit()
+    if session_id:
+        try:
+            claim_session_chunk(user.id, session_id, cache.id)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Session does not belong to authenticated user")
+        except ValueError:
+            raise HTTPException(status_code=410, detail="Reading session has ended")
 
-    return FileResponse(
-        cache.audio_path,
+    cache.last_accessed = datetime.now(timezone.utc)
+    register_reader(cache_id)
+    try:
+        db.commit()
+    except BaseException:
+        unregister_reader(cache_id)
+        raise
+
+    target_audio_path = cache.audio_path
+    audio_finished = False
+
+    def finish_audio():
+        nonlocal audio_finished
+        if audio_finished:
+            return
+        audio_finished = True
+        unregister_reader(cache_id)
+        cleanup_db = SessionLocal()
+        try:
+            cleanup_aborted_or_abandoned_stream(cleanup_db, user.id, cache.text_hash, cache_id)
+        finally:
+            cleanup_db.close()
+
+    def _iter_get_audio():
+        try:
+            with open(target_audio_path, "rb") as opened_audio:
+                while True:
+                    audio_chunk = opened_audio.read(65536)
+                    if not audio_chunk:
+                        break
+                    yield audio_chunk
+        finally:
+            finish_audio()
+
+    return ReadingAudioResponse(
+        _iter_get_audio(),
+        on_finish=finish_audio,
         media_type="audio/wav",
+        headers={
+            "Content-Length": str(os.path.getsize(target_audio_path)),
+            "X-TTS-Cache-Id": str(cache.id),
+        },
     )
 
 

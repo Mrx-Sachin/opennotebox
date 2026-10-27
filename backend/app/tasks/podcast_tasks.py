@@ -292,10 +292,22 @@ def _generate_dialogue_segments(
 def generate_podcast(self, podcast_id: int) -> dict:
     """Generate a two-host podcast dialogue script and its stitched audio."""
     db: Session = SessionLocal()
+    output_path: Optional[str] = None
     try:
         podcast = db.query(Podcast).filter(Podcast.id == podcast_id).first()
         if not podcast:
             raise ValueError(f"Podcast {podcast_id} not found")
+        if (
+            podcast.status == "completed"
+            and podcast.audio_path
+            and os.path.exists(podcast.audio_path)
+        ):
+            return {
+                "podcast_id": podcast_id,
+                "status": "completed",
+                "duration": podcast.duration or 0.0,
+            }
+
         requesting_user_id = podcast.user_id
         document_id = podcast.document_id
 
@@ -339,7 +351,8 @@ def generate_podcast(self, podcast_id: int) -> dict:
             voice = SPEAKER_VOICE[line["speaker"]]
             wav_clips.append(_synthesize_line(line["text"], voice))
 
-        db.rollback()
+        db.commit()
+        db.expunge_all()
         membership = db.query(LibraryEntry.id).filter(
             LibraryEntry.user_id == requesting_user_id,
             LibraryEntry.document_id == document_id,
@@ -358,11 +371,19 @@ def generate_podcast(self, podcast_id: int) -> dict:
         podcast = db.query(Podcast).filter(
             Podcast.id == podcast_id,
             Podcast.user_id == requesting_user_id,
-        ).first()
+        ).populate_existing().with_for_update().first()
         doc = db.query(Document).filter(Document.id == document_id).first()
         if not podcast or not doc:
             db.rollback()
             return {"podcast_id": podcast_id, "status": "not_accessible"}
+
+        if podcast.status == "completed" and podcast.audio_path and os.path.exists(podcast.audio_path):
+            db.rollback()
+            return {
+                "podcast_id": podcast_id,
+                "status": "completed",
+                "duration": podcast.duration or 0.0,
+            }
 
         output_dir = os.path.join(settings.data_dir, "podcasts")
         os.makedirs(output_dir, exist_ok=True)
@@ -387,12 +408,37 @@ def generate_podcast(self, podcast_id: int) -> dict:
 
     except Exception as e:
         logger.error(f"Podcast generation failed for {podcast_id}: {e}")
+        db.rollback()
+        db.expunge_all()
         try:
-            podcast = db.query(Podcast).filter(Podcast.id == podcast_id).first()
-            if podcast:
+            podcast = (
+                db.query(Podcast)
+                .filter(Podcast.id == podcast_id)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+            completed_ref = (
+                db.query(Podcast.id)
+                .filter(
+                    Podcast.audio_path == output_path,
+                    Podcast.status == "completed",
+                )
+                .first()
+                if output_path
+                else None
+            )
+            if not completed_ref and output_path and os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    pass
+            if podcast and podcast.status != "completed":
                 podcast.status = "failed"
                 podcast.error = str(e)[:2000]
                 db.commit()
+            else:
+                db.rollback()
         except Exception:
             db.rollback()
         return {"podcast_id": podcast_id, "status": "failed", "error": str(e)}

@@ -27,6 +27,8 @@ interface MockOptions {
   error?: boolean
   audioError?: boolean
   delayAudio101?: Promise<void>
+  deleteError?: boolean
+  delayDelete101?: Promise<void>
 }
 
 async function setupMockPodcasts(page: Page, options: MockOptions = {}) {
@@ -102,6 +104,8 @@ async function setupMockPodcasts(page: Page, options: MockOptions = {}) {
     },
   ]
 
+  let currentPodcasts = [...podcasts]
+
   await page.addInitScript(() => localStorage.setItem("token", "podcast-test-token"))
 
   await page.route("**/api/**", async (route) => {
@@ -169,7 +173,20 @@ async function setupMockPodcasts(page: Page, options: MockOptions = {}) {
       if (options.empty) {
         return route.fulfill({ json: [] })
       }
-      return route.fulfill({ json: podcasts })
+      return route.fulfill({ json: currentPodcasts })
+    }
+
+    const podcastDeleteMatch = url.pathname.match(/^\/api\/podcasts\/(\d+)$/)
+    if (podcastDeleteMatch && request.method() === "DELETE") {
+      const podcastIdentifier = parseInt(podcastDeleteMatch[1], 10)
+      if (podcastIdentifier === 101 && options.delayDelete101) {
+        await options.delayDelete101
+      }
+      if (options.deleteError) {
+        return route.fulfill({ status: 500, json: { detail: "Internal Server Error" } })
+      }
+      currentPodcasts = currentPodcasts.filter((item) => item.id !== podcastIdentifier)
+      return route.fulfill({ status: 200, json: { detail: "Deleted" } })
     }
 
     if (url.pathname === "/api/podcasts/101/audio") {
@@ -423,4 +440,301 @@ test("podcast gallery layout is responsive on phone with no horizontal overflow"
   const playerScrollWidth = await bottomPlayer.evaluate((element) => element.scrollWidth)
   const windowWidth = await page.evaluate(() => window.innerWidth)
   expect(playerScrollWidth).toBeLessThanOrEqual(windowWidth)
+})
+
+test("podcast card delete flow can be cancelled and preserves podcast in gallery", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  const cardToDelete = page.getByTestId("podcast-card-101")
+  await expect(cardToDelete).toBeVisible()
+
+  const deleteTrigger = page.getByTestId("podcast-delete-101")
+  await expect(deleteTrigger).toBeVisible()
+  await deleteTrigger.click()
+
+  const deleteDialog = page.getByTestId("podcast-delete-dialog")
+  await expect(deleteDialog).toBeVisible()
+  await expect(deleteDialog.getByRole("heading", { name: "Delete podcast" })).toBeVisible()
+  await expect(deleteDialog).toContainText("Deep Dive into Sample Document")
+
+  const cancelButton = deleteDialog.getByRole("button", { name: "Cancel" })
+  await cancelButton.click()
+
+  await expect(deleteDialog).not.toBeVisible()
+  await expect(cardToDelete).toBeVisible()
+})
+
+test("podcast card delete confirmation removes podcast, updates query cache, and updates count", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await expect(page.getByText("4 podcasts")).toBeVisible()
+  const cardToDelete = page.getByTestId("podcast-card-101")
+  await expect(cardToDelete).toBeVisible()
+
+  await page.getByTestId("podcast-delete-101").click()
+  const deleteDialog = page.getByTestId("podcast-delete-dialog")
+  await expect(deleteDialog).toBeVisible()
+
+  const confirmButton = page.getByTestId("confirm-delete-podcast-button")
+  await confirmButton.click()
+
+  await expect(deleteDialog).not.toBeVisible()
+  await expect(cardToDelete).toHaveCount(0)
+  await expect(page.getByText("3 podcasts")).toBeVisible()
+  await expect(page.getByTestId("podcast-card-102")).toBeVisible()
+})
+
+test("deletion server failure shows accessible alert and keeps podcast card", async ({ page }) => {
+  await setupMockPodcasts(page, { deleteError: true })
+  await page.goto("/dashboard")
+
+  const cardToDelete = page.getByTestId("podcast-card-101")
+  await page.getByTestId("podcast-delete-101").click()
+
+  const deleteDialog = page.getByTestId("podcast-delete-dialog")
+  await expect(deleteDialog).toBeVisible()
+
+  const confirmButton = page.getByTestId("confirm-delete-podcast-button")
+  await confirmButton.click()
+
+  const errorAlert = deleteDialog.locator(".podcast-playback-error[role=alert]")
+  await expect(errorAlert).toBeVisible()
+  await expect(errorAlert).toContainText("Failed to delete podcast")
+
+  await deleteDialog.getByRole("button", { name: "Cancel" }).click()
+  await expect(deleteDialog).not.toBeVisible()
+  await expect(cardToDelete).toBeVisible()
+})
+
+test("actively playing podcast is stopped immediately when deleted", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-play-101").click()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Deep Dive into Sample Document")).toBeVisible()
+
+  await page.getByTestId("podcast-delete-101").click()
+  const deleteDialog = page.getByTestId("podcast-delete-dialog")
+  await expect(deleteDialog).toBeVisible()
+
+  await page.getByTestId("confirm-delete-podcast-button").click()
+  await expect(deleteDialog).not.toBeVisible()
+  await expect(page.getByTestId("podcast-card-101")).toHaveCount(0)
+
+  await expect(page.getByTestId("bottom-player")).toHaveCount(0)
+})
+
+test("deleting an inactive podcast keeps active playback of another podcast running", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-play-101").click()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Deep Dive into Sample Document")).toBeVisible()
+
+  await page.getByTestId("podcast-delete-102").click()
+  const deleteDialog = page.getByTestId("podcast-delete-dialog")
+  await expect(deleteDialog).toBeVisible()
+
+  await page.getByTestId("confirm-delete-podcast-button").click()
+  await expect(deleteDialog).not.toBeVisible()
+  await expect(page.getByTestId("podcast-card-102")).toHaveCount(0)
+
+  await expect(page.getByTestId("bottom-player")).toBeVisible()
+  await expect(bottomPlayer.getByText("Deep Dive into Sample Document")).toBeVisible()
+})
+
+test("podcast deletion is responsive and accessible on mobile viewport", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.setViewportSize({ width: 375, height: 667 })
+  await page.goto("/dashboard")
+
+  const mobileDeleteTrigger = page.getByTestId("podcast-delete-101")
+  await expect(mobileDeleteTrigger).toBeVisible()
+  await mobileDeleteTrigger.click()
+
+  const deleteDialog = page.getByTestId("podcast-delete-dialog")
+  await expect(deleteDialog).toBeVisible()
+
+  const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth)
+  const clientWidth = await page.evaluate(() => document.documentElement.clientWidth)
+  expect(scrollWidth).toBeLessThanOrEqual(clientWidth)
+
+  await page.getByTestId("confirm-delete-podcast-button").click()
+  await expect(deleteDialog).not.toBeVisible()
+  await expect(page.getByTestId("podcast-card-101")).toHaveCount(0)
+})
+
+test("delayed DELETE during route change to reader preserves reader page and clean unmount", async ({ page }) => {
+  let releaseDelete101: (() => void) | null = null
+  const deleteHoldPromise = new Promise<void>((resolve) => {
+    releaseDelete101 = resolve
+  })
+
+  await setupMockPodcasts(page, { delayDelete101: deleteHoldPromise })
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-delete-101").click()
+  const deleteDialog = page.getByTestId("podcast-delete-dialog")
+  await expect(deleteDialog).toBeVisible()
+
+  await page.getByTestId("confirm-delete-podcast-button").click()
+
+  await page.goto("/dashboard/read/1")
+  await expect(page).toHaveURL(/\/dashboard\/read\/1$/)
+  await expect(page.getByText("This document is unavailable")).toHaveCount(0)
+  await expect(page.locator("#pdf-page-container-1 canvas").first()).toBeVisible()
+
+  if (releaseDelete101) {
+    (releaseDelete101 as () => void)()
+  }
+
+  await page.waitForTimeout(500)
+  await expect(page).toHaveURL(/\/dashboard\/read\/1$/)
+  await expect(page.locator("#pdf-page-container-1 canvas").first()).toBeVisible()
+})
+
+test("delayed DELETE of one podcast preserves active playback of another podcast", async ({ page }) => {
+  let releaseDelete101: (() => void) | null = null
+  const deleteHoldPromise = new Promise<void>((resolve) => {
+    releaseDelete101 = resolve
+  })
+
+  await setupMockPodcasts(page, { delayDelete101: deleteHoldPromise })
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-play-102").click()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Research Methods Overview")).toBeVisible()
+
+  await page.getByTestId("podcast-delete-101").click()
+  const deleteDialog = page.getByTestId("podcast-delete-dialog")
+  await expect(deleteDialog).toBeVisible()
+
+  await page.getByTestId("confirm-delete-podcast-button").click()
+
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Research Methods Overview")).toBeVisible()
+
+  if (releaseDelete101) {
+    (releaseDelete101 as () => void)()
+  }
+
+  await page.waitForTimeout(500)
+  await expect(deleteDialog).not.toBeVisible()
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Research Methods Overview")).toBeVisible()
+  await expect(page.getByTestId("podcast-card-101")).toHaveCount(0)
+})
+
+test("delayed DELETE during account switch updates original user cache without mutating new account cache", async ({ page }) => {
+  let releaseDelete101: (() => void) | null = null
+  const deleteHoldPromise = new Promise<void>((resolve) => {
+    releaseDelete101 = resolve
+  })
+
+  await setupMockPodcasts(page, { delayDelete101: deleteHoldPromise })
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-delete-101").click()
+  const deleteDialog = page.getByTestId("podcast-delete-dialog")
+  await expect(deleteDialog).toBeVisible()
+
+  await page.getByTestId("confirm-delete-podcast-button").click()
+
+  await page.evaluate(() => {
+    const authStore = (window as unknown as { useAuth?: { getState: () => { setUser: (u: unknown) => void } } }).useAuth
+    if (authStore) {
+      authStore.getState().setUser({ id: 2, username: "second.user" })
+    }
+  })
+
+  if (releaseDelete101) {
+    (releaseDelete101 as () => void)()
+  }
+
+  await page.waitForTimeout(500)
+  const cachedUserOnePodcasts = await page.evaluate(() => {
+    const client = (window as unknown as { __REACT_QUERY_CLIENT__?: { getQueryData: (k: unknown) => unknown } }).__REACT_QUERY_CLIENT__
+    if (!client) return null
+    return client.getQueryData(["podcasts", "all", 1])
+  })
+  if (cachedUserOnePodcasts && Array.isArray(cachedUserOnePodcasts)) {
+    expect(cachedUserOnePodcasts.some((p: { id: number }) => p.id === 101)).toBe(false)
+  }
+})
+
+test("selecting a podcast opens the full player modal with visualizer and transcript", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-expand-101").click()
+
+  const playerModal = page.getByTestId("podcast-player-modal")
+  await expect(playerModal).toBeVisible()
+
+  const visualizerPane = page.getByTestId("podcast-visualizer-pane")
+  await expect(visualizerPane).toBeVisible()
+  await expect(page.getByTestId("podcast-waveform")).toBeVisible()
+
+  const transcriptPane = page.getByTestId("podcast-transcript-pane")
+  await expect(transcriptPane).toBeVisible()
+  await expect(page.getByTestId("transcript-line-0")).toContainText("Welcome to today's discussion")
+  await expect(page.getByTestId("transcript-line-1")).toContainText("Thanks, excited to be here")
+
+  const bookLink = page.getByTestId("podcast-modal-book-link")
+  await expect(bookLink).toHaveAttribute("href", "/dashboard/read/1")
+})
+
+test("podcast player modal full screen mode can be toggled", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-expand-101").click()
+
+  const playerModal = page.getByTestId("podcast-player-modal")
+  await expect(playerModal).toBeVisible()
+  await expect(playerModal).not.toHaveClass(/is-fullscreen-mode/)
+
+  const fullscreenToggle = page.getByTestId("podcast-fullscreen-toggle")
+  await fullscreenToggle.click()
+  await expect(playerModal).toHaveClass(/is-fullscreen-mode/)
+
+  await fullscreenToggle.click()
+  await expect(playerModal).not.toHaveClass(/is-fullscreen-mode/)
+})
+
+test("minimizing player keeps audio playing in compact bottom bar and can be re-expanded", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-play-101").click()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+
+  await page.getByTestId("bottom-player-expand").click()
+  const playerModal = page.getByTestId("podcast-player-modal")
+  await expect(playerModal).toBeVisible()
+
+  await page.getByTestId("podcast-modal-close").click()
+  await expect(playerModal).toHaveCount(0)
+
+  await expect(bottomPlayer).toBeVisible()
+
+  await page.getByTestId("bottom-player-expand").click()
+  await expect(page.getByTestId("podcast-player-modal")).toBeVisible()
+})
+
+test("podcast card direct book page link navigates to reader", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  const bookLink = page.getByTestId("podcast-book-link-101")
+  await expect(bookLink).toHaveAttribute("href", "/dashboard/read/1")
 })

@@ -2,16 +2,19 @@
 
 import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import * as Dialog from "@radix-ui/react-dialog"
 import {
   AlertCircle,
   BookOpen,
   Headphones,
   Loader2,
+  Maximize2,
   Pause,
   Play,
   RotateCcw,
   RotateCw,
+  Trash2,
   Volume2,
   VolumeX,
   X,
@@ -19,11 +22,13 @@ import {
 import {
   Podcast,
   getPodcasts,
+  deletePodcast,
   getPodcastAudioUrl,
 } from "@/services/api"
 import { useAuth } from "@/stores/auth"
 import { useReader } from "@/stores/reader"
 import { ttsEngine } from "@/services/ttsEngine"
+import PodcastPlayerModal from "./PodcastPlayerModal"
 
 function formatTime(seconds?: number | null): string {
   if (!seconds || !Number.isFinite(seconds) || seconds < 0) return "0:00"
@@ -33,12 +38,20 @@ function formatTime(seconds?: number | null): string {
 }
 
 export default function PodcastGallery() {
+  const queryClient = useQueryClient()
   const user = useAuth((state) => state.user)
   const tts = useReader((state) => state.tts)
   const [activePodcastId, setActivePodcastId] = useState<number | null>(null)
+  const [expandedPodcastId, setExpandedPodcastId] = useState<number | null>(null)
   const [loadingId, setLoadingId] = useState<number | null>(null)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
+  const [podcastToDelete, setPodcastToDelete] = useState<Podcast | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const playbackTokenRef = useRef(0)
+  const isMountedRef = useRef(true)
+  const activePodcastIdRef = useRef<number | null>(null)
+  const loadingIdRef = useRef<number | null>(null)
 
   const { data: podcasts, isPending, isError, refetch } = useQuery({
     queryKey: ["podcasts", "all", user?.id],
@@ -52,11 +65,21 @@ export default function PodcastGallery() {
 
   useEffect(() => {
     const playbackToken = playbackTokenRef
+    isMountedRef.current = true
     return () => {
+      isMountedRef.current = false
       playbackToken.current++
       ttsEngine.stop()
     }
   }, [])
+
+  useEffect(() => {
+    activePodcastIdRef.current = activePodcastId
+  }, [activePodcastId])
+
+  useEffect(() => {
+    loadingIdRef.current = loadingId
+  }, [loadingId])
 
   useEffect(() => {
     if (tts.status === "idle" || tts.page != null) {
@@ -65,21 +88,108 @@ export default function PodcastGallery() {
   }, [tts.status, tts.page])
 
   const activePodcast = podcasts?.find((item) => item.id === activePodcastId)
+  const expandedPodcast = podcasts?.find((item) => item.id === expandedPodcastId)
+
+  const handleConfirmDelete = async () => {
+    if (!podcastToDelete) return
+    const targetPodcast = podcastToDelete
+    const targetUserId = user?.id
+    const targetDocumentId = targetPodcast.document_id
+    setIsDeleting(true)
+    setDeleteError(null)
+
+    try {
+      await deletePodcast(targetPodcast.id)
+
+      if (targetUserId != null) {
+        queryClient.setQueryData<Podcast[]>(
+          ["podcasts", "all", targetUserId],
+          (previousPodcasts) => {
+            if (!previousPodcasts) return []
+            return previousPodcasts.filter((item) => item.id !== targetPodcast.id)
+          }
+        )
+      }
+
+      const currentAuthenticatedUser = useAuth.getState().user
+      const isMatchingAccount =
+        currentAuthenticatedUser?.id != null &&
+        currentAuthenticatedUser.id === targetUserId
+
+      if (!isMatchingAccount || !isMountedRef.current) {
+        return
+      }
+
+      if (
+        activePodcastIdRef.current === targetPodcast.id ||
+        loadingIdRef.current === targetPodcast.id
+      ) {
+        playbackTokenRef.current++
+        ttsEngine.stop()
+        setActivePodcastId(null)
+        setLoadingId(null)
+      }
+
+      if (expandedPodcastId === targetPodcast.id) {
+        setExpandedPodcastId(null)
+      }
+
+      if (targetDocumentId != null) {
+        queryClient.setQueryData<Podcast[]>(
+          ["podcasts", targetDocumentId],
+          (previousPodcasts) => {
+            if (!previousPodcasts) return []
+            return previousPodcasts.filter((item) => item.id !== targetPodcast.id)
+          }
+        )
+        queryClient.setQueryData<Podcast[]>(
+          ["podcasts", "document", targetDocumentId],
+          (previousPodcasts) => {
+            if (!previousPodcasts) return []
+            return previousPodcasts.filter((item) => item.id !== targetPodcast.id)
+          }
+        )
+      }
+
+      void queryClient.invalidateQueries({
+        queryKey: ["podcasts"],
+      })
+
+      setPodcastToDelete(null)
+    } catch {
+      const currentAuthenticatedUser = useAuth.getState().user
+      const isMatchingAccount =
+        currentAuthenticatedUser?.id != null &&
+        currentAuthenticatedUser.id === targetUserId
+      if (isMountedRef.current && isMatchingAccount) {
+        setDeleteError("Failed to delete podcast. Please try again.")
+      }
+    } finally {
+      const currentAuthenticatedUser = useAuth.getState().user
+      const isMatchingAccount =
+        currentAuthenticatedUser?.id != null &&
+        currentAuthenticatedUser.id === targetUserId
+      if (isMountedRef.current && isMatchingAccount) {
+        setIsDeleting(false)
+      }
+    }
+  }
 
   const handlePlayToggle = async (podcast: Podcast) => {
-    setPlaybackError(null)
     if (activePodcastId === podcast.id) {
       ttsEngine.toggle()
       return
     }
 
-    const currentToken = ++playbackTokenRef.current
+    playbackTokenRef.current++
+    const currentToken = playbackTokenRef.current
     setActivePodcastId(podcast.id)
     setLoadingId(podcast.id)
+    setPlaybackError(null)
 
     try {
       await ttsEngine.playAudioUrl(getPodcastAudioUrl(podcast.id))
-      if (playbackTokenRef.current !== currentToken) {
+      if (!isMountedRef.current || playbackTokenRef.current !== currentToken) {
         return
       }
       const latestState = useReader.getState().tts
@@ -90,31 +200,33 @@ export default function PodcastGallery() {
         )
       }
     } catch {
-      if (playbackTokenRef.current === currentToken) {
+      if (isMountedRef.current && playbackTokenRef.current === currentToken) {
         setActivePodcastId(null)
         setPlaybackError(
-          `Failed to load podcast "${podcast.transcript?.title || podcast.document_title || "Audio"}".`
+          `Unable to play podcast "${podcast.transcript?.title || podcast.document_title || "Audio"}". Please try again.`
         )
       }
     } finally {
-      if (playbackTokenRef.current === currentToken) {
+      if (isMountedRef.current && playbackTokenRef.current === currentToken) {
         setLoadingId(null)
       }
     }
   }
 
+  const isPreparing = tts.status === "preparing"
   const effectiveDuration = (activePodcast && (tts.duration || activePodcast.duration)) || 0
-  const isPreparing = tts.status === "preparing" || loadingId !== null
 
   return (
-    <section className="podcast-gallery-section" aria-labelledby="podcast-gallery-heading">
+    <section
+      aria-labelledby="podcast-gallery-heading"
+      className="podcast-gallery-section"
+      data-testid="podcast-gallery-section"
+    >
       <div className="library-section-heading">
         <h2 id="podcast-gallery-heading">Podcasts</h2>
-        {podcasts && podcasts.length > 0 && (
-          <span className="library-result-count" aria-live="polite">
-            {podcasts.length} {podcasts.length === 1 ? "podcast" : "podcasts"}
-          </span>
-        )}
+        <span className="library-result-count" aria-live="polite">
+          {podcasts ? `${podcasts.length} ${podcasts.length === 1 ? "podcast" : "podcasts"}` : "Loading podcasts"}
+        </span>
       </div>
 
       {playbackError && (
@@ -132,30 +244,19 @@ export default function PodcastGallery() {
       )}
 
       {isPending ? (
-        <div className="podcast-grid" aria-label="Loading podcasts" aria-busy="true">
-          {Array.from({ length: 3 }, (_, index) => (
-            <div key={index} className="library-card-skeleton">
-              <div />
-              <span />
-              <span />
-            </div>
-          ))}
+        <div className="library-shelf-loading" aria-busy="true">
+          <Loader2 size={24} className="animate-spin" />
+          <p>Loading podcasts...</p>
         </div>
       ) : isError ? (
-        <div className="podcast-empty-state" role="alert">
-          <AlertCircle size={32} />
+        <div className="podcast-empty-state notebook-load-error" role="alert">
           <h3>Podcasts could not be loaded</h3>
-          <p>Check your connection and try again.</p>
-          <button
-            type="button"
-            className="library-secondary-button"
-            style={{ marginTop: "12px" }}
-            onClick={() => void refetch()}
-          >
+          <p>There was a problem fetching your audio discussions.</p>
+          <button type="button" onClick={() => void refetch()}>
             Try again
           </button>
         </div>
-      ) : !podcasts || podcasts.length === 0 ? (
+      ) : podcasts.length === 0 ? (
         <div className="podcast-empty-state" data-testid="podcast-empty-state">
           <Headphones size={36} strokeWidth={1.4} />
           <h3>No podcasts generated yet</h3>
@@ -196,10 +297,44 @@ export default function PodcastGallery() {
                       href={`/dashboard/read/${podcast.document_id}`}
                       className="podcast-source-link"
                       aria-label={`Open source book ${bookTitle}`}
+                      data-testid={`podcast-book-link-${podcast.id}`}
                     >
                       <BookOpen size={13} aria-hidden="true" />
                       <span>{bookTitle}</span>
                     </Link>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                    {podcast.status === "completed" && (
+                      <button
+                        type="button"
+                        data-testid={`podcast-expand-${podcast.id}`}
+                        className="podcast-card-action-btn"
+                        onClick={() => {
+                          setActivePodcastId(podcast.id)
+                          setExpandedPodcastId(podcast.id)
+                          if (activePodcastId !== podcast.id) {
+                            void handlePlayToggle(podcast)
+                          }
+                        }}
+                        aria-label={`Open player for "${displayTitle}"`}
+                        title="Open full player & transcript"
+                      >
+                        <Maximize2 size={15} />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      data-testid={`podcast-delete-${podcast.id}`}
+                      className="podcast-card-action-btn"
+                      onClick={() => {
+                        setDeleteError(null)
+                        setPodcastToDelete(podcast)
+                      }}
+                      aria-label={`Delete podcast "${displayTitle}"`}
+                      title={`Delete podcast "${displayTitle}"`}
+                    >
+                      <Trash2 size={15} />
+                    </button>
                   </div>
                 </div>
 
@@ -348,6 +483,16 @@ export default function PodcastGallery() {
               <button
                 type="button"
                 className="podcast-card-skip-btn"
+                onClick={() => setExpandedPodcastId(activePodcast.id)}
+                aria-label="Expand player and transcript"
+                title="Expand full player and transcript"
+                data-testid="bottom-player-expand"
+              >
+                <Maximize2 size={16} />
+              </button>
+              <button
+                type="button"
+                className="podcast-card-skip-btn"
                 disabled={isPreparing}
                 onClick={() => {
                   const speedOptions = [0.75, 1, 1.25, 1.5, 2]
@@ -374,6 +519,7 @@ export default function PodcastGallery() {
                 onClick={() => {
                   ttsEngine.stop()
                   setActivePodcastId(null)
+                  setExpandedPodcastId(null)
                 }}
                 aria-label="Stop audio"
                 title="Stop"
@@ -384,6 +530,88 @@ export default function PodcastGallery() {
           </div>
         </div>
       )}
+
+      {expandedPodcast && (
+        <PodcastPlayerModal
+          podcast={expandedPodcast}
+          onClose={() => setExpandedPodcastId(null)}
+        />
+      )}
+
+      <Dialog.Root
+        open={Boolean(podcastToDelete)}
+        onOpenChange={(dialogOpenState) => {
+          if (!dialogOpenState && !isDeleting) {
+            setPodcastToDelete(null)
+            setDeleteError(null)
+          }
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="notebook-dialog-overlay" />
+          <Dialog.Content
+            className="notebook-dialog podcast-delete-dialog"
+            data-testid="podcast-delete-dialog"
+            aria-describedby="podcast-delete-description"
+          >
+            <div className="notebook-dialog-heading">
+              <Dialog.Title>Delete podcast</Dialog.Title>
+              <Dialog.Close
+                disabled={isDeleting}
+                aria-label="Close delete dialog"
+                onClick={() => {
+                  setPodcastToDelete(null)
+                  setDeleteError(null)
+                }}
+              >
+                <X size={19} />
+              </Dialog.Close>
+            </div>
+            <p id="podcast-delete-description">
+              Are you sure you want to delete &ldquo;
+              {podcastToDelete?.transcript?.title ||
+                (podcastToDelete?.scope === "section" && podcastToDelete?.section_title
+                  ? podcastToDelete.section_title
+                  : podcastToDelete?.document_title) ||
+                `Podcast ${podcastToDelete?.id}`}
+              &rdquo;? The audio file will be permanently removed.
+            </p>
+            {deleteError && (
+              <div
+                className="podcast-playback-error"
+                role="alert"
+                style={{ marginTop: "14px", marginBottom: "0px" }}
+              >
+                <AlertCircle size={16} />
+                <span>{deleteError}</span>
+              </div>
+            )}
+            <div className="notebook-dialog-actions">
+              <button
+                type="button"
+                className="library-secondary-button"
+                disabled={isDeleting}
+                onClick={() => {
+                  setPodcastToDelete(null)
+                  setDeleteError(null)
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                data-testid="confirm-delete-podcast-button"
+                className="library-delete-confirm-button"
+                disabled={isDeleting}
+                onClick={() => void handleConfirmDelete()}
+              >
+                {isDeleting && <Loader2 size={14} className="animate-spin" />}
+                <span>{isDeleting ? "Deleting..." : "Delete podcast"}</span>
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </section>
   )
 }

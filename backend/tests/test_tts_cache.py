@@ -1,14 +1,29 @@
 """Tests for bounded TTS cache cleanup, expiry, and active playback protection."""
+
+from datetime import datetime, timedelta, timezone
+import hashlib
 import os
 import time
-from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import TTSCache, User
-from app.tasks.tts_tasks import evict_tts_cache, ACTIVE_PLAYBACK_GRACE_SECONDS
+from app.models import Document, Summary, TTSCache, User
+from app.services.reading_audio import ACTIVE_COUNTER_TTL_SECONDS, set_redis_client_for_testing
+from app.tasks.tts_tasks import evict_tts_cache, generate_tts
+from tests.audio_test_helpers import FakeReadingAudioRedis
+
+
+class NonClosingSessionWrapper:
+    def __init__(self, inner_session):
+        self._inner = inner_session
+
+    def __getattr__(self, attribute_name):
+        return getattr(self._inner, attribute_name)
+
+    def close(self):
+        pass
 
 
 @pytest.fixture
@@ -24,32 +39,30 @@ def tts_cache_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", str(data_dir))
     monkeypatch.setattr(settings, "tts_cache_max_gib", 1)
     monkeypatch.setattr(settings, "tts_cache_max_age_days", 7)
-    return cache_dir, podcast_dir, uploads_dir
+    fake_client = FakeReadingAudioRedis()
+    set_redis_client_for_testing(fake_client)
+    yield cache_dir, podcast_dir, uploads_dir
+    set_redis_client_for_testing(None)
 
 
 def test_evict_tts_cache_cleans_stale_tmp_and_orphans(tts_cache_dir, db: Session):
     cache_dir, podcast_dir, _ = tts_cache_dir
 
-    # 1. Stale temporary file (> 15 min old)
     stale_tmp = cache_dir / ".oldhash.1234.tmp"
     stale_tmp.write_bytes(b"temp data")
-    old_time = time.time() - (ACTIVE_PLAYBACK_GRACE_SECONDS + 100)
+    old_time = time.time() - (ACTIVE_COUNTER_TTL_SECONDS + 100)
     os.utime(str(stale_tmp), (old_time, old_time))
 
-    # 2. Fresh temporary file (< 15 min old) - must be protected
     fresh_tmp = cache_dir / ".newhash.5678.tmp"
     fresh_tmp.write_bytes(b"fresh temp")
 
-    # 3. Orphaned .wav file (> 15 min old, no DB entry)
     orphaned_wav = cache_dir / "orphaned123.wav"
     orphaned_wav.write_bytes(b"dummy wav data" * 100)
     os.utime(str(orphaned_wav), (old_time, old_time))
 
-    # 4. Fresh orphaned .wav (< 15 min old) - in-flight protection
     fresh_orphan = cache_dir / "fresh_orphan.wav"
     fresh_orphan.write_bytes(b"fresh data")
 
-    # 5. Legitimate persisted podcast file - MUST NEVER BE TOUCHED
     podcast_file = podcast_dir / "101.wav"
     podcast_file.write_bytes(b"important user podcast" * 50)
     os.utime(str(podcast_file), (old_time, old_time))
@@ -61,17 +74,15 @@ def test_evict_tts_cache_cleans_stale_tmp_and_orphans(tts_cache_dir, db: Session
     assert fresh_tmp.exists()
     assert not orphaned_wav.exists()
     assert fresh_orphan.exists()
-    assert podcast_file.exists()  # protected user podcast!
+    assert podcast_file.exists()
 
 
 def test_evict_tts_cache_ttl_expiry_and_active_protection(tts_cache_dir, db: Session):
     cache_dir, _, _ = tts_cache_dir
 
-    # User for testing
     user = db.query(User).first()
     user_id = user.id if user else None
 
-    # Stale entry: 10 days old (> 7 days TTL)
     old_wav = cache_dir / "old_audio.wav"
     old_wav.write_bytes(b"old wav content" * 20)
     stale_dt = datetime.now(timezone.utc) - timedelta(days=10)
@@ -86,7 +97,6 @@ def test_evict_tts_cache_ttl_expiry_and_active_protection(tts_cache_dir, db: Ses
     )
     db.add(stale_row)
 
-    # Recently accessed entry (3 days old created, but accessed 5 minutes ago)
     active_wav = cache_dir / "active_audio.wav"
     active_wav.write_bytes(b"active wav content" * 20)
     active_row = TTSCache(
@@ -114,21 +124,18 @@ def test_evict_tts_cache_lru_size_cap(tts_cache_dir, db: Session, monkeypatch):
     user = db.query(User).first()
     user_id = user.id if user else None
 
-    # Set very small max cap (e.g. 1000 bytes)
-    monkeypatch.setattr(settings, "tts_cache_max_gib", 0.000001)  # ~1073 bytes
+    monkeypatch.setattr(settings, "tts_cache_max_gib", 0.000001)
 
-    # Create 3 files of 600 bytes each
     paths = []
-    for i in range(3):
-        wav = cache_dir / f"cap_test_{i}.wav"
+    for index in range(3):
+        wav = cache_dir / f"cap_test_{index}.wav"
         data = b"x" * 600
         wav.write_bytes(data)
         paths.append(str(wav))
-        # i=0 is 2 hours ago, i=1 is 1 hour ago, i=2 is 30 mins ago
-        access_time = datetime.now(timezone.utc) - timedelta(hours=2 - i, minutes=30)
+        access_time = datetime.now(timezone.utc) - timedelta(hours=2 - index, minutes=30)
         row = TTSCache(
             user_id=user_id,
-            text_hash=f"cap_test_{i}",
+            text_hash=f"cap_test_{index}",
             audio_path=str(wav),
             duration=2.0,
             size_bytes=len(data),
@@ -140,6 +147,79 @@ def test_evict_tts_cache_lru_size_cap(tts_cache_dir, db: Session, monkeypatch):
 
     res = evict_tts_cache(db=db)
     assert res["evicted_lru"] >= 1
-    # Oldest (cap_test_0) should be evicted first
     assert not os.path.exists(paths[0])
     assert os.path.exists(paths[2])
+
+
+def test_generate_tts_tags_summary_provenance_on_cache_hit(
+    tts_cache_dir, db: Session, test_user: User, monkeypatch
+):
+    cache_dir, _, _ = tts_cache_dir
+    session_wrapper = NonClosingSessionWrapper(db)
+    monkeypatch.setattr("app.tasks.tts_tasks.SessionLocal", lambda: session_wrapper)
+
+    document = Document(
+        user_id=test_user.id,
+        title="Doc for summary provenance",
+        format="pdf",
+        content_hash="dochash_summary_prov_123",
+        file_path="/fake/doc_prov.pdf",
+        file_size=1024,
+    )
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+
+    summary = Summary(
+        user_id=test_user.id,
+        document_id=document.id,
+        mode="page",
+        content="Valid summary text content for testing provenance tagging",
+    )
+    db.add(summary)
+    db.commit()
+    db.refresh(summary)
+
+    test_text = "This is a sentence for summary audio provenance test."
+    voice = "default"
+    speed = 1.0
+    text_hash = hashlib.md5(f"{test_text}{test_user.id}{voice}{speed}".encode()).hexdigest()
+
+    wav_file = cache_dir / f"stream_stub_{text_hash}.wav"
+    wav_file.write_bytes(b"RIFF" + b"\x00" * 40)
+
+    stale_timestamp = datetime.now(timezone.utc) - timedelta(hours=3)
+    stream_stub = TTSCache(
+        user_id=test_user.id,
+        document_id=None,
+        summary_id=None,
+        text_hash=text_hash,
+        audio_path=str(wav_file),
+        duration=2.0,
+        size_bytes=len(wav_file.read_bytes()),
+        created_at=stale_timestamp,
+        last_accessed=stale_timestamp,
+    )
+    db.add(stream_stub)
+    db.commit()
+    db.refresh(stream_stub)
+
+    result = generate_tts(
+        user_id=test_user.id,
+        text=test_text,
+        doc_id=document.id,
+        summary_id=summary.id,
+        voice=voice,
+        speed=speed,
+    )
+    assert result["cached"] is True
+    assert result["audio_path"] == str(wav_file)
+
+    db.refresh(stream_stub)
+    assert stream_stub.summary_id == summary.id
+    assert stream_stub.document_id == document.id
+
+    sweep_result = evict_tts_cache(db=db)
+    assert sweep_result["stale_reading_swept"] == 0
+    assert db.query(TTSCache).filter_by(id=stream_stub.id).first() is not None
+    assert wav_file.exists()

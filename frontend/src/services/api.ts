@@ -332,26 +332,101 @@ export interface TtsStreamResult {
     ttsEngine uses this for real cancellation when the user clicks a new
     line before an in-flight synthesis finishes, instead of the old
     poll loop that had no way to stop once started. */
+export interface ReleaseAudioPayload {
+  sessionId?: string
+  cacheIds?: number[]
+  allSession?: boolean
+}
+
+export interface ReleaseAudioResponse {
+  status: string
+  released_count: number
+  deleted_count: number
+}
+
+export const heartbeatReadingAudio = (
+  sessionId: string,
+  signal?: AbortSignal
+): Promise<{ status: string; renewed: boolean }> =>
+  api
+    .post<{ status: string; renewed: boolean }>(
+      "/api/tts/heartbeat",
+      { session_id: sessionId },
+      { signal }
+    )
+    .then((response) => response.data)
+
+export const releaseReadingAudio = (
+  payload: ReleaseAudioPayload,
+  signal?: AbortSignal
+): Promise<ReleaseAudioResponse> =>
+  api
+    .post<ReleaseAudioResponse>(
+      "/api/tts/release",
+      {
+        session_id: payload.sessionId,
+        cache_ids: payload.cacheIds,
+        all_session: payload.allSession,
+      },
+      { signal }
+    )
+    .then((response) => response.data)
+
+export const beaconReleaseReadingAudio = (payload: ReleaseAudioPayload): boolean => {
+  if (typeof window === "undefined" || typeof fetch === "undefined") return false
+  let authToken: string | null = null
+  try {
+    authToken = localStorage.getItem("token")
+  } catch (storageError) {
+  }
+  const requestBody = JSON.stringify({
+    session_id: payload.sessionId,
+    cache_ids: payload.cacheIds,
+    all_session: payload.allSession,
+  })
+  const endpointUrl = apiUrl("/api/tts/release")
+  try {
+    fetch(endpointUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      },
+      body: requestBody,
+      keepalive: true,
+    }).catch(() => {})
+    return true
+  } catch (fetchError) {
+    return false
+  }
+}
+
 export const streamTts = (
   text: string,
   voice: string | null,
   speed: number | null,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  sessionId?: string
 ): Promise<TtsStreamResult> =>
   api
-    .post("/api/tts/stream", { text, voice, speed }, { responseType: "blob", signal, timeout: 120000 })
-    .then((r) => {
-      const durationHeader = parseFloat(r.headers["x-tts-duration"])
-      const cacheIdHeader = r.headers["x-tts-cache-id"]
+    .post(
+      "/api/tts/stream",
+      { text, voice, speed, session_id: sessionId },
+      { responseType: "blob", signal, timeout: 120000 }
+    )
+    .then((response) => {
+      const durationHeader = parseFloat(response.headers["x-tts-duration"])
+      const cacheIdHeader = response.headers["x-tts-cache-id"]
       return {
-        blobUrl: URL.createObjectURL(r.data),
+        blobUrl: URL.createObjectURL(response.data),
         duration: Number.isFinite(durationHeader) ? durationHeader : 0,
         cacheId: cacheIdHeader != null ? parseInt(cacheIdHeader, 10) : null,
-        cached: r.headers["x-tts-cached"] === "hit",
+        cached: response.headers["x-tts-cached"] === "hit",
       }
     })
 
-export const getAudioUrl = (cacheId: number) => apiUrl(`/api/tts/audio/${cacheId}`)
+export const getAudioUrl = (cacheId: number, sessionId?: string) =>
+  apiUrl(`/api/tts/audio/${cacheId}${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ""}`)
 
 /** Fetch an audio endpoint with auth and return a playable object URL.
     <audio> elements can't send Authorization headers, so stream via axios. */

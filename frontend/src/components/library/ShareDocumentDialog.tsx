@@ -88,9 +88,9 @@ export default function ShareDocumentDialog({ document, onClose, onUpdated }: {
           </Dialog.Description>
           <form onSubmit={(event) => void save(event)}>
             <label htmlFor="shared-title">Title</label>
-            <input id="shared-title" maxLength={240} required value={title} onChange={(event) => setTitle(event.target.value)} disabled={busy} />
+            <input id="shared-title" maxLength={240} required value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Document title" disabled={busy} />
             <label htmlFor="shared-author">Author <span>(optional)</span></label>
-            <input id="shared-author" maxLength={160} value={author} onChange={(event) => setAuthor(event.target.value)} disabled={busy} />
+            <input id="shared-author" maxLength={160} value={author} onChange={(event) => setAuthor(event.target.value)} placeholder="Author name" disabled={busy} />
             <label htmlFor="shared-topics">Topics <span>(comma separated)</span></label>
             <input id="shared-topics" maxLength={500} value={topics} onChange={(event) => setTopics(event.target.value)} placeholder="research, design, systems" disabled={busy} />
             <label htmlFor="shared-description">Description <span>(optional)</span></label>

@@ -4,9 +4,11 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
+from loguru import logger
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.models import User, Summary, Podcast, Document, LibraryEntry
 from app.schemas import PodcastCreate, PodcastResponse
@@ -170,21 +172,52 @@ def delete_podcast(
     db: Session = Depends(get_db),
 ):
     """Delete a podcast and its audio file."""
-    podcast = db.query(Podcast).filter(
-        Podcast.id == podcast_id,
-        Podcast.user_id == user.id,
-    ).first()
+    podcast = (
+        db.query(Podcast)
+        .filter(
+            Podcast.id == podcast_id,
+            Podcast.user_id == user.id,
+        )
+        .with_for_update()
+        .first()
+    )
     if not podcast:
         raise HTTPException(status_code=404, detail="Podcast not found")
     if not get_document_for_user(db, user.id, podcast.document_id):
         raise HTTPException(status_code=404, detail="Podcast not found")
 
-    if podcast.audio_path and os.path.exists(podcast.audio_path):
-        try:
-            os.remove(podcast.audio_path)
-        except OSError:
-            pass
+    audio_file_path = podcast.audio_path
+    potential_worker_path = os.path.join(
+        settings.data_dir, "podcasts", f"{podcast_id}.wav"
+    )
 
     db.delete(podcast)
     db.commit()
+
+    podcasts_root = os.path.realpath(os.path.join(settings.data_dir, "podcasts"))
+    candidate_paths = {audio_file_path, potential_worker_path}
+    for path_to_remove in candidate_paths:
+        if not path_to_remove or not os.path.exists(path_to_remove):
+            continue
+
+        resolved_target = os.path.realpath(path_to_remove)
+        if not (
+            resolved_target == podcasts_root
+            or resolved_target.startswith(podcasts_root + os.sep)
+        ):
+            logger.warning(
+                "Refusing to unlink path outside podcast directory: {}",
+                resolved_target,
+            )
+            continue
+
+        try:
+            os.remove(resolved_target)
+        except OSError as remove_error:
+            logger.warning(
+                "Could not unlink podcast audio file {}: {}",
+                resolved_target,
+                remove_error,
+            )
+
     return {"detail": "Deleted"}

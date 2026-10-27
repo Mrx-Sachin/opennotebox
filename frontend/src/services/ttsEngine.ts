@@ -5,6 +5,9 @@ import {
   getAudioUrl,
   fetchAudioBlobUrl,
   streamTts,
+  releaseReadingAudio,
+  beaconReleaseReadingAudio,
+  heartbeatReadingAudio,
 } from "./api"
 import { splitSentences, sentenceStartTimes, sentenceIndexAt, Sentence } from "@/lib/sentences"
 import { filterNarratable, dehyphenateForSpeech } from "@/lib/narrationFilter"
@@ -132,8 +135,8 @@ interface PageAudio extends PageSentences {
 interface PreparedChunk {
   blobUrl: string
   duration: number
-  /** Native speed this blob was actually synthesized at (see nativeSpeedFor). */
   nativeSpeed: number
+  cacheId: number | null
 }
 
 /** One in-flight or completed chunk synthesis. `result` is filled in once
@@ -150,6 +153,7 @@ interface PrepEntry {
   token: number
   pageNum: number
   chunkIdx: number
+  sessionId: string
   result?: PreparedChunk
 }
 
@@ -208,6 +212,23 @@ function buildChunks(sentences: Sentence[], startIndex: number, entryChars: numb
 
 class TtsEngine {
   private audio: HTMLAudioElement | null = null
+  private sessionId =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : "session-" + Date.now() + "-" + Math.random().toString(36).slice(2)
+
+  constructor() {
+    if (typeof window !== "undefined") {
+      const handleUnload = () => {
+        const cacheIds = [...this.prepared.values()]
+          .map((entry) => entry.result?.cacheId)
+          .filter((cacheId): cacheId is number => cacheId != null)
+        beaconReleaseReadingAudio({ sessionId: this.sessionId, cacheIds, allSession: true })
+      }
+      window.addEventListener("pagehide", handleUnload)
+      window.addEventListener("beforeunload", handleUnload)
+    }
+  }
   private docId: number | null = null
   private page: number | null = null
   private pageAudio: PageAudio | null = null
@@ -227,16 +248,31 @@ class TtsEngine {
   private pageSentencesCache = new Map<string, Promise<PageSentences>>()
   private prepared = new Map<string, PrepEntry>()
   private summaryBlobUrl: string | null = null
-  /** Voice+speed+text cache that survives click generations. Keying prepare
-   * on playToken used to resynthesize the same sentence on every click. */
-  private blobCache = new Map<string, PreparedChunk>()
-  private static readonly BLOB_CACHE_MAX = 48
+  private directAudioSource: { kind: "podcast" | "summary"; id: number | string } | null = null
 
   // Leading+trailing debounce state for click/seek entry points (readPage,
   // seekToSentence). See debounceClick.
   private clickDebounceTimer: ReturnType<typeof setTimeout> | null = null
   private clickDebouncePending: (() => void) | null = null
   private static readonly CLICK_DEBOUNCE_MS = 250
+  private heartbeatIntervalTimer: ReturnType<typeof setInterval> | null = null
+
+  private startHeartbeat(): void {
+    if (this.heartbeatIntervalTimer) return
+    this.heartbeatIntervalTimer = setInterval(() => {
+      const currentStatus = useReader.getState().tts.status
+      if (currentStatus !== "idle") {
+        void heartbeatReadingAudio(this.sessionId).catch(() => {})
+      }
+    }, 30000)
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatIntervalTimer) {
+      clearInterval(this.heartbeatIntervalTimer)
+      this.heartbeatIntervalTimer = null
+    }
+  }
 
   private static readonly PREFETCH_BUFFER_SECONDS = 25
   private static readonly PREFETCH_MAX_INFLIGHT = 3
@@ -304,29 +340,23 @@ class TtsEngine {
     this.playToken++
     const token = this.playToken
     this.spillQueued = false
+    const previousSessionId = this.sessionId
+    this.sessionId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : "session-" + Date.now() + "-" + Math.random().toString(36).slice(2)
+
     for (const [key, entry] of this.prepared) {
       if (entry.token !== token) {
         entry.controller.abort()
+        if (entry.result) {
+          URL.revokeObjectURL(entry.result.blobUrl)
+        }
         this.prepared.delete(key)
       }
     }
+    void releaseReadingAudio({ sessionId: previousSessionId, allSession: true }).catch(() => {})
     return token
-  }
-
-  private blobCacheKey(text: string, nativeSpeed: number): string {
-    return `${this.voice || "default"}:${nativeSpeed}:${text}`
-  }
-
-  private rememberBlob(key: string, chunk: PreparedChunk) {
-    if (this.blobCache.has(key)) this.blobCache.delete(key)
-    this.blobCache.set(key, chunk)
-    while (this.blobCache.size > TtsEngine.BLOB_CACHE_MAX) {
-      const oldest = this.blobCache.keys().next().value
-      if (oldest === undefined) break
-      const drop = this.blobCache.get(oldest)
-      this.blobCache.delete(oldest)
-      if (drop) URL.revokeObjectURL(drop.blobUrl)
-    }
   }
 
   /** Leading+trailing debounce for click/seek entry points. The first
@@ -377,12 +407,6 @@ class TtsEngine {
    * current speed setting. */
   private prepareChunk(docId: number, pageNum: number, chunk: Chunk, idx: number, token: number): Promise<PreparedChunk> {
     const nativeSpeed = nativeSpeedFor(useReader.getState().tts.speed)
-    const cacheKey = this.blobCacheKey(chunk.text, nativeSpeed)
-    const cached = this.blobCache.get(cacheKey)
-    if (cached) {
-      this.rememberBlob(cacheKey, cached)
-      return Promise.resolve(cached)
-    }
     // Voice in the key so a mid-read voice change cannot reuse audio for a
     // different speaker.
     const voiceKey = this.voice || "default"
@@ -390,17 +414,36 @@ class TtsEngine {
     let entry = this.prepared.get(key)
     if (!entry) {
       const controller = new AbortController()
+      const chunkSessionId = this.sessionId
       const newEntry: PrepEntry = {
         controller,
         token,
         pageNum,
         chunkIdx: idx,
+        sessionId: chunkSessionId,
         promise: null as unknown as Promise<PreparedChunk>,
       }
-      newEntry.promise = streamTts(chunk.text, this.voice, nativeSpeed, controller.signal).then((res) => {
-        const result: PreparedChunk = { blobUrl: res.blobUrl, duration: res.duration, nativeSpeed }
+      newEntry.promise = streamTts(
+        chunk.text,
+        this.voice,
+        nativeSpeed,
+        controller.signal,
+        chunkSessionId
+      ).then((res) => {
+        if (controller.signal.aborted || newEntry.token !== this.playToken) {
+          URL.revokeObjectURL(res.blobUrl)
+          if (res.cacheId != null) {
+            void releaseReadingAudio({ sessionId: chunkSessionId, cacheIds: [res.cacheId] }).catch(() => {})
+          }
+          throw new Error("Aborted generation")
+        }
+        const result: PreparedChunk = {
+          blobUrl: res.blobUrl,
+          duration: res.duration,
+          nativeSpeed,
+          cacheId: res.cacheId,
+        }
         newEntry.result = result
-        this.rememberBlob(cacheKey, result)
         return result
       })
       newEntry.promise.catch(() => {
@@ -425,12 +468,23 @@ class TtsEngine {
   /** Drop prepared audio already behind the playhead so the prefetch budget
    * only covers what is left to hear. */
   private prunePlayedChunks(pageNum: number, chunkIdx: number, token: number) {
+    const finishedBySession = new Map<string, number[]>()
     for (const [key, entry] of this.prepared) {
       if (entry.token !== token) continue
       if (this.isAheadOfPlayhead(entry, pageNum, chunkIdx)) continue
       entry.controller.abort()
-      entry.promise.then((p) => URL.revokeObjectURL(p.blobUrl)).catch(() => {})
+      if (entry.result) {
+        URL.revokeObjectURL(entry.result.blobUrl)
+        if (entry.result.cacheId != null) {
+          const list = finishedBySession.get(entry.sessionId) || []
+          list.push(entry.result.cacheId)
+          finishedBySession.set(entry.sessionId, list)
+        }
+      }
       this.prepared.delete(key)
+    }
+    for (const [sessId, cids] of finishedBySession) {
+      void releaseReadingAudio({ sessionId: sessId, cacheIds: cids }).catch(() => {})
     }
   }
 
@@ -547,6 +601,7 @@ class TtsEngine {
     // (click, seek, resume) keep the default and (re)engage it.
     if (!preserveFollow) useReader.getState().setFollowReading(true)
 
+    this.startHeartbeat()
     this.set({ status: "preparing", docId, page: pageNum, sentenceIndex: fromSentence })
 
     try {
@@ -580,7 +635,7 @@ class TtsEngine {
       if (token === this.playToken) {
         console.error("TTS readPage failed:", err)
         this.reportFailure(err)
-        this.set({ status: "idle" })
+        this.stop()
       }
     }
   }
@@ -739,17 +794,17 @@ class TtsEngine {
 
   private onEnded() {
     if (this.docId == null || this.page == null || !this.pageAudio) {
-      // Summary playback: no chaining
-      this.set({ status: "idle" })
+      this.stop()
       return
     }
     const token = this.playToken
+    this.prunePlayedChunks(this.page, this.chunkIdx + 1, token)
     if (this.chunkIdx + 1 < this.pageAudio.chunks.length) {
       void this.playChunk(this.chunkIdx + 1, token).catch((err) => {
         if (token === this.playToken) {
           console.error("TTS chunk transition failed:", err)
           this.reportFailure(err)
-          this.set({ status: "idle" })
+          this.stop()
         }
       })
     } else {
@@ -764,9 +819,9 @@ class TtsEngine {
    * deliberately spilled ahead into under this same token, turning every
    * page boundary back into a cold start. */
   private advance(docId: number, pageNum: number, token: number) {
-    const numPages = useReader.getState().numPages
-    if (numPages && pageNum >= numPages) {
-      this.set({ status: "idle" })
+    const numPages = useReader.getState().numPages || this.page || 1
+    if (pageNum >= numPages) {
+      this.stop()
       return
     }
     if (token !== this.playToken) return
@@ -788,6 +843,7 @@ class TtsEngine {
     this.chunkStarts = []
     this.set({ status: "preparing", docId: null, page: null, sentenceIndex: 0, sentenceCount: 0, currentTime: 0, duration: 0 })
 
+    this.directAudioSource = { kind: "podcast", id: url }
     try {
       const blobUrl = await fetchAudioBlobUrl(url)
       if (token !== this.playToken) {
@@ -843,18 +899,27 @@ class TtsEngine {
     this.chunkStarts = []
     this.set({ status: "preparing", page: null, sentenceIndex: 0, sentenceCount: 0 })
 
+    this.directAudioSource = { kind: "summary", id: summaryId }
     try {
       const res = await playSummary(summaryId)
-      let resolved: { url: string; duration: number } | null = null
+      let resolved: { url: string; duration: number; cacheId: number | null } | null = null
       if (res.status === "cached" && res.cache_id != null) {
-        resolved = { url: getAudioUrl(res.cache_id), duration: res.duration ?? 0 }
+        resolved = {
+          url: getAudioUrl(res.cache_id, this.sessionId),
+          duration: res.duration ?? 0,
+          cacheId: res.cache_id,
+        }
       } else {
         for (let i = 0; i < 120; i++) {
           await new Promise((r) => setTimeout(r, 500))
           if (token !== this.playToken) return
           const status = await getTtsCacheStatus(res.text_hash)
           if (status.status === "ready" && status.cache_id != null) {
-            resolved = { url: getAudioUrl(status.cache_id), duration: status.duration ?? 0 }
+            resolved = {
+              url: getAudioUrl(status.cache_id, this.sessionId),
+              duration: status.duration ?? 0,
+              cacheId: status.cache_id,
+            }
             break
           }
         }
@@ -862,6 +927,7 @@ class TtsEngine {
       }
       if (token !== this.playToken) return
 
+      this.startHeartbeat()
       const blobUrl = await fetchAudioBlobUrl(resolved.url)
       if (token !== this.playToken) {
         URL.revokeObjectURL(blobUrl)
@@ -903,23 +969,35 @@ class TtsEngine {
     } else if (status === "paused") {
       void this.audio.play()
       this.set({ status: "playing" })
+    } else if (status === "idle" && this.directAudioSource) {
+      if (this.directAudioSource.kind === "podcast") {
+        void this.playAudioUrl(String(this.directAudioSource.id))
+      } else {
+        void this.playSummaryAudio(Number(this.directAudioSource.id))
+      }
     }
   }
 
   stop() {
-    // Drop any pending trailing debounced action - otherwise a stop right
-    // after a click burst could have a delayed readPage fire ~250ms later
-    // and silently resurrect playback the user just stopped.
     if (this.clickDebounceTimer) clearTimeout(this.clickDebounceTimer)
     this.clickDebounceTimer = null
     this.clickDebouncePending = null
 
     this.bumpGeneration()
-    this.audio?.pause()
-    if (this.audio) this.audio.src = ""
+    if (this.audio) {
+      this.audio.pause()
+      this.audio.removeAttribute("src")
+      this.audio.load()
+    }
+    if (this.summaryBlobUrl) {
+      URL.revokeObjectURL(this.summaryBlobUrl)
+      this.summaryBlobUrl = null
+    }
     this.pageAudio = null
+    this.stopHeartbeat()
     this.chunkStarts = []
     this.set({ status: "idle", currentTime: 0, sentenceIndex: 0 })
+    void releaseReadingAudio({ sessionId: this.sessionId, allSession: true }).catch(() => {})
   }
 
   /** Jump playback to a sentence on the currently loaded page. Debounced
@@ -1010,3 +1088,6 @@ class TtsEngine {
 }
 
 export const ttsEngine = new TtsEngine()
+if (typeof window !== "undefined") {
+  (window as any).ttsEngine = ttsEngine
+}
