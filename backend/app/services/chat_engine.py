@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import httpx
 import openai
@@ -19,11 +19,15 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.database import SessionLocal
-from app.models import Document, Summary
+from app.models import Document, LibraryEntry, Summary
 from app.services import retrieval
 from app.services.json_extract import extract_json
 from app.services.metrics import get_metrics
-from app.services.llm_semaphore import llm_semaphore
+from app.services.llm_semaphore import (
+    LLMAdmissionTimeout,
+    LLMAdmissionUnavailable,
+    llm_semaphore,
+)
 
 # Total character budget for the numbered source list (~4k tokens), keeping
 # the full prompt well under 8k tokens for single-GPU latency.
@@ -47,6 +51,20 @@ _REFERENCE_WORDS = frozenset(
 OLLAMA_TIMEOUT = httpx.Timeout(connect=5.0, read=240.0, write=10.0, pool=5.0)
 
 
+def _text_from_chunk(chunk: Any) -> str:
+    """Extract displayable text from a LangChain chat message chunk."""
+    content = getattr(chunk, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return ""
+
+
 def format_source_line(s: Dict[str, Any]) -> str:
     """Render a numbered source for the prompt.
 
@@ -56,6 +74,32 @@ def format_source_line(s: Dict[str, Any]) -> str:
     if s.get("page") is None:
         return f"[{s['n']}] ({s['doc_title']})\n{s['text']}"
     return f"[{s['n']}] ({s['doc_title']}, p. {s['page']})\n{s['text']}"
+
+
+def library_document_titles(db, doc_ids: List[int], user_id: Optional[int]) -> Dict[int, str]:
+    """Resolve only titles visible in the requester's private library."""
+    if not doc_ids or user_id is None:
+        return {doc_id: f"Document {doc_id}" for doc_id in doc_ids}
+
+    rows = (
+        db.query(
+            Document.id,
+            LibraryEntry.title,
+            Document.shared_title,
+            Document.is_shared,
+        )
+        .join(LibraryEntry, LibraryEntry.document_id == Document.id)
+        .filter(Document.id.in_(doc_ids), LibraryEntry.user_id == user_id)
+        .all()
+    )
+    titles = {}
+    for doc_id, private_title, shared_title, is_shared in rows:
+        titles[doc_id] = (
+            private_title
+            or (shared_title if is_shared else None)
+            or f"Document {doc_id}"
+        )
+    return titles
 
 
 def _unreachable_message(user_id: Optional[int] = None) -> str:
@@ -185,6 +229,7 @@ class ChatEngine:
         history: Optional[List[Dict[str, str]]] = None,
         user_id: Optional[int] = None,
         rag_mode: Optional[str] = None,
+        on_token: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
         """Answer a question scoped to the given documents.
 
@@ -205,8 +250,18 @@ class ChatEngine:
         # to standard RAG - the user asked for a specific mode and deserves
         # to know it failed (and the KG may simply not be built yet).
         if rag_mode in ("hybrid", "graph"):
-            from app.services.hybrid_rag import answer_hybrid
             try:
+                if on_token is not None:
+                    return await self._answer_hybrid_stream(
+                        question=question,
+                        doc_ids=doc_ids,
+                        history=history,
+                        user_id=user_id,
+                        mode=rag_mode,
+                        on_token=on_token,
+                    )
+                from app.services.hybrid_rag import answer_hybrid
+
                 return await answer_hybrid(
                     question=question,
                     doc_ids=doc_ids,
@@ -215,6 +270,8 @@ class ChatEngine:
                     mode=rag_mode,
                 )
             except OllamaUnreachableError:
+                raise
+            except (LLMAdmissionTimeout, LLMAdmissionUnavailable):
                 raise
             except Exception as e:
                 logger.error(f"HybridRAG ({rag_mode}) failed: {e}")
@@ -235,10 +292,8 @@ class ChatEngine:
             t = time.perf_counter()
             db = SessionLocal()
             try:
-                doc_titles = [
-                    d.title
-                    for d in db.query(Document).filter(Document.id.in_(doc_ids)).all()
-                ]
+                title_map = library_document_titles(db, doc_ids, user_id)
+                doc_titles = [title_map[doc_id] for doc_id in doc_ids if doc_id in title_map]
             finally:
                 db.close()
             _mark("titles", t)
@@ -286,7 +341,7 @@ class ChatEngine:
             t = time.perf_counter()
             db = SessionLocal()
             try:
-                sources = self._build_sources(db, doc_ids, hits)
+                sources = self._build_sources(db, doc_ids, hits, user_id)
             finally:
                 db.close()
             _mark("sources", t)
@@ -309,14 +364,18 @@ class ChatEngine:
             prompt = self._build_prompt(question, sources, history)
             t = time.perf_counter()
             async with llm_semaphore():
-                response = await self.model(user_id).ainvoke(
-                    [
-                        SystemMessage(content=self._system_prompt()),
-                        HumanMessage(content=prompt),
-                    ]
-                )
+                answer_messages = [
+                    SystemMessage(content=self._system_prompt()),
+                    HumanMessage(content=prompt),
+                ]
+                if on_token is None:
+                    response = await self.model(user_id).ainvoke(answer_messages)
+                    content = response.content
+                else:
+                    content = await self._stream_model_content(
+                        self.model(user_id), answer_messages, on_token
+                    )
             _mark("generate", t)
-            content = response.content
 
             citations = self._used_citations(content, sources)
             logger.info(
@@ -358,12 +417,116 @@ class ChatEngine:
                 "The AI backend encountered an internal error. "
                 "The GPU may be overloaded - try again in a moment."
             ) from e
+        except (LLMAdmissionTimeout, LLMAdmissionUnavailable):
+            raise
         except (openai.APIConnectionError, httpx.ConnectError, httpx.TimeoutException) as e:
             logger.error(f"Chat engine failed: AI backend unreachable: {e}")
             raise OllamaUnreachableError(_unreachable_message(user_id)) from e
         except Exception as e:
             logger.error(f"Chat engine failed: {e}")
             raise RuntimeError(f"Chat failed: {e}")
+
+    async def _answer_hybrid_stream(
+        self,
+        question: str,
+        doc_ids: List[int],
+        history: Optional[List[Dict[str, str]]],
+        user_id: Optional[int],
+        mode: str,
+        on_token: Callable[[str], Awaitable[None]],
+    ) -> Dict[str, Any]:
+        """Run hybrid/graph retrieval and stream the answer model's tokens.
+
+        Retrieval, prompt construction, and citation filtering use the same
+        helpers as the non-streaming HybridRAG route. Keeping this small
+        streaming adapter here avoids changing retrieval behavior for callers
+        that still use ``answer_hybrid`` directly.
+        """
+        from app.services.hybrid_rag import (
+            _kg_built_for_docs,
+            _no_sources_message,
+            _system_prompt,
+            _used_citations,
+            build_hybrid_prompt,
+            retrieve_hybrid,
+        )
+
+        started = time.perf_counter()
+        use_vector = mode == "hybrid"
+        use_graph = mode in ("hybrid", "graph")
+        db = SessionLocal()
+        try:
+            title_map = library_document_titles(db, doc_ids, user_id)
+            doc_titles = [title_map[doc_id] for doc_id in doc_ids if doc_id in title_map]
+            phrases: List[str] = []
+            rephrasings: List[str] = []
+            if use_vector and not self.should_skip_rewrite(question, history):
+                phrases, rephrasings = await self.rewrite_query(
+                    question, history, doc_titles, user_id
+                )
+            result = await asyncio.to_thread(
+                retrieve_hybrid,
+                db,
+                doc_ids,
+                question,
+                phrases,
+                rephrasings,
+                use_vector=use_vector,
+                use_graph=use_graph,
+                user_id=user_id,
+            )
+            sources = result["combined_sources"]
+            kg_built = _kg_built_for_docs(db, doc_ids)
+        finally:
+            db.close()
+
+        if not sources:
+            return {
+                "content": _no_sources_message(mode, kg_built),
+                "citations": [],
+                "token_count": 0,
+            }
+
+        prompt = build_hybrid_prompt(question, sources, history)
+        messages = [
+            SystemMessage(content=_system_prompt()),
+            HumanMessage(content=prompt),
+        ]
+        async with llm_semaphore():
+            content = await self._stream_model_content(
+                self.model(user_id), messages, on_token
+            )
+        citations = _used_citations(content, sources)
+        metrics = get_metrics()
+        metrics.rag_latency.observe((time.perf_counter() - started) * 1000)
+        metrics.rag_chunk_count.observe(len(sources))
+        logger.info(
+            "hybrid_rag mode={} total={}ms sources={} citations={}",
+            mode,
+            int((time.perf_counter() - started) * 1000),
+            len(sources),
+            len(citations),
+        )
+        return {
+            "content": content,
+            "citations": citations,
+            "token_count": len(content.split()),
+        }
+
+    @staticmethod
+    async def _stream_model_content(
+        model: ChatOpenAI,
+        messages: List[Any],
+        on_token: Callable[[str], Awaitable[None]],
+    ) -> str:
+        """Forward generated text chunks and return the assembled content."""
+        pieces: List[str] = []
+        async for chunk in model.astream(messages):
+            text = _text_from_chunk(chunk)
+            if text:
+                pieces.append(text)
+                await on_token(text)
+        return "".join(pieces)
 
     # ------------------------------------------------------------------
     # Query rewriting
@@ -441,6 +604,8 @@ class ChatEngine:
             # Ollama itself is unreachable - don't limp through retrieval and
             # rerank only to time out again on the final answer call.
             raise OllamaUnreachableError(_unreachable_message(user_id)) from e
+        except (LLMAdmissionTimeout, LLMAdmissionUnavailable):
+            raise
         except Exception as e:
             logger.warning(f"Query rewrite failed, using raw question: {e}")
         return [], []
@@ -462,7 +627,7 @@ class ChatEngine:
                 retrieval.index_document(db, doc_id)
             # BM25 first - no embedding wait. Then embed only the lexical
             # window so hybrid search can score those chunks immediately.
-            # Full-document embedding continues in a background thread.
+            # Full-document embedding is queued as a background Celery job.
             lexical = retrieval.search(
                 db, doc_ids, phrases + [question], top_k=CANDIDATES
             )
@@ -548,6 +713,8 @@ class ChatEngine:
                             h for h in hits if h["chunk_id"] not in picked
                         ][: TOP_K - len(chosen)]
                     return chosen
+        except (LLMAdmissionTimeout, LLMAdmissionUnavailable):
+            raise
         except Exception as e:
             logger.warning(f"Rerank failed, using BM25 order: {e}")
         return hits[:TOP_K]
@@ -560,17 +727,14 @@ class ChatEngine:
         return sorted(hits, key=lambda h: (h["page"] != page, h["score"]))
 
     def _build_sources(
-        self, db, doc_ids: List[int], hits: List[Dict]
+        self, db, doc_ids: List[int], hits: List[Dict], user_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """Number the retrieved chunks into a source list within budget.
 
         When retrieval comes back nearly empty (broad questions like "what is
         this book about"), section summaries are used as sources instead.
         """
-        titles: Dict[int, str] = {
-            d.id: d.title
-            for d in db.query(Document).filter(Document.id.in_(doc_ids)).all()
-        }
+        titles = library_document_titles(db, doc_ids, user_id)
 
         sources: List[Dict[str, Any]] = []
         used = 0
@@ -589,17 +753,20 @@ class ChatEngine:
             )
 
         if len(sources) < 2:
-            section_summaries = (
-                db.query(Summary)
-                .filter(
-                    Summary.document_id.in_(doc_ids),
-                    Summary.mode == "section",
-                    Summary.content.isnot(None),
-                    Summary.content != "",
+            section_summaries = []
+            if user_id is not None:
+                section_summaries = (
+                    db.query(Summary)
+                    .filter(
+                        Summary.document_id.in_(doc_ids),
+                        Summary.user_id == user_id,
+                        Summary.mode == "section",
+                        Summary.content.isnot(None),
+                        Summary.content != "",
+                    )
+                    .limit(4)
+                    .all()
                 )
-                .limit(4)
-                .all()
-            )
             for s in section_summaries:
                 text = s.content[:2000]
                 if used + len(text) > SOURCE_CHAR_BUDGET:
@@ -624,6 +791,7 @@ class ChatEngine:
         question: str,
         history: Optional[List[Dict[str, str]]] = None,
         user_id: Optional[int] = None,
+        on_token: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
         """Answer a question with no document grounding and no retrieval.
 
@@ -647,8 +815,13 @@ class ChatEngine:
             messages.append(HumanMessage(content=question))
 
             async with llm_semaphore():
-                response = await self.model(user_id).ainvoke(messages)
-            content = response.content
+                if on_token is None:
+                    response = await self.model(user_id).ainvoke(messages)
+                    content = response.content
+                else:
+                    content = await self._stream_model_content(
+                        self.model(user_id), messages, on_token
+                    )
             total_ms = int((time.perf_counter() - t0) * 1000)
             logger.info(
                 "chat.stage mode=general total={}ms stages={{'generate': {}}}",
@@ -683,6 +856,8 @@ class ChatEngine:
                 "The AI backend encountered an internal error. "
                 "The GPU may be overloaded - try again in a moment."
             ) from e
+        except (LLMAdmissionTimeout, LLMAdmissionUnavailable):
+            raise
         except (openai.APIConnectionError, httpx.ConnectError, httpx.TimeoutException) as e:
             logger.error(f"General chat failed: AI backend unreachable: {e}")
             raise OllamaUnreachableError(_unreachable_message(user_id)) from e

@@ -3,13 +3,15 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User, Document, Summary, Podcast
+from app.models import User, Summary, Podcast
 from app.schemas import PodcastCreate, PodcastResponse
 from app.routers.auth import get_current_user_from_token
 from app.tasks.podcast_tasks import generate_podcast as generate_podcast_task
+from app.services.library_access import get_document_for_user
 
 router = APIRouter(prefix="/api/podcasts", tags=["podcasts"])
 
@@ -27,10 +29,7 @@ def create_podcast(
     db: Session = Depends(get_db),
 ):
     """Create a podcast generation job for a document (full document or a single section)."""
-    doc = db.query(Document).filter(
-        Document.id == body.document_id,
-        Document.user_id == user.id,
-    ).first()
+    doc = get_document_for_user(db, user.id, body.document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -44,6 +43,10 @@ def create_podcast(
             Summary.document_id == doc.id,
             Summary.mode == "section",
             Summary.section_title == body.section_title,
+            or_(
+                Summary.user_id == user.id,
+                (Summary.user_id.is_(None) & (Summary.content == "")),
+            ),
         ).first()
         if not section:
             raise HTTPException(status_code=404, detail="Section not found in section summaries")
@@ -84,6 +87,8 @@ def list_podcasts(
     db: Session = Depends(get_db),
 ):
     """List a user's podcasts for a document, newest first."""
+    if not get_document_for_user(db, user.id, document_id):
+        raise HTTPException(status_code=404, detail="Document not found")
     podcasts = db.query(Podcast).filter(
         Podcast.document_id == document_id,
         Podcast.user_id == user.id,
@@ -104,6 +109,8 @@ def get_podcast(
     ).first()
     if not podcast:
         raise HTTPException(status_code=404, detail="Podcast not found")
+    if not get_document_for_user(db, user.id, podcast.document_id):
+        raise HTTPException(status_code=404, detail="Podcast not found")
     return _serialize(podcast)
 
 
@@ -118,7 +125,7 @@ def get_podcast_audio(
         Podcast.id == podcast_id,
         Podcast.user_id == user.id,
     ).first()
-    if not podcast or not podcast.audio_path:
+    if not podcast or not get_document_for_user(db, user.id, podcast.document_id) or not podcast.audio_path:
         raise HTTPException(status_code=404, detail="Audio not found")
     if not os.path.exists(podcast.audio_path):
         raise HTTPException(status_code=404, detail="Audio file missing")
@@ -137,6 +144,8 @@ def delete_podcast(
         Podcast.user_id == user.id,
     ).first()
     if not podcast:
+        raise HTTPException(status_code=404, detail="Podcast not found")
+    if not get_document_for_user(db, user.id, podcast.document_id):
         raise HTTPException(status_code=404, detail="Podcast not found")
 
     if podcast.audio_path and os.path.exists(podcast.audio_path):

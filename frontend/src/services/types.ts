@@ -5,6 +5,7 @@ export type LayoutMode = "auto" | "single_column" | "research_paper"
 export interface Document {
   id: number
   user_id: number
+  notebook_id?: number | null
   title: string
   format: string
   file_size: number
@@ -18,6 +19,47 @@ export interface Document {
   last_read_page?: number | null
   last_read_position?: number | null
   last_read_at?: string | null
+  can_share?: boolean
+  is_shared?: boolean
+  read_only?: boolean
+  shared_title?: string | null
+  author?: string | null
+  description?: string | null
+  topics?: string[]
+  document_type?: string | null
+  language?: string | null
+}
+
+export interface SharedDocument {
+  id: number
+  title: string
+  author: string | null
+  description: string | null
+  topics: string[]
+  document_type: string
+  language: string | null
+  num_pages: number
+  file_size: number
+  shared_at: string
+  added: boolean
+  reason?: string
+}
+
+export interface SharedLibraryResult {
+  documents: SharedDocument[]
+  total: number
+  topics: string[]
+  document_types: string[]
+}
+
+export interface SharedDocumentUpdate {
+  is_shared: boolean
+  title?: string
+  author?: string
+  description?: string
+  topics?: string[]
+  document_type?: string
+  language?: string
 }
 
 export interface ExtractedPage {

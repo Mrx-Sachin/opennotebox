@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.orm import backref as sa_backref
 from sqlalchemy.orm import relationship as orm_relationship
 
 from app.database import Base
@@ -41,7 +42,7 @@ class KgEntity(Base):
     outgoing = orm_relationship("KgRelationship", foreign_keys="KgRelationship.subject_id", back_populates="subject", cascade="all, delete-orphan")
     incoming = orm_relationship("KgRelationship", foreign_keys="KgRelationship.object_id", back_populates="object_entity", cascade="all, delete-orphan")
 
-    document = orm_relationship("Document", backref="kg_entities")
+    document = orm_relationship("Document", backref=sa_backref("kg_entities", passive_deletes=True))
 
 
 class KgRelationship(Base):

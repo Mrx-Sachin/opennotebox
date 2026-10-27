@@ -147,7 +147,7 @@ async def test_health_endpoint_reports_per_backend_status(
 
 
 async def test_probe_lists_models_without_saving(
-    client: AsyncClient, auth_header: dict
+    client: AsyncClient, admin_auth_header: dict
 ):
     with patch(
         "app.routers.settings.check_llm_health",
@@ -155,7 +155,7 @@ async def test_probe_lists_models_without_saving(
     ) as mocked:
         res = await client.post(
             "/api/settings/llm/probe",
-            headers=auth_header,
+            headers=admin_auth_header,
             json={"base_url": "http://alpha:8000/v1", "api_key": "key-a"},
         )
     assert res.status_code == 200
@@ -167,17 +167,17 @@ async def test_probe_lists_models_without_saving(
 
 
 async def test_probe_rejects_non_http_url(
-    client: AsyncClient, auth_header: dict
+    client: AsyncClient, admin_auth_header: dict
 ):
     res = await client.post(
         "/api/settings/llm/probe",
-        headers=auth_header,
+        headers=admin_auth_header,
         json={"base_url": "not-a-url"},
     )
     assert res.status_code == 400
     res = await client.post(
         "/api/settings/llm/probe",
-        headers=auth_header,
+        headers=admin_auth_header,
         json={"base_url": "ftp://example.com/v1"},
     )
     assert res.status_code == 400

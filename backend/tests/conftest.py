@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Generator
 
@@ -84,6 +85,56 @@ with patch("sqlalchemy.create_engine", side_effect=_test_create_engine):
 # Ensure the settings singleton has our test JWT secret
 settings.jwt_secret = "test_secret_32_chars_long_for_testing!"
 
+
+class _FakeAdmissionRedis:
+    """Small in-memory fake used by hermetic tests without Redis."""
+
+    def __init__(self):
+        self._leases: dict[str, dict[str, float]] = {}
+
+    async def eval(self, script, numkeys, *arguments):
+        keys = arguments[:numkeys]
+        args = arguments[numkeys:]
+        now = time.time() * 1000
+        for key in keys:
+            self._leases.setdefault(key, {})
+            self._leases[key] = {
+                token: expires
+                for token, expires in self._leases[key].items()
+                if expires > now
+            }
+
+        if "deepread:llm-admission:acquire" in script:
+            global_limit = int(args[2])
+            lane_limit = int(args[3])
+            if len(self._leases[keys[0]]) >= global_limit:
+                return 0
+            if len(self._leases[keys[1]]) >= lane_limit:
+                return 0
+            expires = now + int(args[1])
+            for key in keys:
+                self._leases[key][args[0]] = expires
+            return 1
+
+        if "deepread:llm-admission:renew" in script:
+            token = args[0]
+            if any(token not in self._leases[key] for key in keys):
+                return 0
+            expires = now + int(args[1])
+            for key in keys:
+                self._leases[key][token] = expires
+            return 1
+
+        if "deepread:llm-admission:release" in script:
+            for key in keys:
+                self._leases[key].pop(args[0], None)
+            return 1
+
+        raise AssertionError("Unexpected Redis Lua script")
+
+    async def aclose(self):
+        return None
+
 # ---------------------------------------------------------------------------
 # Stress-test engine: uses NullPool so each checkout opens a fresh
 # connection.  This avoids segfaults that occur when a pooled connection
@@ -141,6 +192,18 @@ def _reset_auth_rate_limit_buckets():
     auth_module._login_buckets.clear()
     auth_module._register_buckets.clear()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _use_fake_llm_admission(monkeypatch, request):
+    """Keep all app tests hermetic; Redis integration tests opt out by marker."""
+    if request.node.get_closest_marker("redis_integration"):
+        return
+
+    from app.services import llm_semaphore as admission_module
+
+    fake = _FakeAdmissionRedis()
+    monkeypatch.setattr(admission_module, "_new_redis_client", lambda: fake)
 
 
 @pytest.fixture(scope="session")

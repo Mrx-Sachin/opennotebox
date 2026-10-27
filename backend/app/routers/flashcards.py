@@ -32,6 +32,7 @@ from app.services.cloze import cloze_indices, render_cloze
 from app.services.flashcard_cards import create_basic_card, create_cloze_cards, create_reversed_pair
 from app.services.fsrs_scheduler import apply_review, preview_intervals
 from app.tasks.flashcard_tasks import generate_flashcards as generate_flashcards_task
+from app.services.library_access import accessible_document_query, get_document_for_user
 
 router = APIRouter(prefix="/api/flashcards", tags=["flashcards"])
 
@@ -54,10 +55,7 @@ def generate_flashcards(
     document's AI-generated cards; hand-authored cards are left alone (a
     "Regenerate" click shouldn't be able to destroy cards the user wrote
     themselves)."""
-    doc = db.query(Document).filter(
-        Document.id == body.document_id,
-        Document.user_id == user.id,
-    ).first()
+    doc = get_document_for_user(db, user.id, body.document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -89,15 +87,41 @@ def list_flashcards(
     """List flashcards, optionally scoped to one document."""
     q = db.query(Flashcard).filter(Flashcard.user_id == user.id)
     if document_id is not None:
+        if not get_document_for_user(db, user.id, document_id):
+            raise HTTPException(status_code=404, detail="Document not found")
         q = q.filter(Flashcard.document_id == document_id)
+    else:
+        q = q.filter(
+            Flashcard.document_id.in_(
+                accessible_document_query(db, user.id).with_entities(Document.id).subquery()
+            )
+        )
     return q.order_by(Flashcard.id).offset(offset).limit(limit).all()
 
 
 def _scope(db: Session, user_id: int, document_id: Optional[int]):
     q = db.query(Flashcard).filter(Flashcard.user_id == user_id)
     if document_id is not None:
+        if not get_document_for_user(db, user_id, document_id):
+            raise HTTPException(status_code=404, detail="Document not found")
         q = q.filter(Flashcard.document_id == document_id)
+    else:
+        q = q.filter(
+            Flashcard.document_id.in_(
+                accessible_document_query(db, user_id).with_entities(Document.id).subquery()
+            )
+        )
     return q
+
+
+def _owned_flashcard(db: Session, user_id: int, flashcard_id: int) -> Flashcard:
+    card = db.query(Flashcard).filter(
+        Flashcard.id == flashcard_id,
+        Flashcard.user_id == user_id,
+    ).first()
+    if not card or not get_document_for_user(db, user_id, card.document_id):
+        raise HTTPException(status_code=404, detail="Flashcard not found")
+    return card
 
 
 def _today_start(now: datetime) -> datetime:
@@ -241,10 +265,7 @@ def create_flashcard(
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
-    doc = db.query(Document).filter(
-        Document.id == body.document_id,
-        Document.user_id == user.id,
-    ).first()
+    doc = get_document_for_user(db, user.id, body.document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -286,11 +307,7 @@ def update_flashcard(
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
-    card = db.query(Flashcard).filter(
-        Flashcard.id == flashcard_id, Flashcard.user_id == user.id,
-    ).first()
-    if not card:
-        raise HTTPException(status_code=404, detail="Flashcard not found")
+    card = _owned_flashcard(db, user.id, flashcard_id)
 
     if card.card_type == "cloze" and body.cloze_text is not None:
         if card.cloze_index not in cloze_indices(body.cloze_text):
@@ -331,11 +348,7 @@ def delete_flashcard(
     """Delete a single flashcard, or with ?group=true every sibling sharing
     its group_id (both directions of a reversed pair, or every blank of one
     cloze note)."""
-    card = db.query(Flashcard).filter(
-        Flashcard.id == flashcard_id, Flashcard.user_id == user.id,
-    ).first()
-    if not card:
-        raise HTTPException(status_code=404, detail="Flashcard not found")
+    card = _owned_flashcard(db, user.id, flashcard_id)
 
     if group and card.group_id:
         db.query(Flashcard).filter(
@@ -356,11 +369,7 @@ def review_flashcard(
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
-    card = db.query(Flashcard).filter(
-        Flashcard.id == flashcard_id, Flashcard.user_id == user.id,
-    ).first()
-    if not card:
-        raise HTTPException(status_code=404, detail="Flashcard not found")
+    card = _owned_flashcard(db, user.id, flashcard_id)
 
     was_new = card.reps == 0
     log = apply_review(card, body.rating, body.duration_ms)

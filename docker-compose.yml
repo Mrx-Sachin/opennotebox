@@ -46,7 +46,7 @@ services:
     restart: always
 
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-opennotebox}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-opennotebox}
@@ -73,6 +73,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    command: redis-server --appendonly yes
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
@@ -81,8 +82,8 @@ services:
 
   api:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     # Loopback-only. Browsers reach the API through Traefik on the same origin
     # as the page; this stays published purely so the host can curl it while
     # debugging, and binding it to 127.0.0.1 keeps the plaintext path off the
@@ -112,6 +113,14 @@ services:
       - VLLM_BASE_URL=${VLLM_BASE_URL:-http://host.docker.internal:8766/v1}
       - VLLM_MODEL=${VLLM_MODEL:-antigravity/gemini-3.8-flash-tiered}
       - VLLM_API_KEY=${VLLM_API_KEY:-not-needed}
+      - LLM_ADMISSION_REDIS_URL=${LLM_ADMISSION_REDIS_URL:-redis://redis:6379/2}
+      - LLM_MAX_CONCURRENCY=${LLM_MAX_CONCURRENCY:-24}
+      - LLM_FOREGROUND_MAX_CONCURRENCY=${LLM_FOREGROUND_MAX_CONCURRENCY:-20}
+      - LLM_BACKGROUND_MAX_CONCURRENCY=${LLM_BACKGROUND_MAX_CONCURRENCY:-4}
+      - LLM_FOREGROUND_WAIT_SECONDS=${LLM_FOREGROUND_WAIT_SECONDS:-5}
+      - LLM_BACKGROUND_WAIT_SECONDS=${LLM_BACKGROUND_WAIT_SECONDS:-120}
+      - LLM_ADMISSION_LEASE_SECONDS=${LLM_ADMISSION_LEASE_SECONDS:-90}
+      - LLM_ADMISSION_KEY_PREFIX=${LLM_ADMISSION_KEY_PREFIX:-deepread:llm-admission}
       - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env - generate one with "openssl rand -hex 32"}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
@@ -150,8 +159,8 @@ services:
   # script generation + audio stitch is interactive-latency-sensitive.
   worker:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     command: celery -A app.celery_app worker -l info -c 4 -Q default
     volumes:
       - ./backend/app:/app/app
@@ -167,6 +176,14 @@ services:
       - VLLM_BASE_URL=${VLLM_BASE_URL:-http://host.docker.internal:8766/v1}
       - VLLM_MODEL=${VLLM_MODEL:-antigravity/gemini-3.8-flash-tiered}
       - VLLM_API_KEY=${VLLM_API_KEY:-not-needed}
+      - LLM_ADMISSION_REDIS_URL=${LLM_ADMISSION_REDIS_URL:-redis://redis:6379/2}
+      - LLM_MAX_CONCURRENCY=${LLM_MAX_CONCURRENCY:-24}
+      - LLM_FOREGROUND_MAX_CONCURRENCY=${LLM_FOREGROUND_MAX_CONCURRENCY:-20}
+      - LLM_BACKGROUND_MAX_CONCURRENCY=${LLM_BACKGROUND_MAX_CONCURRENCY:-4}
+      - LLM_FOREGROUND_WAIT_SECONDS=${LLM_FOREGROUND_WAIT_SECONDS:-5}
+      - LLM_BACKGROUND_WAIT_SECONDS=${LLM_BACKGROUND_WAIT_SECONDS:-120}
+      - LLM_ADMISSION_LEASE_SECONDS=${LLM_ADMISSION_LEASE_SECONDS:-90}
+      - LLM_ADMISSION_KEY_PREFIX=${LLM_ADMISSION_KEY_PREFIX:-deepread:llm-admission}
       - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
@@ -194,8 +211,8 @@ services:
   # or those names do not resolve and every podcast fails with "Connection error."
   worker-tts:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     command: celery -A app.celery_app worker -l info -c 2 -Q tts
     volumes:
       - ./backend/app:/app/app
@@ -210,6 +227,14 @@ services:
       - VLLM_BASE_URL=${VLLM_BASE_URL:-http://host.docker.internal:8766/v1}
       - VLLM_MODEL=${VLLM_MODEL:-antigravity/gemini-3.8-flash-tiered}
       - VLLM_API_KEY=${VLLM_API_KEY:-not-needed}
+      - LLM_ADMISSION_REDIS_URL=${LLM_ADMISSION_REDIS_URL:-redis://redis:6379/2}
+      - LLM_MAX_CONCURRENCY=${LLM_MAX_CONCURRENCY:-24}
+      - LLM_FOREGROUND_MAX_CONCURRENCY=${LLM_FOREGROUND_MAX_CONCURRENCY:-20}
+      - LLM_BACKGROUND_MAX_CONCURRENCY=${LLM_BACKGROUND_MAX_CONCURRENCY:-4}
+      - LLM_FOREGROUND_WAIT_SECONDS=${LLM_FOREGROUND_WAIT_SECONDS:-5}
+      - LLM_BACKGROUND_WAIT_SECONDS=${LLM_BACKGROUND_WAIT_SECONDS:-120}
+      - LLM_ADMISSION_LEASE_SECONDS=${LLM_ADMISSION_LEASE_SECONDS:-90}
+      - LLM_ADMISSION_KEY_PREFIX=${LLM_ADMISSION_KEY_PREFIX:-deepread:llm-admission}
       - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
@@ -231,8 +256,8 @@ services:
   # scheduled LLM job cannot silently hit the same connection failure mode.
   beat:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     command: celery -A app.celery_app beat -l info
     volumes:
       - ./backend/app:/app/app
@@ -311,6 +336,9 @@ services:
     network_mode: host
     volumes:
       - ./tools/omniroute_bridge.py:/app/omniroute_bridge.py:ro
+    environment:
+      - BRIDGE_HOST=${BRIDGE_HOST:-0.0.0.0}
+      - BRIDGE_ALLOWED_CIDRS=${BRIDGE_ALLOWED_CIDRS:-127.0.0.0/8,172.16.0.0/12}
     command: python3 /app/omniroute_bridge.py
 
 volumes:

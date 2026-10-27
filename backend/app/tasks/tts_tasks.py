@@ -3,7 +3,7 @@ import hashlib
 import os
 import time
 import wave
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -13,9 +13,10 @@ from sqlalchemy.orm import Session
 
 from app.celery_app import celery_app
 from app.database import SessionLocal
-from app.models import TTSCache, Document
+from app.models import TTSCache, Summary, Document, LibraryEntry, User
 from app.config import settings
 from app.services.llm_settings import get_default_voice
+from app.services.library_access import accessible_document_query
 
 
 def _wav_duration(path: str) -> Optional[float]:
@@ -27,6 +28,30 @@ def _wav_duration(path: str) -> Optional[float]:
             return frames / float(rate) if rate else None
     except Exception:
         return None
+
+
+def _lock_cache_write(
+    db: Session,
+    user_id: int,
+    doc_id: Optional[int],
+    summary_id: Optional[int],
+) -> tuple[bool, Optional[int]]:
+    """Recheck ownership and hold the relevant rows through cache commit."""
+    db.rollback()
+    if not db.query(User.id).filter(User.id == user_id).with_for_update().first():
+        return False, summary_id
+    if doc_id is not None and not db.query(LibraryEntry.id).filter(
+        LibraryEntry.user_id == user_id,
+        LibraryEntry.document_id == doc_id,
+    ).with_for_update().first():
+        return False, summary_id
+    if summary_id is not None and not db.query(Summary.id).filter(
+        Summary.id == summary_id,
+        Summary.user_id == user_id,
+        Summary.content != "",
+    ).with_for_update().first():
+        summary_id = None
+    return True, summary_id
 
 
 @celery_app.task(bind=True, max_retries=2)
@@ -49,26 +74,37 @@ def generate_tts(
     """
     db: Session = SessionLocal()
     try:
-        # doc_id is only a provenance tag on the cache row, but it is written
-        # verbatim from the task's arguments. Drop it unless the document
-        # really belongs to user_id, so a mismatched pair cannot attribute one
-        # user's cached audio to another user's document (which would then be
-        # deleted along with that document). The audio itself is already
-        # isolated - text_hash includes user_id and every read path filters on
-        # both - so dropping the tag is the conservative, non-fatal fix.
+        # Document and summary IDs are provenance tags, but validate them
+        # against the requesting user's current library and private summaries
+        # before storing them on the user's cache row.
         if doc_id is not None:
-            owns_doc = (
-                db.query(Document.id)
-                .filter(Document.id == doc_id, Document.user_id == user_id)
-                .first()
-                is not None
-            )
-            if not owns_doc:
+            if not accessible_document_query(db, user_id).filter(Document.id == doc_id).first():
                 logger.warning(
-                    f"generate_tts: doc {doc_id} does not belong to user {user_id}; "
+                    f"generate_tts: doc {doc_id} is not accessible to user {user_id}; "
                     "storing cache row without a document reference"
                 )
                 doc_id = None
+
+        if summary_id is not None:
+            summary = db.query(Summary).filter(
+                Summary.id == summary_id,
+                Summary.user_id == user_id,
+                Summary.content != "",
+            ).first()
+            if (
+                not summary
+                or not accessible_document_query(db, user_id).filter(
+                    Document.id == summary.document_id
+                ).first()
+                or (doc_id is not None and doc_id != summary.document_id)
+            ):
+                logger.warning(
+                    f"generate_tts: summary {summary_id} is not accessible to user {user_id}; "
+                    "storing cache row without a summary reference"
+                )
+                summary_id = None
+            elif doc_id is None:
+                doc_id = summary.document_id
 
         voice = voice or get_default_voice(user_id)
         text_hash = hashlib.md5(f"{text}{user_id}{voice}{speed}".encode()).hexdigest()
@@ -90,6 +126,11 @@ def generate_tts(
         audio_file = os.path.join(output_dir, f"{text_hash}.wav")
 
         if os.path.exists(audio_file):
+            can_write, summary_id = _lock_cache_write(
+                db, user_id, doc_id, summary_id
+            )
+            if not can_write:
+                return {"text_hash": text_hash, "status": "not_accessible"}
             if not cache:
                 cache = TTSCache(
                     user_id=user_id,
@@ -119,6 +160,12 @@ def generate_tts(
         )
 
         if response.status_code == 200:
+            can_write, summary_id = _lock_cache_write(
+                db, user_id, doc_id, summary_id
+            )
+            if not can_write:
+                return {"text_hash": text_hash, "status": "not_accessible"}
+
             with open(audio_file, "wb") as f:
                 f.write(response.content)
 

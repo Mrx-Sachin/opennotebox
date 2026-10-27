@@ -1,15 +1,32 @@
 """Authentication router."""
 import os
 import time
+from pathlib import Path
 from collections import defaultdict, deque
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
-from sqlalchemy import text
+from sqlalchemy import delete, func, or_, text, update
 from sqlalchemy.orm import Session
+from loguru import logger
 
 from app.config import settings
 from app.database import get_db
-from app.models import User
+from app.models import (
+    Bookmark,
+    Conversation,
+    Document,
+    Flashcard,
+    FlashcardReviewLog,
+    LibraryEntry,
+    Message,
+    Note,
+    Notebook,
+    Podcast,
+    Summary,
+    TTSCache,
+    User,
+    UserSettings,
+)
 from app.schemas import UserCreate, UserLogin, UserResponse, TokenResponse, RefreshRequest, UserUpdate
 from app.services.auth_service import (
     verify_password_async,
@@ -229,6 +246,67 @@ def list_users(
     return db.query(User).order_by(User.id).all()
 
 
+@router.get("/users/stats")
+def user_stats(
+    user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Per-user storage and document stats (admin only)."""
+    rows = (
+        db.query(
+            User.id,
+            User.username,
+            User.is_admin,
+            User.created_at,
+            func.coalesce(func.count(Document.id), 0).label("doc_count"),
+            func.coalesce(func.sum(Document.file_size), 0).label("total_bytes"),
+        )
+        .outerjoin(LibraryEntry, LibraryEntry.user_id == User.id)
+        .outerjoin(Document, Document.id == LibraryEntry.document_id)
+        .group_by(User.id)
+        .order_by(User.id)
+        .all()
+    )
+    result = []
+    for r in rows:
+        docs = (
+            db.query(
+                Document.id,
+                Document.title,
+                Document.file_size,
+                Document.num_pages,
+                Document.format,
+                Document.processing_status,
+                Document.created_at,
+            )
+            .join(LibraryEntry, LibraryEntry.document_id == Document.id)
+            .filter(LibraryEntry.user_id == r.id)
+            .order_by(Document.created_at.desc())
+            .all()
+        )
+        result.append({
+            "id": r.id,
+            "username": r.username,
+            "is_admin": r.is_admin,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "doc_count": r.doc_count,
+            "total_bytes": r.total_bytes,
+            "documents": [
+                {
+                    "id": d.id,
+                    "title": d.title,
+                    "file_size": d.file_size,
+                    "num_pages": d.num_pages,
+                    "format": d.format,
+                    "processing_status": d.processing_status,
+                    "created_at": d.created_at.isoformat() if d.created_at else None,
+                }
+                for d in docs
+            ],
+        })
+    return result
+
+
 @router.patch("/users/{user_id}", response_model=UserResponse)
 def update_user(
     user_id: int,
@@ -237,7 +315,7 @@ def update_user(
     db: Session = Depends(get_db),
 ):
     """Update user (admin only - can promote/demote)."""
-    target = db.query(User).filter(User.id == user_id).first()
+    target = db.query(User).filter(User.id == user_id).with_for_update().first()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     if update.is_admin is not None:
@@ -253,10 +331,127 @@ def delete_user(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Delete a user (admin only)."""
-    target = db.query(User).filter(User.id == user_id).first()
+    """Delete a user and their personal data while retaining library assets."""
+    target = db.query(User).filter(User.id == user_id).with_for_update().first()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    db.delete(target)
+
+    asset_ids = {
+        doc_id
+        for (doc_id,) in db.query(Document.id).filter(
+            or_(Document.user_id == user_id, Document.shared_by_user_id == user_id)
+        ).all()
+    }
+    asset_ids.update(
+        doc_id
+        for (doc_id,) in db.query(LibraryEntry.document_id).filter(
+            LibraryEntry.user_id == user_id
+        ).all()
+    )
+    if asset_ids:
+        db.query(Document.id).filter(Document.id.in_(asset_ids)).order_by(
+            Document.id
+        ).with_for_update().all()
+
+    # Documents belong to the shared library independently of their uploader.
+    # Detach the uploader and remove memberships before deleting the account so
+    # the User.documents ORM cascade cannot delete source files for other users.
+    db.query(LibraryEntry).filter(LibraryEntry.user_id == user_id).delete(
+        synchronize_session=False
+    )
+    notebook_ids = db.query(Notebook.id).filter(Notebook.user_id == user_id)
+    db.execute(
+        update(Document)
+        .where(Document.notebook_id.in_(notebook_ids))
+        .values(notebook_id=None)
+    )
+    db.query(Notebook).filter(Notebook.user_id == user_id).delete(synchronize_session=False)
+    db.execute(
+        update(Document)
+        .where(Document.user_id == user_id)
+        .values(user_id=None)
+    )
+    if hasattr(Document, "shared_by_user_id"):
+        db.execute(
+            update(Document)
+            .where(Document.shared_by_user_id == user_id)
+            .values(shared_by_user_id=None, is_shared=False)
+        )
+
+    podcast_paths = [
+        path for (path,) in db.query(Podcast.audio_path).filter(
+            Podcast.user_id == user_id,
+            Podcast.audio_path.isnot(None),
+        ).all()
+    ]
+    tts_paths = [
+        path for (path,) in db.query(TTSCache.audio_path).filter(
+            TTSCache.user_id == user_id,
+            TTSCache.audio_path.isnot(None),
+        ).all()
+    ]
+
+    conversations = db.query(Conversation.id).filter(Conversation.user_id == user_id)
+    db.query(Message).filter(Message.conversation_id.in_(conversations)).delete(
+        synchronize_session=False
+    )
+    flashcards = db.query(Flashcard.id).filter(Flashcard.user_id == user_id)
+    db.query(FlashcardReviewLog).filter(FlashcardReviewLog.flashcard_id.in_(flashcards)).delete(
+        synchronize_session=False
+    )
+    db.query(Flashcard).filter(Flashcard.user_id == user_id).delete(synchronize_session=False)
+    db.query(Note).filter(Note.user_id == user_id).delete(synchronize_session=False)
+    db.query(Bookmark).filter(Bookmark.user_id == user_id).delete(synchronize_session=False)
+    db.query(Podcast).filter(Podcast.user_id == user_id).delete(synchronize_session=False)
+    db.query(TTSCache).filter(TTSCache.user_id == user_id).delete(synchronize_session=False)
+    db.query(Summary).filter(Summary.user_id == user_id).delete(synchronize_session=False)
+    db.query(Conversation).filter(Conversation.user_id == user_id).delete(
+        synchronize_session=False
+    )
+    db.query(UserSettings).filter(UserSettings.user_id == user_id).delete(
+        synchronize_session=False
+    )
+
+    # Core DELETE bypasses User.documents' ORM delete-orphan cascade. Database
+    # foreign keys still clean up ordinary account-owned rows such as notebooks.
+    db.execute(delete(User).where(User.id == user_id))
     db.commit()
+
+    for path in podcast_paths + tts_paths:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    if asset_ids:
+        from app.tasks.asset_tasks import collect_unreferenced_asset
+
+        for asset_id in asset_ids:
+            try:
+                collect_unreferenced_asset.apply_async(
+                    args=[asset_id],
+                    countdown=300,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"Could not queue cleanup for detached asset {asset_id}: {exc}"
+                )
     return {"detail": "User deleted"}
+
+
+@router.post("/users", response_model=UserResponse)
+async def admin_create_user(
+    user_data: UserCreate,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Create a user (admin only). Bypasses rate limits and registration gate."""
+    existing = db.query(User).filter(User.username == user_data.username).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already taken")
+    password_hash = await get_password_hash_async(user_data.password)
+    user = User(username=user_data.username, password_hash=password_hash, is_admin=False)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user

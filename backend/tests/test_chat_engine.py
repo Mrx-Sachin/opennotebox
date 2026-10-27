@@ -56,7 +56,7 @@ class TestAnswerStandardPath:
     """ChatEngine.answer with rag_mode=None (standard BM25 + embeddings)."""
 
     @pytest.mark.asyncio
-    async def test_answer_runs_standard_pipeline(self, db, test_document):
+    async def test_answer_runs_standard_pipeline(self, db, test_document, test_user):
         with patch(
             "app.services.chat_engine.SessionLocal", return_value=db
         ), patch(
@@ -69,6 +69,7 @@ class TestAnswerStandardPath:
             result = await chat_engine.answer(
                 question=QUESTION,
                 doc_ids=[test_document.id],
+                user_id=test_user.id,
             )
 
         assert "lazy dog" in result["content"]
@@ -104,3 +105,37 @@ class TestAnswerStandardPath:
 
         assert "lazy dog" in result["content"]
         assert len(result["citations"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_streaming_standard_answer_preserves_citations(
+        self, db, test_document
+    ):
+        class StreamingModel:
+            async def astream(self, _messages):
+                yield SimpleNamespace(content="The fox jumps over ")
+                yield SimpleNamespace(content="the lazy dog. [1]")
+
+        streamed = []
+
+        async def on_token(token):
+            streamed.append(token)
+
+        with patch(
+            "app.services.chat_engine.SessionLocal", return_value=db
+        ), patch(
+            "app.services.chat_engine.ChatEngine._retrieve",
+            return_value=_mock_hit(test_document.id),
+        ), patch(
+            "app.services.chat_engine.ChatEngine.model",
+            return_value=StreamingModel(),
+        ):
+            result = await chat_engine.answer(
+                question=QUESTION,
+                doc_ids=[test_document.id],
+                on_token=on_token,
+            )
+
+        assert streamed == ["The fox jumps over ", "the lazy dog. [1]"]
+        assert result["content"] == "".join(streamed)
+        assert len(result["citations"]) == 1
+        assert result["citations"][0]["page"] == 1

@@ -55,6 +55,7 @@ export interface UploadItem {
   id: string
   file: File
   layoutMode: LayoutMode
+  notebookId?: number | null
   status: UploadStatus
   percent: number
   error?: string
@@ -78,11 +79,13 @@ function postUpload(
   file: File,
   layoutMode: LayoutMode,
   onProgress: (percent: number) => void,
-  signal: AbortSignal
+  signal: AbortSignal,
+  notebookId?: number | null
 ) {
   const formData = new FormData()
   formData.append("file", file)
   formData.append("layout_mode", layoutMode)
+  if (notebookId != null) formData.append("notebook_id", String(notebookId))
   return api
     .post<Document>("/api/documents/upload", formData, {
       headers: { "Content-Type": "multipart/form-data" },
@@ -123,13 +126,14 @@ class UploadQueueStore {
       fail client-side validation are still added, already marked "error",
       so the user sees exactly why each rejected file didn't go through
       instead of it silently vanishing. */
-  add(files: File[], layoutMode: LayoutMode): string[] {
+  add(files: File[], layoutMode: LayoutMode, notebookId?: number | null): string[] {
     const newItems: UploadItem[] = files.map((file) => {
       const validationError = validateFile(file)
       return {
         id: uid(),
         file,
         layoutMode,
+        notebookId,
         status: validationError ? "error" : "queued",
         percent: 0,
         error: validationError ?? undefined,
@@ -201,7 +205,8 @@ class UploadQueueStore {
       item.file,
       item.layoutMode,
       (percent) => this.patch(id, { percent }),
-      controller.signal
+      controller.signal,
+      item.notebookId
     )
       .then((doc) => {
         this.patch(id, { status: "processing", percent: 100, docId: doc.id })

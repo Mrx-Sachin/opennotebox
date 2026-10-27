@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import Dict, Optional, List
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated, Dict, Optional, List
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class UserCreate(BaseModel):
@@ -51,6 +51,7 @@ class DocumentResponse(BaseModel):
     title: str
     format: str
     file_size: int
+    notebook_id: Optional[int] = None
     num_pages: int
     processing_status: str
     original_url: Optional[str] = None
@@ -59,7 +60,150 @@ class DocumentResponse(BaseModel):
     last_read_page: Optional[int] = None
     last_read_position: Optional[float] = None
     last_read_at: Optional[datetime] = None
+    can_share: bool = False
+    is_shared: bool = False
+    shared_at: Optional[datetime] = None
+    shared_title: Optional[str] = None
+    author: Optional[str] = None
+    description: Optional[str] = None
+    topics: List[str] = Field(default_factory=list)
+    document_type: Optional[str] = None
+    language: Optional[str] = None
+    read_only: bool = False
     model_config = ConfigDict(from_attributes=True)
+
+
+class SharedDocumentUpdate(BaseModel):
+    """Publisher-owned metadata for a document in the public catalog."""
+
+    is_shared: bool
+    title: Optional[str] = Field(default=None, max_length=300)
+    author: Optional[str] = Field(default=None, max_length=240)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    topics: Optional[List[str]] = Field(default=None, max_length=8)
+    document_type: Optional[str] = Field(default=None, max_length=80)
+    language: Optional[str] = Field(default=None, max_length=32)
+
+    @field_validator("title", "document_type")
+    @classmethod
+    def require_nonblank_shared_metadata(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("Shared metadata must not be blank")
+        return trimmed
+
+    @field_validator("author", "description", "language")
+    @classmethod
+    def normalize_optional_shared_metadata(cls, value: Optional[str]) -> Optional[str]:
+        return value.strip() or None if value is not None else None
+
+    @field_validator("topics")
+    @classmethod
+    def normalize_topics(cls, values: Optional[List[str]]) -> Optional[List[str]]:
+        if values is None:
+            return None
+        normalized = []
+        seen = set()
+        for topic in values:
+            value = topic.strip().lower()
+            if not value:
+                continue
+            if len(value) > 40:
+                raise ValueError("Topics must be at most 40 characters")
+            if value not in seen:
+                normalized.append(value)
+                seen.add(value)
+        if len(normalized) > 8:
+            raise ValueError("At most 8 unique topics are allowed")
+        return normalized
+
+
+class SharedLibraryDocument(BaseModel):
+    id: int
+    title: str
+    author: Optional[str] = None
+    description: Optional[str] = None
+    topics: List[str] = Field(default_factory=list)
+    document_type: Optional[str] = None
+    language: Optional[str] = None
+    num_pages: int
+    file_size: int
+    shared_at: Optional[datetime] = None
+    added: bool
+    reason: Optional[str] = None
+
+
+class SharedLibraryResponse(BaseModel):
+    documents: List[SharedLibraryDocument]
+    total: int
+    topics: List[str]
+    document_types: List[str]
+
+
+class SharedLibraryAddRequest(BaseModel):
+    document_ids: List[Annotated[int, Field(ge=1)]] = Field(..., min_length=1, max_length=200)
+    notebook_id: Optional[int] = Field(default=None, ge=1)
+
+
+class SharedLibraryAddResponse(BaseModel):
+    added: int
+    already_added: int
+    document_ids: List[int]
+
+
+class NotebookCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=240)
+
+    @field_validator("name")
+    @classmethod
+    def trim_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Name must not be blank")
+        return value
+
+
+class NotebookUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=240)
+
+    @field_validator("name")
+    @classmethod
+    def trim_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Name must not be blank")
+        return value
+
+
+class NotebookResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    document_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class NotebookMoveDocumentsRequest(BaseModel):
+    document_ids: list[Annotated[int, Field(ge=1)]] = Field(..., min_length=1, max_length=200)
+    notebook_id: Optional[int] = Field(default=None, ge=1)
+
+
+class DocumentLibraryResponse(BaseModel):
+    documents: List[DocumentResponse]
+    total: int
+    library_total: int
+    reading_count: int
+    processing_count: int
+    failed_count: int
+    formats: Dict[str, int]
+    recent: List[DocumentResponse]
 
 
 class ReadingProgressIn(BaseModel):

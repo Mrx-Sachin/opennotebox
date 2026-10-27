@@ -17,7 +17,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.models.kg import KgEntity, KgRelationship, KgExtractionState
-from app.services.llm_semaphore import llm_semaphore
+from app.services.llm_semaphore import background_llm_semaphore
 
 # Chunking params for KG extraction (larger than chat retrieval chunks
 # to give the LLM enough context for meaningful entity relations).
@@ -97,7 +97,7 @@ async def _extract_abstract(
         f"{text}"
     )
     try:
-        async with llm_semaphore():
+        async with background_llm_semaphore():
             response = await model.ainvoke([HumanMessage(content=prompt)])
         return response.content.strip()
     except Exception as e:
@@ -120,7 +120,7 @@ async def _extract_triplets(
         "Output ONLY the JSON array, no explanation."
     )
     try:
-        async with llm_semaphore():
+        async with background_llm_semaphore():
             response = await model.ainvoke([HumanMessage(content=prompt)])
         content = response.content.strip()
 

@@ -14,6 +14,9 @@ from sqlalchemy import (
     DateTime,
     UniqueConstraint,
     Index,
+    text,
+    event,
+    inspect as sa_inspect,
 )
 from sqlalchemy.orm import relationship
 
@@ -32,18 +35,61 @@ class User(Base):
     is_admin = Column(Boolean(), nullable=False, default=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    documents = relationship("Document", back_populates="user", cascade="all, delete-orphan")
+    # Documents are reusable file assets. Deleting an account must remove its
+    # library membership, while leaving assets and their other members intact.
+    documents = relationship("Document", back_populates="user", foreign_keys="Document.user_id")
+    notebooks = relationship("Notebook", back_populates="user", cascade="all, delete-orphan")
     conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
+
+
+class Notebook(Base):
+    __tablename__ = "notebooks"
+    __table_args__ = (
+        Index(
+            "uq_notebooks_user_name_ci",
+            "user_id",
+            text("lower(name)"),
+            unique=True,
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(String(240), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    user = relationship("User", back_populates="notebooks")
+    documents = relationship("Document", back_populates="notebook")
 
 
 class Document(Base):
     __tablename__ = "documents"
     __table_args__ = (
         Index("ix_documents_user_id_created_at", "user_id", "created_at"),
+        Index(
+            "ix_documents_shared_catalog",
+            "is_shared",
+            "shared_at",
+            "id",
+        ),
+        Index("uq_documents_content_hash", "content_hash", unique=True),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=False)
+    notebook_id = Column(
+        Integer,
+        ForeignKey("notebooks.id", name="fk_documents_notebook_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     title = Column(Text, nullable=False)
     format = Column(String, nullable=False, index=True)
     file_path = Column(Text, nullable=False)
@@ -67,15 +113,132 @@ class Document(Base):
     last_read_position = Column(Float, nullable=True)
     last_read_at = Column(DateTime, nullable=True, index=True)
 
-    user = relationship("User", back_populates="documents")
+    # Shared-library identity and publisher-controlled discovery metadata.
+    content_hash = Column(String(64), nullable=True)
+    is_shared = Column(Boolean(), nullable=False, default=False, server_default=text("false"))
+    shared_at = Column(DateTime, nullable=True)
+    shared_title = Column(Text, nullable=True)
+    author = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
+    topics = Column(JSON, nullable=True)
+    document_type = Column(String(80), nullable=True)
+    language = Column(String(32), nullable=True)
+    shared_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    user = relationship("User", back_populates="documents", foreign_keys=[user_id])
+    notebook = relationship("Notebook", back_populates="documents")
+    library_entries = relationship("LibraryEntry", back_populates="document")
+    document_topics = relationship(
+        "DocumentTopic", back_populates="document", cascade="all, delete-orphan"
+    )
     extracted_texts = relationship("ExtractedText", back_populates="document", cascade="all, delete-orphan")
     summaries = relationship("Summary", back_populates="document", cascade="all, delete-orphan")
+
+
+class LibraryEntry(Base):
+    """A user's membership and private reading state for a reusable asset."""
+
+    __tablename__ = "library_entries"
+    __table_args__ = (
+        UniqueConstraint("user_id", "document_id", name="uq_library_entries_user_document"),
+        Index("ix_library_entries_user_notebook", "user_id", "notebook_id"),
+        Index("ix_library_entries_user_added", "user_id", "added_at", "document_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    notebook_id = Column(
+        Integer,
+        ForeignKey("notebooks.id", name="fk_library_entries_notebook_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    added_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    title = Column(Text, nullable=True)
+    original_url = Column(Text, nullable=True)
+    can_publish = Column(Boolean(), nullable=False, default=False, server_default=text("false"))
+    last_read_page = Column(Integer, nullable=True)
+    last_read_position = Column(Float, nullable=True)
+    last_read_at = Column(DateTime, nullable=True, index=True)
+
+    user = relationship("User")
+    document = relationship("Document", back_populates="library_entries")
+    notebook = relationship("Notebook")
+
+
+class DocumentTopic(Base):
+    """Normalized index of publisher topics for indexed catalog filtering."""
+
+    __tablename__ = "document_topics"
+    __table_args__ = (
+        Index("ix_document_topics_topic_document", "topic", "document_id"),
+    )
+
+    document_id = Column(
+        Integer,
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    topic = Column(String(40), primary_key=True)
+    document = relationship("Document", back_populates="document_topics")
+
+
+@event.listens_for(Document, "after_insert")
+def _create_uploader_library_entry(mapper, connection, target):
+    """Give every newly created uploaded asset its uploader membership."""
+    if target.user_id is None:
+        return
+    connection.execute(
+        LibraryEntry.__table__.insert().values(
+            user_id=target.user_id,
+            document_id=target.id,
+            notebook_id=target.notebook_id,
+            title=target.title,
+            original_url=target.original_url,
+            can_publish=True,
+            last_read_page=target.last_read_page,
+            last_read_position=target.last_read_position,
+            last_read_at=target.last_read_at,
+        )
+    )
+
+
+def _sync_document_topic_index(connection, target):
+    connection.execute(
+        DocumentTopic.__table__.delete().where(
+            DocumentTopic.__table__.c.document_id == target.id
+        )
+    )
+    topics = list(dict.fromkeys(
+        value.strip().lower()
+        for value in (target.topics or [])
+        if value and value.strip()
+    ))
+    if topics:
+        connection.execute(
+            DocumentTopic.__table__.insert(),
+            [{"document_id": target.id, "topic": value} for value in topics],
+        )
+
+
+@event.listens_for(Document, "after_insert")
+def _index_new_document_topics(mapper, connection, target):
+    _sync_document_topic_index(connection, target)
+
+
+@event.listens_for(Document, "after_update")
+def _reindex_changed_document_topics(mapper, connection, target):
+    if sa_inspect(target).attrs.topics.history.has_changes():
+        _sync_document_topic_index(connection, target)
 
 
 class ExtractedText(Base):
     __tablename__ = "extracted_text"
     __table_args__ = (
-        Index("ix_extracted_text_document_id_page_number", "document_id", "page_number"),
+        UniqueConstraint(
+            "document_id", "page_number", name="uq_extracted_text_document_page"
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -90,6 +253,25 @@ class ExtractedText(Base):
     document = relationship("Document", back_populates="extracted_texts")
 
 
+class EmbeddingBackfill(Base):
+    """Durable per-document state for background chunk embedding jobs."""
+
+    __tablename__ = "embedding_backfills"
+    __table_args__ = (
+        UniqueConstraint("document_id", name="uq_embedding_backfills_document"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    document_id = Column(
+        Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    status = Column(String(24), nullable=False, default="pending", index=True)
+    requested_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    error = Column(Text, nullable=True)
+
+
 class Summary(Base):
     __tablename__ = "summaries"
     __table_args__ = (
@@ -97,6 +279,7 @@ class Summary(Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     document_id = Column(Integer, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     mode = Column(String, nullable=False)
     page_number = Column(Integer, nullable=True, index=True)
@@ -121,6 +304,17 @@ class Summary(Base):
     status = Column(String, nullable=True)
 
     document = relationship("Document", back_populates="summaries")
+
+
+@event.listens_for(Summary, "before_insert")
+def _set_legacy_summary_owner(mapper, connection, target):
+    """Keep compatibility fixtures and old task callers user-scoped."""
+    if target.user_id is not None or not (target.content or "").strip():
+        return
+    target.user_id = connection.execute(
+        text("SELECT user_id FROM documents WHERE id = :document_id"),
+        {"document_id": target.document_id},
+    ).scalar_one_or_none()
 
 
 class Conversation(Base):

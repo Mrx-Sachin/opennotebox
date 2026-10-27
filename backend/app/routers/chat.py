@@ -3,11 +3,14 @@
 Uses the chat_engine service for RAG-powered answering with source citations.
 """
 import asyncio
+import json
 import time
 from collections import defaultdict, deque
+from contextlib import suppress
 from typing import Any, Coroutine, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlalchemy.orm import Session
 
@@ -21,6 +24,8 @@ from app.schemas import (
 )
 from app.routers.auth import get_current_user_from_token
 from app.services.chat_engine import chat_engine, OllamaUnreachableError
+from app.services.llm_semaphore import LLMAdmissionTimeout, LLMAdmissionUnavailable
+from app.services.library_access import accessible_document_query
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -57,6 +62,7 @@ def _check_chat_rate(user_id: int) -> None:
 # enough that a cancel feels immediate without adding meaningful overhead to
 # a call that already takes seconds.
 _DISCONNECT_POLL_SECONDS = 0.5
+_STREAM_KEEPALIVE_SECONDS = 15.0
 
 
 async def _run_cancellable(coro: Coroutine[Any, Any, Any], request: Request) -> Any:
@@ -95,8 +101,8 @@ def _get_user_id(user: User) -> int:
     return user.id
 
 
-def _assert_documents_owned(db: Session, user_id: int, doc_ids: List[int]) -> None:
-    """Reject a chat scope naming any document the caller does not own.
+def _assert_documents_accessible(db: Session, user_id: int, doc_ids: List[int]) -> None:
+    """Reject a chat scope naming any document outside the caller's library.
 
     document_ids arrive straight from the request body, and the RAG path
     downstream (services/chat_engine.py) loads documents and their extracted
@@ -111,13 +117,13 @@ def _assert_documents_owned(db: Session, user_id: int, doc_ids: List[int]) -> No
     """
     if not doc_ids:
         return
-    owned = {
+    accessible = {
         d.id
-        for d in db.query(Document.id)
-        .filter(Document.id.in_(doc_ids), Document.user_id == user_id)
+        for d in accessible_document_query(db, user_id)
+        .filter(Document.id.in_(doc_ids))
         .all()
     }
-    missing = [i for i in doc_ids if i not in owned]
+    missing = [i for i in doc_ids if i not in accessible]
     if missing:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -180,7 +186,7 @@ async def chat(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     doc_ids = message.document_ids or (conv.document_ids or [])
-    _assert_documents_owned(db, user_id, doc_ids)
+    _assert_documents_accessible(db, user_id, doc_ids)
     page_scope = message.page_scope or conv.page_scope
 
     # Save document scope to conversation if not already set
@@ -243,6 +249,8 @@ async def chat(
         # The message names the failing backend (e.g. "AI backend 'Grok' is
         # unreachable") so the user knows which one to start/fix.
         raise HTTPException(status_code=503, detail=str(e) or "AI backend is unreachable")
+    except (LLMAdmissionTimeout, LLMAdmissionUnavailable) as e:
+        raise HTTPException(status_code=503, detail=str(e))
     ai_content = result["content"]
     citations = result["citations"]
     token_count = result.get("token_count", 0)
@@ -264,6 +272,202 @@ async def chat(
         return ai_msg
     finally:
         db.close()
+
+
+@router.post("/sessions/{session_id}/messages/stream")
+async def chat_stream(
+    session_id: int,
+    message: ChatMessageCreate,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Send a chat message and stream generated text as server-sent events.
+
+    The user message is committed once before generation begins. The assistant
+    row is committed only after generation and citation filtering finish, so
+    completed streams have the same persisted shape as the legacy JSON route.
+    """
+    user_id = _get_user_id(user)
+    _check_chat_rate(user_id)
+
+    conv = db.query(Conversation).filter(
+        Conversation.id == session_id,
+        Conversation.user_id == user_id,
+    ).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    doc_ids = message.document_ids or (conv.document_ids or [])
+    _assert_documents_accessible(db, user_id, doc_ids)
+    page_scope = message.page_scope or conv.page_scope
+    if message.document_ids and not conv.document_ids:
+        conv.document_ids = message.document_ids
+    if message.page_scope and not conv.page_scope:
+        conv.page_scope = message.page_scope
+
+    user_msg = Message(
+        conversation_id=session_id,
+        role="user",
+        content=message.content,
+    )
+    db.add(user_msg)
+    db.commit()
+    db.refresh(user_msg)
+    user_msg_id = user_msg.id
+
+    prior = db.query(Message).filter(
+        Message.conversation_id == session_id,
+        Message.id < user_msg_id,
+    ).order_by(Message.id.desc()).limit(6).all()
+    history = [
+        {"role": item.role, "content": item.content} for item in reversed(prior)
+    ]
+    db.close()
+
+    async def event_stream():
+        token_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=32)
+
+        async def on_token(token: str) -> None:
+            await token_queue.put(token)
+
+        # Build the actual engine coroutine here so it can receive the async
+        # callback without invoking the model before the response is streamed.
+        if doc_ids:
+            answer_task = asyncio.create_task(
+                chat_engine.answer(
+                    question=message.content,
+                    doc_ids=doc_ids,
+                    page_scope=page_scope,
+                    history=history,
+                    user_id=user_id,
+                    rag_mode=message.rag_mode,
+                    on_token=on_token,
+                )
+            )
+        else:
+            answer_task = asyncio.create_task(
+                chat_engine.answer_general(
+                    question=message.content,
+                    history=history,
+                    user_id=user_id,
+                    on_token=on_token,
+                )
+            )
+
+        streamed_any = False
+        token_wait_task: asyncio.Task[str] | None = asyncio.create_task(
+            token_queue.get()
+        )
+        try:
+            yield _sse_event({"type": "status", "stage": "retrieving"})
+            while True:
+                done, _ = await asyncio.wait(
+                    {answer_task, token_wait_task},
+                    timeout=_STREAM_KEEPALIVE_SECONDS,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if token_wait_task in done:
+                    token = token_wait_task.result()
+                    streamed_any = True
+                    yield _sse_event({"type": "token", "content": token})
+                    token_wait_task = asyncio.create_task(token_queue.get())
+                    continue
+
+                if answer_task in done:
+                    # Stop the pending getter before draining the queue. If
+                    # queue.put woke it at the same time the answer completed,
+                    # preserve the token it already took before draining the rest.
+                    pending_token = None
+                    if token_wait_task is not None:
+                        if not token_wait_task.done():
+                            cancelled = token_wait_task.cancel()
+                            with suppress(asyncio.CancelledError, Exception):
+                                await token_wait_task
+                            if not cancelled and not token_wait_task.cancelled():
+                                pending_token = token_wait_task.result()
+                        elif not token_wait_task.cancelled():
+                            pending_token = token_wait_task.result()
+                        token_wait_task = None
+
+                    if pending_token is not None:
+                        streamed_any = True
+                        yield _sse_event({"type": "token", "content": pending_token})
+
+                    # The model can finish just after queueing several chunks.
+                    # Drain them before sending final metadata.
+                    while not token_queue.empty():
+                        token = token_queue.get_nowait()
+                        streamed_any = True
+                        yield _sse_event({"type": "token", "content": token})
+                    break
+
+                # Keep intermediaries from considering slow retrieval and
+                # model startup an idle connection.
+                yield ": keep-alive\n\n"
+
+            result = await answer_task
+            if not streamed_any and result["content"]:
+                yield _sse_event({"type": "token", "content": result["content"]})
+
+            session = SessionLocal()
+            try:
+                ai_msg = Message(
+                    conversation_id=session_id,
+                    role="assistant",
+                    content=result["content"],
+                    citations=result["citations"],
+                    token_count=result.get("token_count", 0),
+                )
+                session.add(ai_msg)
+                session.commit()
+                session.refresh(ai_msg)
+                final_message = {
+                    "id": ai_msg.id,
+                    "conversation_id": ai_msg.conversation_id,
+                    "role": ai_msg.role,
+                    "content": ai_msg.content,
+                    "citations": ai_msg.citations,
+                    "token_count": ai_msg.token_count,
+                }
+            finally:
+                session.close()
+            yield _sse_event({"type": "final", "message": final_message})
+        except asyncio.CancelledError:
+            answer_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await answer_task
+            logger.info(f"Chat stream {user_msg_id} cancelled by client disconnect")
+            raise
+        except (LLMAdmissionTimeout, LLMAdmissionUnavailable) as e:
+            yield _sse_event({"type": "error", "detail": str(e)})
+        except OllamaUnreachableError as e:
+            yield _sse_event({"type": "error", "detail": str(e) or "AI backend is unreachable"})
+        except Exception as e:
+            logger.exception(f"Chat stream {user_msg_id} failed: {e}")
+            yield _sse_event({"type": "error", "detail": str(e) or "Chat failed"})
+        finally:
+            if token_wait_task is not None and not token_wait_task.done():
+                token_wait_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await token_wait_task
+            if not answer_task.done():
+                answer_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await answer_task
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _sse_event(event: dict) -> str:
+    """Encode one event using the JSON data field of server-sent events."""
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 @router.get("/sessions/{session_id}/messages", response_model=List[MessageResponse])
@@ -305,7 +509,7 @@ def update_scope(
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     if scope.document_ids:
-        _assert_documents_owned(db, user_id, scope.document_ids)
+        _assert_documents_accessible(db, user_id, scope.document_ids)
         conv.document_ids = scope.document_ids
     if scope.page_scope:
         conv.page_scope = scope.page_scope

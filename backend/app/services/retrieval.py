@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import re
 import struct
-import threading
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import httpx
 from loguru import logger
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import text as sql
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -47,17 +47,45 @@ _SCHEMA = [
         tsvectors TSVECTOR GENERATED ALWAYS AS (
             to_tsvector('english', COALESCE(text, ''))
         ) STORED,
-        emb BYTEA
+        emb BYTEA,
+        CONSTRAINT uq_chunk_document_page_index
+            UNIQUE(document_id, page_number, chunk_index)
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_chunk_doc ON chunk(document_id, page_number, chunk_index)",
     "CREATE INDEX IF NOT EXISTS idx_chunk_fts ON chunk USING GIN(tsvectors)",
 ]
 
+_SQLITE_SCHEMA = [
+    """
+    CREATE TABLE IF NOT EXISTS chunk (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_id INTEGER NOT NULL,
+        page_number INTEGER NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        text TEXT NOT NULL,
+        emb BLOB,
+        UNIQUE(document_id, page_number, chunk_index)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_chunk_doc ON chunk(document_id, page_number, chunk_index)",
+]
+
 
 def ensure_schema(db: Session) -> None:
-    for stmt in _SCHEMA:
+    schema = _SQLITE_SCHEMA if db.bind.dialect.name == "sqlite" else _SCHEMA
+    for stmt in schema:
         db.execute(sql(stmt))
+    db.execute(
+        sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_chunk_document_page_index "
+            "ON chunk(document_id, page_number, chunk_index)"
+        )
+    )
+    if db.bind.dialect.name == "postgresql":
+        db.execute(
+            sql("CREATE INDEX IF NOT EXISTS idx_chunk_fts ON chunk USING GIN(tsvectors)")
+        )
     db.commit()
 
 
@@ -215,6 +243,72 @@ def _unpack(blob: bytes) -> List[float]:
     return list(struct.unpack(f"{len(blob) // 4}f", blob))
 
 
+def _vector_literal(vector: Sequence[float]) -> str:
+    return "[" + ",".join(format(value, ".9g") for value in vector) + "]"
+
+
+def _has_vector_column(db: Session) -> bool:
+    if db.bind is None or db.bind.dialect.name != "postgresql":
+        return False
+    try:
+        return bool(
+            db.execute(
+                sql(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_name = 'chunk' AND column_name = 'embedding')"
+                )
+            ).scalar()
+        )
+    except Exception:
+        return False
+
+
+def _acquire_document_lock(
+    db: Session, namespace: int, doc_id: int
+) -> tuple[bool, Optional[Connection]]:
+    """Pin a PostgreSQL session lock to a dedicated connection."""
+    if db.bind is None or db.bind.dialect.name != "postgresql":
+        return True, None
+
+    connection = db.get_bind().connect()
+    try:
+        acquired = bool(
+            connection.execute(
+                sql("SELECT pg_try_advisory_lock(:namespace, :doc_id)"),
+                {"namespace": namespace, "doc_id": doc_id},
+            ).scalar()
+        )
+        connection.commit()
+        if acquired:
+            return True, connection
+    except Exception:
+        connection.invalidate()
+        connection.close()
+        raise
+
+    connection.close()
+    return False, None
+
+
+def _release_document_lock(
+    connection: Optional[Connection], namespace: int, doc_id: int
+) -> None:
+    if connection is None:
+        return
+    try:
+        connection.execute(
+            sql("SELECT pg_advisory_unlock(:namespace, :doc_id)"),
+            {"namespace": namespace, "doc_id": doc_id},
+        )
+        connection.commit()
+    except Exception:
+        connection.invalidate()
+        raise
+    finally:
+        connection.close()
+
+
 def list_unembedded_chunk_ids(
     db: Session, doc_id: int, *, limit: int = 64
 ) -> List[int]:
@@ -262,15 +356,25 @@ def ensure_embeddings(
         ).all()
     if not rows:
         return True
+    vector_column = _has_vector_column(db)
     try:
         for start in range(0, len(rows), EMBED_BATCH):
             batch = rows[start:start + EMBED_BATCH]
             vectors = embed_texts([r[1] for r in batch])
             for (cid, _), vec in zip(batch, vectors):
-                db.execute(
-                    sql("UPDATE chunk SET emb = :e WHERE id = :i"),
-                    {"e": _pack(vec), "i": cid},
-                )
+                if vector_column:
+                    db.execute(
+                        sql(
+                            "UPDATE chunk SET emb = :e, embedding = CAST(:v AS vector) "
+                            "WHERE id = :i AND emb IS NULL"
+                        ),
+                        {"e": _pack(vec), "v": _vector_literal(vec), "i": cid},
+                    )
+                else:
+                    db.execute(
+                        sql("UPDATE chunk SET emb = :e WHERE id = :i AND emb IS NULL"),
+                        {"e": _pack(vec), "i": cid},
+                    )
             db.commit()
         logger.info(
             f"Embedded {len(rows)} chunks for doc {doc_id}"
@@ -283,33 +387,123 @@ def ensure_embeddings(
         return False
 
 
-def _background_embed_docs(doc_ids: Iterable[int]) -> None:
-    """Fill remaining null embeddings after the request path has returned."""
+def schedule_full_embeddings(doc_ids: Sequence[int]) -> None:
+    """Queue at most one durable backfill job per document."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+    from sqlalchemy.exc import IntegrityError
+
     from app.database import SessionLocal
+    from app.models import EmbeddingBackfill
+    from app.tasks.embedding_tasks import embed_document_chunks
+
+    ids = list(dict.fromkeys(int(doc_id) for doc_id in doc_ids))
+    if not ids:
+        return
 
     db = SessionLocal()
     try:
-        for doc_id in doc_ids:
+        for doc_id in ids:
+            acquired, lock_connection = _acquire_document_lock(
+                db, namespace=2030402, doc_id=doc_id
+            )
+            if not acquired:
+                continue
+
             try:
-                ensure_embeddings(db, doc_id)
+                missing = db.execute(
+                    sql(
+                        "SELECT 1 FROM chunk WHERE document_id = :d "
+                        "AND emb IS NULL LIMIT 1"
+                    ),
+                    {"d": doc_id},
+                ).first()
+                job = (
+                    db.query(EmbeddingBackfill)
+                    .filter(EmbeddingBackfill.document_id == doc_id)
+                    .with_for_update()
+                    .first()
+                )
+                if not missing:
+                    if job and job.status not in {"running", "completed"}:
+                        job.status = "completed"
+                        job.completed_at = datetime.now(timezone.utc)
+                        job.error = None
+                        db.commit()
+                    continue
+
+                now = datetime.now(timezone.utc)
+                if job and job.status in {"queued", "running"}:
+                    # A queued message that never reached a worker can be
+                    # recovered on a later chat request. Active jobs are left
+                    # alone, including Celery redeliveries after worker loss.
+                    requested_at = job.requested_at
+                    if requested_at and requested_at.tzinfo is None:
+                        requested_at = requested_at.replace(tzinfo=timezone.utc)
+                    stale_queue = (
+                        job.status == "queued"
+                        and job.started_at is None
+                        and requested_at is not None
+                        and now - requested_at
+                        > timedelta(minutes=30)
+                    )
+                    if not stale_queue:
+                        continue
+
+                if job is None:
+                    job = EmbeddingBackfill(
+                        document_id=doc_id,
+                        status="pending",
+                        requested_at=now,
+                    )
+                    db.add(job)
+                    try:
+                        db.flush()
+                    except IntegrityError:
+                        db.rollback()
+                        continue
+                else:
+                    job.status = "pending"
+                    job.requested_at = now
+                    job.started_at = None
+                    job.completed_at = None
+                    job.error = None
+                db.commit()
+
+                try:
+                    embed_document_chunks.apply_async(
+                        args=(doc_id, job.id),
+                        task_id=f"embedding-backfill-{job.id}",
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Could not queue embedding backfill for doc {doc_id}: {e}"
+                    )
+                    continue
+
+                db.execute(
+                    update(EmbeddingBackfill)
+                    .where(
+                        EmbeddingBackfill.id == job.id,
+                        EmbeddingBackfill.status == "pending",
+                    )
+                    .values(status="queued")
+                )
+                db.commit()
             except Exception as e:
-                logger.warning(f"Background embed for doc {doc_id} failed: {e}")
+                db.rollback()
+                logger.warning(f"Could not schedule embedding backfill for doc {doc_id}: {e}")
+            finally:
+                try:
+                    _release_document_lock(lock_connection, 2030402, doc_id)
+                except Exception as e:
+                    db.rollback()
+                    logger.warning(
+                        f"Could not release scheduling lock for doc {doc_id}: {e}"
+                    )
     finally:
         db.close()
-
-
-def schedule_full_embeddings(doc_ids: Sequence[int]) -> None:
-    """Fire-and-forget full-document embed after a scoped first pass."""
-    ids = [int(d) for d in doc_ids]
-    if not ids:
-        return
-    t = threading.Thread(
-        target=_background_embed_docs,
-        args=(ids,),
-        name="chunk-embed-backfill",
-        daemon=True,
-    )
-    t.start()
 
 
 def semantic_search(
@@ -321,6 +515,8 @@ def semantic_search(
     plus rewritten phrasings) - reformulations often land far closer to the
     relevant passage than the user's own wording.
     """
+    if not doc_ids or not queries:
+        return []
     try:
         query_vecs = embed_texts(queries, is_query=True)
     except Exception as e:
@@ -328,37 +524,89 @@ def semantic_search(
         return []
 
     placeholders = ",".join(f":doc{i}" for i in range(len(doc_ids)))
-    rows = db.execute(
-        sql(
-            f"SELECT id, document_id, page_number, chunk_index, text, emb "
-            f"FROM chunk WHERE document_id IN ({placeholders}) AND emb IS NOT NULL"
-        ),
-        {f"doc{i}": d for i, d in enumerate(doc_ids)},
-    ).all()
+    params_docs = {f"doc{i}": d for i, d in enumerate(doc_ids)}
+    scored_by_id: Dict[int, Dict] = {}
+    query_order: List[List[int]] = [[] for _ in query_vecs]
+    used_vector_search = False
 
-    scored = []
-    for cid, did, page, idx, chunk_text, blob in rows:
-        vec = _unpack(blob)
-        sims = [sum(a * b for a, b in zip(qv, vec)) for qv in query_vecs]
-        scored.append(
-            {
+    if _has_vector_column(db):
+        try:
+            candidate_limit = max(top_k, 4)
+            for query_index, query_vec in enumerate(query_vecs):
+                rows = db.execute(
+                    sql(
+                        f"SELECT id, document_id, page_number, chunk_index, text, "
+                        f"embedding <=> CAST(:q AS vector) AS distance "
+                        f"FROM chunk WHERE document_id IN ({placeholders}) "
+                        f"AND embedding IS NOT NULL "
+                        f"ORDER BY embedding <=> CAST(:q AS vector) LIMIT :k"
+                    ),
+                    {
+                        "q": _vector_literal(query_vec),
+                        "k": candidate_limit,
+                        **params_docs,
+                    },
+                ).all()
+                for cid, did, page, idx, chunk_text, distance in rows:
+                    hit = scored_by_id.setdefault(
+                        int(cid),
+                        {
+                            "chunk_id": cid,
+                            "doc_id": did,
+                            "page": page,
+                            "chunk_index": idx,
+                            "text": chunk_text,
+                            "snippet": chunk_text[:300],
+                            "sims": [float("-inf")] * len(query_vecs),
+                        },
+                    )
+                    hit["sims"][query_index] = 1.0 - float(distance)
+                    query_order[query_index].append(int(cid))
+            for hit in scored_by_id.values():
+                hit["score"] = -max(hit["sims"])
+            used_vector_search = bool(scored_by_id)
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"pgvector search failed ({e}); using BYTEA fallback")
+            scored_by_id.clear()
+            query_order = [[] for _ in query_vecs]
+
+    if not scored_by_id:
+        rows = db.execute(
+            sql(
+                f"SELECT id, document_id, page_number, chunk_index, text, emb "
+                f"FROM chunk WHERE document_id IN ({placeholders}) AND emb IS NOT NULL"
+            ),
+            params_docs,
+        ).all()
+        for cid, did, page, idx, chunk_text, blob in rows:
+            vec = _unpack(blob)
+            sims = [sum(a * b for a, b in zip(qv, vec)) for qv in query_vecs]
+            scored_by_id[int(cid)] = {
                 "chunk_id": cid,
                 "doc_id": did,
                 "page": page,
                 "chunk_index": idx,
                 "text": chunk_text,
-                "score": -max(sims),  # negative like bm25: lower = better
+                "score": -max(sims),
                 "snippet": chunk_text[:300],
                 "sims": sims,
             }
-        )
+            for query_index in range(len(query_vecs)):
+                query_order[query_index].append(int(cid))
+
+    scored = list(scored_by_id.values())
 
     # Per-query quotas: guarantee each query contributes its own best hits,
     # so one query's dense neighborhood can't crowd the others out of top_k.
     quota = 4
     selected: Dict[int, Dict] = {}
     for qi in range(len(query_vecs)):
-        for rank, h in enumerate(sorted(scored, key=lambda h: -h["sims"][qi])[:quota]):
+        if used_vector_search and query_order[qi]:
+            query_hits = [scored_by_id[cid] for cid in query_order[qi]]
+        else:
+            query_hits = sorted(scored, key=lambda h: -h["sims"][qi])
+        for rank, h in enumerate(query_hits[:quota]):
             if rank == 0:
                 # Each query's best hit is must-keep downstream: the answer
                 # engine feeds these to the LLM even if its reranker balks.
@@ -376,7 +624,7 @@ def semantic_search(
     terms = set()
     for q in queries:
         terms.update(_content_terms(q))
-    if terms:
+    if terms and db.bind is not None and db.bind.dialect.name == "postgresql":
         # Build a tsquery from terms for highlighting.
         match = " & ".join(f"'{t}'" for t in terms)
         for h in top:
@@ -428,6 +676,72 @@ def _query_tiers(phrase: str) -> List[str]:
     return tiers
 
 
+def _search_sqlite_fallback(
+    db: Session, doc_ids: List[int], phrases: List[str], top_k: int
+) -> List[Dict]:
+    """Small lexical fallback used by SQLite deployments and hermetic tests."""
+    if not doc_ids:
+        return []
+    placeholders = ",".join(f":doc{i}" for i in range(len(doc_ids)))
+    rows = db.execute(
+        sql(
+            f"SELECT id, document_id, page_number, chunk_index, text FROM chunk "
+            f"WHERE document_id IN ({placeholders})"
+        ),
+        {f"doc{i}": doc_id for i, doc_id in enumerate(doc_ids)},
+    ).all()
+    best: Dict[int, Dict] = {}
+    for phrase in phrases:
+        terms = _content_terms(phrase)
+        if not terms:
+            continue
+        normalized_phrase = " ".join(phrase.lower().split())
+        for cid, doc_id, page, chunk_index, chunk_text in rows:
+            lowered = chunk_text.lower()
+            matches = sum(term in lowered for term in terms)
+            if not matches:
+                continue
+            exact = normalized_phrase in " ".join(lowered.split())
+            tier = 0 if exact else (1 if matches == len(terms) else 2)
+            rank = (tier, -matches)
+            if cid not in best or rank < best[cid]["rank"]:
+                best[cid] = {
+                    "chunk_id": cid,
+                    "doc_id": doc_id,
+                    "page": page,
+                    "chunk_index": chunk_index,
+                    "text": chunk_text,
+                    "score": -matches,
+                    "snippet": chunk_text[:300],
+                    "rank": rank,
+                }
+
+    hits = sorted(best.values(), key=lambda hit: hit["rank"])[:top_k]
+    taken = {hit["chunk_id"] for hit in hits}
+    for hit in hits[:2]:
+        neighbor = db.execute(
+            sql(
+                "SELECT id, text FROM chunk WHERE document_id = :d "
+                "AND page_number = :p AND chunk_index = :i"
+            ),
+            {
+                "d": hit["doc_id"],
+                "p": hit["page"],
+                "i": hit["chunk_index"] + 1,
+            },
+        ).first()
+        if (
+            neighbor
+            and neighbor[0] not in taken
+            and len(hit["text"]) + len(neighbor[1]) <= MAX_CHARS * 2
+        ):
+            hit["text"] = f"{hit['text']}\n\n{neighbor[1]}"
+            taken.add(neighbor[0])
+    for hit in hits:
+        del hit["rank"]
+    return hits
+
+
 def search(
     db: Session,
     doc_ids: List[int],
@@ -440,6 +754,10 @@ def search(
     relevance (lowest score first), with up to one neighboring chunk
     merged into each of the two strongest hits for continuity.
     """
+    if db.bind is not None and db.bind.dialect.name == "sqlite":
+        return _search_sqlite_fallback(db, doc_ids, phrases, top_k)
+    if not doc_ids:
+        return []
     placeholders = ",".join(f":doc{i}" for i in range(len(doc_ids)))
     params_docs = {f"doc{i}": d for i, d in enumerate(doc_ids)}
 

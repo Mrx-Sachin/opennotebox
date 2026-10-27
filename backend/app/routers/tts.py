@@ -15,11 +15,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.database import get_db, SessionLocal
-from app.models import User, Document, Summary, TTSCache
+from app.models import User, Summary, TTSCache
 from app.routers.auth import get_current_user_from_token
 from app.config import settings
 from app.services.llm_settings import get_default_voice
 from app.services.markdown_strip import strip_markdown
+from app.services.library_access import get_document_for_user
 from app.tasks.tts_tasks import generate_tts as generate_tts_task, _wav_duration
 
 router = APIRouter(prefix="/api/tts", tags=["tts"])
@@ -151,12 +152,10 @@ def list_voices():
 
 
 @router.post("/release-gpu")
-async def release_gpu():
-    """Proxy to the TTS service's own /release-gpu (see tts/main.py) - the
-    frontend has no route to that service directly, only through this API.
-    Best-effort: the frontend fires this from a beforeunload/visibilitychange
-    handler and doesn't wait on the result, so a slow or failed TTS service
-    should never surface as an error to a user who is already leaving."""
+async def release_gpu(user: User = Depends(get_current_user_from_token)):
+    """Let an administrator explicitly release the shared synthesis engine."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Administrator access required")
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             await client.post(f"{settings.piper_tts_url}/release-gpu")
@@ -473,14 +472,15 @@ def play_summary(
     otherwise read the literal symbols aloud ("hash hash", "star star"), so
     the text is stripped to plain speakable text before hashing/synthesis.
     """
-    summary = db.query(Summary).filter(Summary.id == summary_id).first()
+    summary = db.query(Summary).filter(
+        Summary.id == summary_id,
+        Summary.user_id == user.id,
+        Summary.content != "",
+    ).first()
     if not summary:
         raise HTTPException(status_code=404, detail="Summary not found")
 
-    doc = db.query(Document).filter(
-        Document.id == summary.document_id,
-        Document.user_id == user.id,
-    ).first()
+    doc = get_document_for_user(db, user.id, summary.document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -504,7 +504,11 @@ def get_audio(
         TTSCache.user_id == user.id,
     ).first()
 
-    if not cache or not cache.audio_path:
+    if (
+        not cache
+        or not cache.audio_path
+        or (cache.document_id is not None and not get_document_for_user(db, user.id, cache.document_id))
+    ):
         raise HTTPException(status_code=404, detail="Audio not found")
 
     if not os.path.exists(cache.audio_path):
@@ -534,17 +538,16 @@ def play_page(
     mangling genuine content, e.g. a page discussing '#' or '*' characters)."""
     from app.models import ExtractedText
 
+    doc = get_document_for_user(db, user.id, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document or page not found")
+
     page = db.query(ExtractedText).filter(
         ExtractedText.document_id == doc_id,
         ExtractedText.page_number == page_num,
     ).first()
 
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user.id,
-    ).first()
-
-    if not doc or not page:
+    if not page:
         raise HTTPException(status_code=404, detail="Document or page not found")
 
     resolved_voice = voice or get_default_voice(user.id)
@@ -563,7 +566,12 @@ def check_cache(
         TTSCache.user_id == user.id,
     ).first()
 
-    if not cache or not cache.audio_path or not os.path.exists(cache.audio_path):
+    if (
+        not cache
+        or not cache.audio_path
+        or not os.path.exists(cache.audio_path)
+        or (cache.document_id is not None and not get_document_for_user(db, user.id, cache.document_id))
+    ):
         return {"status": "generating"}
 
     return {

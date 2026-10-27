@@ -19,6 +19,7 @@ from app.models import Document, ExtractedText
 from app.models.kg import KgExtractionState
 from app.services.kg_builder import build_kg_for_document
 from app.services.llm_settings import get_active_llm
+from app.services.library_access import accessible_document_query
 from app.tasks.shared import run_async
 
 # Many chunks * two LLM calls each against a single-GPU backend. Mirror the
@@ -48,6 +49,19 @@ def build_kg_document(self, doc_id: int, user_id: Optional[int] = None) -> dict:
         if not doc:
             raise ValueError(f"Document {doc_id} not found")
 
+        requester_id = user_id if user_id is not None else doc.user_id
+        if requester_id is None or not accessible_document_query(db, requester_id).filter(
+            Document.id == doc_id
+        ).first():
+            state = db.query(KgExtractionState).filter(
+                KgExtractionState.document_id == doc_id
+            ).first()
+            if state:
+                state.status = "failed"
+                state.error_message = "Requesting user no longer has library access"
+                db.commit()
+            return {"doc_id": doc_id, "status": "not_accessible"}
+
         pages = db.query(ExtractedText).filter(
             ExtractedText.document_id == doc_id
         ).order_by(ExtractedText.page_number).all()
@@ -62,7 +76,7 @@ def build_kg_document(self, doc_id: int, user_id: Optional[int] = None) -> dict:
             f"[Page {p.page_number}]\n{p.content}" for p in pages if p.content
         )
 
-        active = get_active_llm(user_id or doc.user_id)
+        active = get_active_llm(requester_id)
         result = run_async(
             build_kg_for_document(
                 db,

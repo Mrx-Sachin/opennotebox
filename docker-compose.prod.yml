@@ -1,0 +1,57 @@
+# Immutable-image deployment overlay. Set each *_IMAGE variable to a
+# repository@sha256:digest reference. Requires Docker Compose v2.24.4 for
+# !reset and !override.
+services:
+  traefik:
+    image: ${TRAEFIK_IMAGE:?Set TRAEFIK_IMAGE to a digest-pinned image}
+
+  postgres:
+    image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE to a digest-pinned pgvector PostgreSQL 16 image}
+
+  redis:
+    image: ${REDIS_IMAGE:?Set REDIS_IMAGE to a digest-pinned Redis image}
+
+  api:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to a digest-pinned backend image}
+    build: !reset null
+    volumes: !override
+      - app_data:/app/data
+      - app_exports:/app/exports
+
+  worker:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to a digest-pinned backend image}
+    build: !reset null
+    volumes: !override
+      - app_data:/app/data
+      - app_exports:/app/exports
+
+  worker-tts:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to a digest-pinned backend image}
+    build: !reset null
+    volumes: !override
+      - app_data:/app/data
+
+  beat:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to a digest-pinned backend image}
+    build: !reset null
+    volumes: !override
+      - app_data:/app/data
+      - app_exports:/app/exports
+
+  frontend:
+    image: ${FRONTEND_IMAGE:?Set FRONTEND_IMAGE to a digest-pinned frontend image}
+    build: !reset null
+
+  tts:
+    image: ${TTS_IMAGE:?Set TTS_IMAGE to a digest-pinned TTS image}
+    build: !reset null
+
+  omniroute-bridge:
+    image: ${BACKEND_IMAGE:?Set BACKEND_IMAGE to a digest-pinned backend image}
+    volumes: !override []
+    entrypoint: ["python", "/opt/omniroute_bridge.py"]
+    command: !override []
+
+volumes:
+  app_data:
+  app_exports:

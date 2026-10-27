@@ -22,15 +22,13 @@ from app.models.kg import KgEntity, KgRelationship, KgExtractionState
 from app.routers.auth import get_current_user_from_token
 from app.services.kg_builder import get_extraction_status
 from app.services.kg_retrieval import retrieve_from_graph
+from app.services.library_access import get_document_for_user
 
 router = APIRouter(prefix="/api/documents/{doc_id}/kg", tags=["knowledge-graph"])
 
 
 def _assert_document_owned(db: Session, user_id: int, doc_id: int) -> Document:
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user_id,
-    ).first()
+    doc = get_document_for_user(db, user_id, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return doc

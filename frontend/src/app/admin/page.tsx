@@ -1,60 +1,279 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { useRouter } from "next/navigation"
-import TopBar from "@/components/layout/TopBar"
-import Sidebar from "@/components/layout/Sidebar"
-import { listUsers, deleteUser, updateUser, User, getMe } from "@/services/api"
-import { useReader } from "@/stores/reader"
+import Link from "next/link"
+import {
+  Shield,
+  Users,
+  UserX,
+  AlertCircle,
+  Loader2,
+  Trash2,
+  Plus,
+  RefreshCw,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  HardDrive,
+  BookOpen,
+  ArrowLeft,
+  LogOut,
+  Settings,
+  UserPlus,
+  X,
+} from "lucide-react"
+import { getUserStats, deleteUser, updateUser, adminCreateUser, getMe, UserStats } from "@/services/api"
 import { useAuth } from "@/stores/auth"
-import { Shield, Users, UserX, AlertCircle, CheckCircle, Loader2, Trash2, Plus, RefreshCw } from "lucide-react"
 
-interface UserRowProps {
-  user: User
-  onToggleAdmin: (userId: number, currentAdmin: boolean) => void
-  onDelete: (userId: number) => void
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B"
+  const units = ["B", "KB", "MB", "GB"]
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  const value = bytes / Math.pow(1024, i)
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[i]}`
 }
 
-function UserRow({ user, onToggleAdmin, onDelete }: UserRowProps) {
+function formatDate(iso: string | null): string {
+  if (!iso) return "-"
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+}
+
+interface UserCardProps {
+  user: UserStats
+  onToggleAdmin: (userId: number, currentAdmin: boolean) => void
+  onDelete: (userId: number) => void
+  processing: boolean
+}
+
+function UserCard({ user, onToggleAdmin, onDelete, processing }: UserCardProps) {
+  const [expanded, setExpanded] = useState(false)
+
   return (
-    <div className="flex items-center justify-between rounded-lg border border-surface bg-panel p-3 hover:bg-surface/50">
-      <div className="flex items-center gap-3">
-        <div className={`flex h-10 w-10 items-center justify-center rounded-full ${user.is_admin ? "bg-indigo/20 text-indigo" : "bg-surface text-cream-dim"}`}>
-          {user.is_admin ? <Shield className="h-5 w-5" /> : <Users className="h-5 w-5" />}
+    <div className="rounded-xl border border-surface/80 bg-panel/60 transition-colors hover:border-surface">
+      {/* User header row */}
+      <div className="flex items-center gap-3 px-5 py-4">
+        {/* Avatar */}
+        <div
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${
+            user.is_admin
+              ? "bg-indigo/15 text-indigo"
+              : "bg-surface text-cream-dim"
+          }`}
+        >
+          {user.username[0].toUpperCase()}
         </div>
-        <div>
+
+        {/* Name + meta */}
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="font-medium text-cream">{user.username}</span>
+            <span className="truncate font-medium text-cream">{user.username}</span>
             {user.is_admin && (
-              <span className="rounded-full bg-indigo/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo">
+              <span className="shrink-0 rounded bg-indigo/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-indigo">
                 Admin
               </span>
             )}
           </div>
-          <div className="text-xs text-cream-dim">
-            ID: {user.id} · Joined: {new Date(user.created_at).toLocaleDateString()}
+          <div className="mt-0.5 text-xs text-cream-dim">
+            Joined {formatDate(user.created_at)}
           </div>
         </div>
+
+        {/* Stats pills */}
+        <div className="hidden items-center gap-3 sm:flex">
+          <div className="flex items-center gap-1.5 rounded-md bg-surface/60 px-2.5 py-1.5">
+            <FileText className="h-3.5 w-3.5 text-cream-dim" />
+            <span className="text-xs font-medium text-cream">{user.doc_count}</span>
+            <span className="text-xs text-cream-dim">docs</span>
+          </div>
+          <div className="flex items-center gap-1.5 rounded-md bg-surface/60 px-2.5 py-1.5">
+            <HardDrive className="h-3.5 w-3.5 text-cream-dim" />
+            <span className="text-xs font-medium text-cream">{formatBytes(user.total_bytes)}</span>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center gap-1.5">
+          {user.doc_count > 0 && (
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs text-cream-dim transition-colors hover:bg-surface hover:text-cream"
+            >
+              {expanded ? (
+                <ChevronDown className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5" />
+              )}
+              <span className="hidden sm:inline">Files</span>
+            </button>
+          )}
+          <button
+            onClick={() => onToggleAdmin(user.id, user.is_admin)}
+            disabled={processing}
+            className={`flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
+              user.is_admin
+                ? "text-cream-dim hover:bg-surface hover:text-cream"
+                : "bg-indigo/15 text-indigo hover:bg-indigo/25"
+            }`}
+          >
+            {user.is_admin ? (
+              <UserX className="h-3.5 w-3.5" />
+            ) : (
+              <Plus className="h-3.5 w-3.5" />
+            )}
+            {user.is_admin ? "Revoke" : "Promote"}
+          </button>
+          <button
+            onClick={() => onDelete(user.id)}
+            disabled={processing}
+            className="flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium text-rust/80 transition-colors hover:bg-rust/10 hover:text-rust disabled:opacity-50"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Delete</span>
+          </button>
+        </div>
       </div>
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => onToggleAdmin(user.id, user.is_admin)}
-          className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-            user.is_admin
-              ? "bg-void text-cream hover:bg-surface"
-              : "bg-indigo text-white hover:bg-indigo/80"
-          }`}
-        >
-          {user.is_admin ? <UserX className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
-          {user.is_admin ? "Revoke" : "Promote"}
-        </button>
-        <button
-          onClick={() => onDelete(user.id)}
-          className="flex items-center gap-1.5 rounded-md bg-[#ef4444]/10 px-3 py-1.5 text-xs font-medium text-[#ef4444] transition-colors hover:bg-[#ef4444]/20"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-          Delete
-        </button>
+
+      {/* Mobile stats (visible below sm breakpoint) */}
+      <div className="flex items-center gap-3 border-t border-surface/40 px-5 py-2.5 sm:hidden">
+        <div className="flex items-center gap-1.5">
+          <FileText className="h-3.5 w-3.5 text-cream-dim" />
+          <span className="text-xs text-cream">{user.doc_count} docs</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <HardDrive className="h-3.5 w-3.5 text-cream-dim" />
+          <span className="text-xs text-cream">{formatBytes(user.total_bytes)}</span>
+        </div>
+      </div>
+
+      {/* Expanded document list */}
+      {expanded && user.documents.length > 0 && (
+        <div className="border-t border-surface/40">
+          <div className="px-5 py-2">
+            <div className="grid grid-cols-[1fr_auto_auto_auto] gap-x-4 gap-y-0 text-[11px] font-medium uppercase tracking-wider text-cream-dim/60">
+              <span className="py-1.5">Document</span>
+              <span className="py-1.5 text-right">Pages</span>
+              <span className="py-1.5 text-right">Size</span>
+              <span className="py-1.5 text-right">Uploaded</span>
+            </div>
+            {user.documents.map((doc) => (
+              <div
+                key={doc.id}
+                className="grid grid-cols-[1fr_auto_auto_auto] gap-x-4 border-t border-surface/20 py-2 text-xs"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <FileText className="h-3.5 w-3.5 shrink-0 text-indigo/60" />
+                  <span className="truncate text-cream/90">{doc.title}</span>
+                  {doc.processing_status !== "completed" && (
+                    <span className="shrink-0 rounded bg-yellow-500/15 px-1.5 py-0.5 text-[10px] text-yellow-500">
+                      {doc.processing_status}
+                    </span>
+                  )}
+                </div>
+                <span className="text-right tabular-nums text-cream-dim">{doc.num_pages || "-"}</span>
+                <span className="text-right tabular-nums text-cream-dim">{formatBytes(doc.file_size)}</span>
+                <span className="text-right text-cream-dim">{formatDate(doc.created_at)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CreateUserModal({
+  onClose,
+  onCreate,
+}: {
+  onClose: () => void
+  onCreate: (username: string, password: string) => Promise<void>
+}) {
+  const [username, setUsername] = useState("")
+  const [password, setPassword] = useState("")
+  const [error, setError] = useState("")
+  const [submitting, setSubmitting] = useState(false)
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!username.trim() || !password) return
+    setError("")
+    setSubmitting(true)
+    try {
+      await onCreate(username.trim(), password)
+    } catch (err: any) {
+      setError(err.message || "Failed to create user")
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div
+        className="w-full max-w-sm rounded-xl border border-surface bg-panel p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-5 flex items-center justify-between">
+          <h3 className="text-base font-semibold text-cream">Create user</h3>
+          <button
+            onClick={onClose}
+            className="rounded-md p-1 text-cream-dim transition-colors hover:bg-surface hover:text-cream"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label htmlFor="new-username" className="mb-1.5 block text-xs font-medium text-cream-dim">
+              Username
+            </label>
+            <input
+              id="new-username"
+              type="text"
+              required
+              autoFocus
+              minLength={3}
+              maxLength={50}
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="w-full rounded-lg border border-surface bg-void px-3 py-2.5 text-sm text-cream placeholder:text-cream-dim/60 transition-colors focus:border-indigo focus:outline-none focus:ring-2 focus:ring-indigo/40"
+              placeholder="e.g. testuser"
+            />
+          </div>
+          <div>
+            <label htmlFor="new-password" className="mb-1.5 block text-xs font-medium text-cream-dim">
+              Password
+            </label>
+            <input
+              id="new-password"
+              type="text"
+              required
+              minLength={1}
+              maxLength={72}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full rounded-lg border border-surface bg-void px-3 py-2.5 text-sm text-cream placeholder:text-cream-dim/60 transition-colors focus:border-indigo focus:outline-none focus:ring-2 focus:ring-indigo/40"
+              placeholder="Password"
+            />
+          </div>
+
+          {error && (
+            <div className="flex items-start gap-2 rounded-lg border border-rust/30 bg-rust/10 px-3 py-2 text-xs text-rust">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={submitting || !username.trim() || !password}
+            className="gradient-primary flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-medium text-white shadow-glow transition-transform hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:scale-100"
+          >
+            {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+            {submitting ? "Creating..." : "Create user"}
+          </button>
+        </form>
       </div>
     </div>
   )
@@ -62,47 +281,43 @@ function UserRow({ user, onToggleAdmin, onDelete }: UserRowProps) {
 
 export default function AdminPage() {
   const router = useRouter()
-  const { sidebarCollapsed, selectedDocId, selectDoc, setUploadModalOpen, toggleSidebar } = useReader()
-  const user = useAuth((s) => s.user)
-  const [users, setUsers] = useState<User[]>([])
+  const authUser = useAuth((s) => s.user)
+  const [users, setUsers] = useState<UserStats[]>([])
   const [loading, setLoading] = useState(true)
   const [processingUser, setProcessingUser] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [showCreateModal, setShowCreateModal] = useState(false)
 
-  // Populate user from localStorage token on mount
   useEffect(() => {
     const token = localStorage.getItem("token")
     if (!token) {
       router.push("/login")
       return
     }
-    if (!user) {
-      getMe().then((u) => useAuth.getState().setUser(u)).catch(() => {})
+    if (!authUser) {
+      getMe()
+        .then((u) => useAuth.getState().setUser(u))
+        .catch(() => {})
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!user) {
-      // Waiting for user to load
-      return
-    }
-    if (!user.is_admin) {
+    if (!authUser) return
+    if (!authUser.is_admin) {
       router.push("/dashboard")
       return
     }
-    fetchUsers()
-  }, [user, router])
+    fetchStats()
+  }, [authUser, router]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const fetchUsers = async () => {
+  const fetchStats = async () => {
     try {
       setError(null)
       setLoading(true)
-      const data = await listUsers()
+      const data = await getUserStats()
       setUsers(data)
-    } catch (err) {
-      console.error("Failed to fetch users:", err)
-      setError("Failed to load users")
+    } catch {
+      setError("Failed to load user stats")
     } finally {
       setLoading(false)
     }
@@ -111,10 +326,9 @@ export default function AdminPage() {
   const handleToggleAdmin = async (userId: number, currentAdmin: boolean) => {
     try {
       setProcessingUser(userId)
-      const updated = await updateUser(userId, !currentAdmin)
-      setUsers((prev) => prev.map((u) => (u.id === userId ? updated : u)))
-    } catch (err) {
-      console.error("Failed to update user:", err)
+      await updateUser(userId, !currentAdmin)
+      await fetchStats()
+    } catch {
       setError(`Failed to ${currentAdmin ? "demote" : "promote"} user`)
     } finally {
       setProcessingUser(null)
@@ -129,120 +343,183 @@ export default function AdminPage() {
       setProcessingUser(userId)
       await deleteUser(userId)
       setUsers((prev) => prev.filter((u) => u.id !== userId))
-    } catch (err) {
-      console.error("Failed to delete user:", err)
+    } catch {
       setError("Failed to delete user")
     } finally {
       setProcessingUser(null)
     }
   }
 
-  if (!user?.is_admin) {
-    return null
+  const handleCreateUser = async (username: string, password: string) => {
+    try {
+      await adminCreateUser(username, password)
+      setShowCreateModal(false)
+      await fetchStats()
+    } catch (err: any) {
+      const msg = err?.response?.data?.detail || "Failed to create user"
+      throw new Error(msg)
+    }
   }
 
+  const totalStorage = useMemo(() => users.reduce((sum, u) => sum + u.total_bytes, 0), [users])
+  const totalDocs = useMemo(() => users.reduce((sum, u) => sum + u.doc_count, 0), [users])
+
+  const handleLogout = () => {
+    localStorage.removeItem("token")
+    localStorage.removeItem("refresh_token")
+    useAuth.getState().clear()
+    window.location.href = "/login"
+  }
+
+  if (!authUser?.is_admin) return null
+
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-void text-cream">
-      <TopBar />
+    <div className="flex h-screen flex-col bg-void text-cream">
+      {/* Minimal top bar */}
+      <header className="relative shrink-0 bg-void">
+        <div className="flex h-12 items-center gap-3 px-4">
+          <div className="flex shrink-0 items-center gap-2">
+            <div className="gradient-primary flex h-7 w-7 items-center justify-center rounded-lg shadow-glow">
+              <BookOpen className="h-4 w-4 text-white" />
+            </div>
+            <span className="hidden font-display text-base font-bold tracking-tight text-cream sm:inline">
+              DocMind
+            </span>
+          </div>
+          <div className="min-w-0 flex-1" />
+          <Link
+            href="/dashboard"
+            className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs text-cream-dim transition-colors hover:bg-surface hover:text-cream"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            Library
+          </Link>
+          {authUser && (
+            <span className="hidden max-w-[10rem] truncate text-xs text-cream-dim md:inline">
+              {authUser.username}
+            </span>
+          )}
+          <button
+            onClick={handleLogout}
+            title="Sign out"
+            className="rounded-md p-2 text-cream-dim transition-colors hover:bg-surface hover:text-cream"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="gradient-hairline absolute inset-x-0 bottom-0" />
+      </header>
 
-      <div className="relative flex min-h-0 flex-1">
-        <Sidebar documents={[]} loading={false} onDelete={() => {}} />
-
-        <main className="flex min-w-0 flex-1 flex-col bg-void">
-          <div className="flex h-16 items-center border-b border-surface bg-panel px-6">
-            <div className="flex items-center gap-2">
-              <Shield className="h-5 w-5 text-indigo" />
-              <h1 className="text-lg font-semibold">Admin Panel</h1>
+      {/* Content */}
+      <main className="flex-1 overflow-y-auto reader-scroll">
+        <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+          {/* Page header */}
+          <div className="mb-8">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo/10">
+                <Shield className="h-5 w-5 text-indigo" />
+              </div>
+              <div>
+                <h1 className="text-xl font-semibold tracking-tight">Admin Panel</h1>
+                <p className="text-sm text-cream-dim">Manage users and monitor storage</p>
+              </div>
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-6">
-            {error && (
-              <div className="mb-6 rounded-lg border border-[#ef4444]/30 bg-[#ef4444]/10 p-4 text-sm text-[#ef4444]">
-                <div className="flex items-center gap-2">
-                  <AlertCircle className="h-4 w-4" />
-                  {error}
-                </div>
+          {/* Summary cards */}
+          <div className="mb-8 grid grid-cols-3 gap-3">
+            <div className="rounded-xl border border-surface/80 bg-panel/60 px-4 py-3">
+              <div className="flex items-center gap-2 text-cream-dim">
+                <Users className="h-4 w-4" />
+                <span className="text-xs uppercase tracking-wider">Users</span>
               </div>
-            )}
-
-            <div className="mb-6 rounded-lg border border-indigo/20 bg-indigo/5 p-4">
-              <div className="flex items-start gap-3">
-                <Shield className="mt-0.5 h-5 w-5 text-indigo" />
-                <div>
-                  <h3 className="font-medium text-indigo">Admin Access</h3>
-                  <p className="mt-1 text-sm text-cream-dim">
-                    You have full control over this instance. Use these tools responsibly.
-                  </p>
-                </div>
-              </div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums">{users.length}</div>
             </div>
+            <div className="rounded-xl border border-surface/80 bg-panel/60 px-4 py-3">
+              <div className="flex items-center gap-2 text-cream-dim">
+                <FileText className="h-4 w-4" />
+                <span className="text-xs uppercase tracking-wider">Documents</span>
+              </div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums">{totalDocs}</div>
+            </div>
+            <div className="rounded-xl border border-surface/80 bg-panel/60 px-4 py-3">
+              <div className="flex items-center gap-2 text-cream-dim">
+                <HardDrive className="h-4 w-4" />
+                <span className="text-xs uppercase tracking-wider">Storage</span>
+              </div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums">{formatBytes(totalStorage)}</div>
+            </div>
+          </div>
 
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-cream-dim">
-                Users ({users.length})
-              </h2>
+          {/* Error */}
+          {error && (
+            <div className="mb-6 flex items-center gap-2 rounded-lg border border-rust/30 bg-rust/10 px-4 py-3 text-sm text-rust">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>{error}</span>
+              <button onClick={() => setError(null)} className="ml-auto text-xs hover:underline">
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* User list header */}
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-cream-dim">
+              All users
+            </h2>
+            <div className="flex items-center gap-2">
               <button
-                onClick={fetchUsers}
-                disabled={loading || processingUser !== null}
-                className="flex items-center gap-2 rounded-md bg-surface px-3 py-1.5 text-xs font-medium text-cream-dim hover:bg-surface/80 disabled:opacity-50"
+                onClick={() => setShowCreateModal(true)}
+                className="flex items-center gap-1.5 rounded-md bg-indigo/15 px-3 py-1.5 text-xs font-medium text-indigo transition-colors hover:bg-indigo/25"
               >
-                {processingUser !== null ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-3.5 w-3.5" />
-                )}
+                <UserPlus className="h-3.5 w-3.5" />
+                Add user
+              </button>
+              <button
+                onClick={fetchStats}
+                disabled={loading}
+                className="flex items-center gap-1.5 rounded-md bg-surface/60 px-3 py-1.5 text-xs text-cream-dim transition-colors hover:bg-surface hover:text-cream disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
                 Refresh
               </button>
             </div>
-
-            <div className="space-y-3">
-              {loading ? (
-                <div className="space-y-3">
-                  {[...Array(4)].map((_, i) => (
-                    <div key={i} className="h-20 animate-pulse rounded-lg bg-surface/60" />
-                  ))}
-                </div>
-              ) : users.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-12 text-center">
-                  <Users className="mb-3 h-12 w-12 text-cream-dim/50" />
-                  <p className="text-cream-dim">No users found</p>
-                </div>
-              ) : (
-                users.map((user) => (
-                  <UserRow
-                    key={user.id}
-                    user={user}
-                    onToggleAdmin={handleToggleAdmin}
-                    onDelete={handleDelete}
-                  />
-                ))
-              )}
-            </div>
-
-            <div className="mt-8 rounded-lg border border-surface bg-panel p-4">
-              <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-cream">
-                <AlertCircle className="h-4 w-4 text-cream-dim" />
-                Admin Functions
-              </h3>
-              <ul className="space-y-2 text-sm text-cream-dim">
-                <li className="flex items-start gap-2">
-                  <CheckCircle className="mt-0.5 h-3.5 w-3.5 text-[#4ade80] shrink-0" />
-                  <span><strong>List users:</strong> View all accounts on this instance</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <CheckCircle className="mt-0.5 h-3.5 w-3.5 text-[#4ade80] shrink-0" />
-                  <span><strong>Promote/demote:</strong> Grant or remove admin privileges</span>
-                </li>
-                <li className="flex items-start gap-2">
-                  <CheckCircle className="mt-0.5 h-3.5 w-3.5 text-[#4ade80] shrink-0" />
-                  <span><strong>Delete users:</strong> Remove stale or unwanted accounts</span>
-                </li>
-              </ul>
-            </div>
           </div>
-        </main>
-      </div>
+
+          {/* User list */}
+          <div className="space-y-2">
+            {loading ? (
+              <div className="flex flex-col items-center justify-center py-16">
+                <Loader2 className="h-6 w-6 animate-spin text-indigo" />
+                <span className="mt-3 text-sm text-cream-dim">Loading users...</span>
+              </div>
+            ) : users.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <Users className="mb-3 h-10 w-10 text-cream-dim/40" />
+                <p className="text-cream-dim">No users found</p>
+              </div>
+            ) : (
+              users.map((u) => (
+                <UserCard
+                  key={u.id}
+                  user={u}
+                  onToggleAdmin={handleToggleAdmin}
+                  onDelete={handleDelete}
+                  processing={processingUser === u.id}
+                />
+              ))
+            )}
+          </div>
+        </div>
+      </main>
+
+      {/* Create user modal */}
+      {showCreateModal && (
+        <CreateUserModal
+          onClose={() => setShowCreateModal(false)}
+          onCreate={handleCreateUser}
+        />
+      )}
     </div>
   )
 }

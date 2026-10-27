@@ -29,7 +29,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Conversation, Document, Flashcard, Message, Podcast, User
+from app.models import Conversation, Document, Flashcard, LibraryEntry, Message, Podcast, User
 
 # UserSettings key. Defined here (not in routers/settings.py) so that both
 # the router and the Celery task import it from the same place they import
@@ -70,7 +70,9 @@ def _user_dir(user: User) -> str:
     return os.path.join(settings.export_dir, sanitize_path_segment(user.username, f"user-{user.id}"))
 
 
-def _document_dir(user: User, document: Optional[Document]) -> str:
+def _document_dir(
+    user: User, document: Optional[Document], title: Optional[str] = None
+) -> str:
     """Directory for one document's exported files, or a shared "_unfiled"
     bucket for chat conversations that aren't scoped to any (owned)
     document. Two documents whose titles sanitize to the same string will
@@ -80,8 +82,13 @@ def _document_dir(user: User, document: Optional[Document]) -> str:
     """
     if document is None:
         return os.path.join(_user_dir(user), _UNFILED_DIR_NAME)
-    title = sanitize_path_segment(document.title or "", f"document-{document.id}")
-    return os.path.join(_user_dir(user), title)
+    visible_title = (
+        title
+        or (document.shared_title if document.is_shared else None)
+        or f"document-{document.id}"
+    )
+    segment = sanitize_path_segment(visible_title, f"document-{document.id}")
+    return os.path.join(_user_dir(user), segment)
 
 
 def _write_text(path: str, content: str) -> None:
@@ -110,7 +117,12 @@ def _conversation_markdown(conversation: Conversation, messages: List[Message]) 
     return "\n".join(lines)
 
 
-def _export_chat(db: Session, user: User, documents: Dict[int, Document]) -> int:
+def _export_chat(
+    db: Session,
+    user: User,
+    documents: Dict[int, Document],
+    document_titles: Dict[int, str],
+) -> int:
     conversations = db.query(Conversation).filter(Conversation.user_id == user.id).all()
     count = 0
     for conv in conversations:
@@ -138,7 +150,7 @@ def _export_chat(db: Session, user: User, documents: Dict[int, Document]) -> int
         filename = f"{created}-{conv.id}.md"
         content = _conversation_markdown(conv, messages)
         for doc in target_docs:
-            doc_dir = _document_dir(user, doc)
+            doc_dir = _document_dir(user, doc, document_titles.get(doc.id))
             try:
                 _write_text(os.path.join(doc_dir, "chat", filename), content)
                 count += 1
@@ -169,7 +181,12 @@ def _flashcard_to_dict(card: Flashcard) -> dict:
     }
 
 
-def _export_flashcards(db: Session, user: User, documents: Dict[int, Document]) -> int:
+def _export_flashcards(
+    db: Session,
+    user: User,
+    documents: Dict[int, Document],
+    document_titles: Dict[int, str],
+) -> int:
     count = 0
     for doc_id, document in documents.items():
         cards = (
@@ -178,7 +195,10 @@ def _export_flashcards(db: Session, user: User, documents: Dict[int, Document]) 
             .order_by(Flashcard.id.asc())
             .all()
         )
-        path = os.path.join(_document_dir(user, document), "flashcards.json")
+        path = os.path.join(
+            _document_dir(user, document, document_titles.get(doc_id)),
+            "flashcards.json",
+        )
         if not cards:
             # Rewritten (not appended) every sync, so a document that had
             # its last card deleted since the previous sync must have its
@@ -200,7 +220,12 @@ def _export_flashcards(db: Session, user: User, documents: Dict[int, Document]) 
     return count
 
 
-def _export_podcasts(db: Session, user: User, documents: Dict[int, Document]) -> int:
+def _export_podcasts(
+    db: Session,
+    user: User,
+    documents: Dict[int, Document],
+    document_titles: Dict[int, str],
+) -> int:
     podcasts = (
         db.query(Podcast)
         .filter(Podcast.user_id == user.id, Podcast.status == "completed")
@@ -209,7 +234,9 @@ def _export_podcasts(db: Session, user: User, documents: Dict[int, Document]) ->
     count = 0
     for podcast in podcasts:
         document = documents.get(podcast.document_id)
-        doc_dir = _document_dir(user, document)
+        if document is None:
+            continue
+        doc_dir = _document_dir(user, document, document_titles.get(podcast.document_id))
         meta = {
             "id": podcast.id,
             "document_id": podcast.document_id,
@@ -248,7 +275,18 @@ def export_user_data(db: Session, user: User) -> dict:
     if not settings.export_dir:
         return {"skipped": "export_dir not configured"}
 
-    documents = {d.id: d for d in db.query(Document).filter(Document.user_id == user.id).all()}
+    rows = (
+        db.query(Document, LibraryEntry.title)
+        .join(LibraryEntry, LibraryEntry.document_id == Document.id)
+        .filter(LibraryEntry.user_id == user.id)
+        .all()
+    )
+    documents = {document.id: document for document, _ in rows}
+    document_titles = {
+        document.id: title
+        for document, title in rows
+        if title
+    }
 
     try:
         os.makedirs(_user_dir(user), exist_ok=True)
@@ -256,9 +294,9 @@ def export_user_data(db: Session, user: User) -> dict:
         logger.error(f"export_service: could not create export dir for user {user.id}: {e}")
         return {"error": str(e)}
 
-    conversations = _export_chat(db, user, documents)
-    flashcard_docs = _export_flashcards(db, user, documents)
-    podcasts = _export_podcasts(db, user, documents)
+    conversations = _export_chat(db, user, documents, document_titles)
+    flashcard_docs = _export_flashcards(db, user, documents, document_titles)
+    podcasts = _export_podcasts(db, user, documents, document_titles)
 
     return {
         "conversations_exported": conversations,

@@ -12,6 +12,7 @@ from app.database import init_db
 from app.routers import (
     auth,
     documents,
+    notebooks,
     chat,
     tts,
     websocket,
@@ -25,6 +26,7 @@ from app.routers import (
 )
 from app.routers import metrics as metrics_router
 from app.routers import knowledge_graph
+from app.routers import shared_library
 from app.services.http_metrics import MetricsMiddleware
 from app.services.db_monitor import db_pool_monitor
 from app.services.system_monitor import run_system_monitor, update_system_stats
@@ -111,6 +113,8 @@ def health():
 
 app.include_router(auth.router)
 app.include_router(documents.router)
+app.include_router(notebooks.router)
+app.include_router(shared_library.router)
 app.include_router(chat.router)
 app.include_router(tts.router)
 app.include_router(websocket.router)

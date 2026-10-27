@@ -1,10 +1,8 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { isAxiosError } from "axios"
 import { Message } from "@/services/types"
 import {
-  sendMessage,
   createConversation,
   getMessages,
   getConversations,
@@ -17,6 +15,7 @@ import {
   LlmBackend,
   RagMode,
 } from "@/services/api"
+import { streamMessage } from "@/services/chatStream"
 import { useReader } from "@/stores/reader"
 import { Send, Trash2, Sparkles, FileText, ChevronsUpDown, Cpu, BookOpen, Globe, Network, Search, XCircle, X, Loader2, AlertTriangle } from "lucide-react"
 import { getKgStatus, buildKg, KgStatus } from "@/services/kgApi"
@@ -219,10 +218,11 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
   // exactly what dropped the whole page below the fixed reader layout on
   // send. Setting scrollTop directly on the chat's own container can only
   // ever affect that one element.
+  const lastMessageContent = messages[messages.length - 1]?.content
   useEffect(() => {
     const el = listRef.current
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
-  }, [messages.length, sending])
+  }, [lastMessageContent, messages.length, sending])
 
   const handleClear = async () => {
     if (conversationId) {
@@ -238,11 +238,15 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
 
   const handleSend = async () => {
     if (!input.trim() || sending) return
+    const question = input
+    const sendDocId = docId
     setSending(true)
     const controller = new AbortController()
     abortRef.current = controller
+    const assistantDraftId = -Date.now()
+    let assistantDraftAdded = false
+    let activeConvId = conversationId ?? 0
     try {
-      let activeConvId = conversationId
       if (!activeConvId) {
         const conv = await createConversation()
         activeConvId = conv.id
@@ -252,53 +256,95 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
         id: Date.now(),
         conversation_id: activeConvId,
         role: "user",
-        content: input,
+        content: question,
         token_count: 0,
       }
       setMessages((prev) => [...prev, userMessage])
       setInput("")
-      const aiMessage = await sendMessage(
+      const aiMessage = await streamMessage(
         activeConvId,
-        input,
+        question,
         useDoc ? [docId] : [],
-        controller.signal,
         useDoc ? ragMode : undefined,
+        controller.signal,
+        {
+          onToken: (content) => {
+            if (docIdRef.current !== sendDocId) return
+            assistantDraftAdded = true
+            setMessages((prev) => {
+              const existing = prev.find((msg) => msg.id === assistantDraftId)
+              if (existing) {
+                return prev.map((msg) =>
+                  msg.id === assistantDraftId
+                    ? { ...msg, content: msg.content + content }
+                    : msg,
+                )
+              }
+              return [
+                ...prev,
+                {
+                  id: assistantDraftId,
+                  conversation_id: activeConvId,
+                  role: "assistant",
+                  content,
+                  token_count: 0,
+                },
+              ]
+            })
+          },
+        },
       )
       // The response can arrive in the gap between the user switching
       // documents and the abort landing - dropping it here keeps one
       // document's answer out of another document's transcript.
-      if (docIdRef.current !== docId) return
-      setMessages((prev) => [...prev, aiMessage])
+      if (docIdRef.current !== sendDocId) return
+      setMessages((prev) => {
+        if (!assistantDraftAdded) return [...prev, aiMessage]
+        return prev.map((msg) => msg.id === assistantDraftId ? aiMessage : msg)
+      })
     } catch (err) {
-      // A user-initiated Stop, not a real failure - abortRef is already
-      // cleared by handleStop, so silently drop the pending state instead
-      // of showing an error bubble for something the user asked for.
-      if (isAxiosError(err) && err.code === "ERR_CANCELED") return
-      if (docIdRef.current !== docId) return
-      console.error("Failed to send message:", err)
-      const detail = isAxiosError(err) ? err.response?.data?.detail : undefined
-      const errorMessage: Message = {
-        id: Date.now(),
-        conversation_id: conversationId ?? 0,
-        role: "assistant",
-        content: detail || "Something went wrong sending that message. Please try again.",
-        token_count: 0,
+      // A user-initiated Stop leaves the persisted user message and discards
+      // the assistant draft, which the server saves only after completion.
+      if (controller.signal.aborted) {
+        setMessages((prev) => prev.filter((msg) => msg.id !== assistantDraftId))
+        return
       }
-      setMessages((prev) => [...prev, errorMessage])
+      if (docIdRef.current !== sendDocId) return
+      console.error("Failed to send message:", err)
+      const detail = err instanceof Error ? err.message : undefined
+      const errorContent = detail || "Something went wrong sending that message. Please try again."
+      setMessages((prev) => {
+        const existing = prev.find((msg) => msg.id === assistantDraftId)
+        if (existing) {
+          return prev.map((msg) =>
+            msg.id === assistantDraftId
+              ? { ...msg, content: `${msg.content}\n\n${errorContent}` }
+              : msg,
+          )
+        }
+        return [
+          ...prev,
+          {
+            id: assistantDraftId,
+            conversation_id: activeConvId,
+            role: "assistant",
+            content: errorContent,
+            token_count: 0,
+          },
+        ]
+      })
     } finally {
       // Only clear state we still own - if the document changed mid-flight,
       // the effect above has already reset both for the new document.
-      if (docIdRef.current === docId) {
+      if (docIdRef.current === sendDocId) {
         abortRef.current = null
         setSending(false)
       }
     }
   }
 
-  /** Abort the in-flight request. Closes the underlying connection, which
-   * is what lets the backend actually stop the LLM call server-side (see
-   * the is_disconnected() poll in routers/chat.py) rather than just
-   * hiding the "thinking" indicator while the server keeps working unseen. */
+  /** Abort the in-flight stream, which cancels the model coroutine server-side
+   * instead of only hiding the "thinking" indicator. */
   const handleStop = () => {
     abortRef.current?.abort()
   }

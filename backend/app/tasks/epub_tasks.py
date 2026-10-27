@@ -12,8 +12,8 @@ from sqlalchemy.orm import Session
 
 from app.celery_app import celery_app
 from app.database import SessionLocal
-from app.models import Document, ExtractedText
-from app.tasks.pdf_tasks import _chain_summaries
+from app.models import Document
+from app.tasks.pdf_tasks import _chain_summaries, _replace_extracted_pages
 from app.tasks.shared import guard_zip_decompression
 
 # Same explicit parse budget as the docx/pptx tasks: a parse that exceeds 5
@@ -96,6 +96,7 @@ def parse_epub(self, file_path: str, doc_id: int) -> dict:
         toc_titles = _toc_titles_by_file(book.toc)
 
         page_num = 0
+        pages = []
         for item_id, _linear in book.spine:
             item = book.get_item_with_id(item_id)
             if not item or item.get_type() != ebooklib.ITEM_DOCUMENT:
@@ -110,18 +111,16 @@ def parse_epub(self, file_path: str, doc_id: int) -> dict:
             title: Optional[str] = toc_titles.get(item.get_name())
             headings = [{"title": title, "level": 0}] if title else None
 
-            et = ExtractedText(
-                document_id=doc_id,
-                page_number=page_num,
-                content=content,
-                bounding_boxes=None,
-                headings=headings,
-            )
-            db.add(et)
+            pages.append({
+                "page_number": page_num,
+                "content": content,
+                "headings": headings,
+            })
 
         if page_num == 0:
             raise RuntimeError("EPUB produced no readable chapters")
 
+        _replace_extracted_pages(db, doc_id, pages)
         doc.num_pages = page_num
         doc.processing_status = "extracted"
         db.commit()

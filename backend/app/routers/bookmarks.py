@@ -5,9 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User, Document, Bookmark
+from app.models import User, Bookmark
 from app.schemas import BookmarkCreate, BookmarkResponse, BookmarkUpdate
 from app.routers.auth import get_current_user_from_token
+from app.services.library_access import get_document_for_user
 
 router = APIRouter(prefix="/api/bookmarks", tags=["bookmarks"])
 
@@ -33,10 +34,7 @@ def create_bookmark(
     Label defaults to \"Page {n}\" when omitted or blank so every bookmark has
     a display name without the client having to invent one.
     """
-    doc = db.query(Document).filter(
-        Document.id == body.document_id,
-        Document.user_id == user.id,
-    ).first()
+    doc = get_document_for_user(db, user.id, body.document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -60,6 +58,8 @@ def list_bookmarks(
     db: Session = Depends(get_db),
 ):
     """List bookmarks for a document, ordered by page then position."""
+    if not get_document_for_user(db, user.id, document_id):
+        raise HTTPException(status_code=404, detail="Document not found")
     bookmarks = db.query(Bookmark).filter(
         Bookmark.document_id == document_id,
         Bookmark.user_id == user.id,
@@ -79,7 +79,7 @@ def update_bookmark(
         Bookmark.id == bookmark_id,
         Bookmark.user_id == user.id,
     ).first()
-    if not bookmark:
+    if not bookmark or not get_document_for_user(db, user.id, bookmark.document_id):
         raise HTTPException(status_code=404, detail="Bookmark not found")
 
     bookmark.label = _normalize_label(body.label, bookmark.page_number)
@@ -99,7 +99,7 @@ def delete_bookmark(
         Bookmark.id == bookmark_id,
         Bookmark.user_id == user.id,
     ).first()
-    if not bookmark:
+    if not bookmark or not get_document_for_user(db, user.id, bookmark.document_id):
         raise HTTPException(status_code=404, detail="Bookmark not found")
     db.delete(bookmark)
     db.commit()

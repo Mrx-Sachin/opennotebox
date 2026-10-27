@@ -23,6 +23,8 @@ import { useReader } from "@/stores/reader"
 
 interface UploadModalProps {
   onUploaded: () => void
+  notebookId?: number | null
+  notebookName?: string
 }
 
 const LAYOUT_OPTIONS: { value: LayoutMode; label: string; hint: string }[] = [
@@ -52,7 +54,7 @@ const STATUS_LABEL: Record<UploadItem["status"], string> = {
   canceled: "Canceled",
 }
 
-export default function UploadModal({ onUploaded }: UploadModalProps) {
+export default function UploadModal({ onUploaded, notebookId, notebookName }: UploadModalProps) {
   const { uploadModalOpen, setUploadModalOpen } = useReader()
   const [tab, setTab] = useState<"file" | "url">("file")
   const [url, setUrl] = useState("")
@@ -84,16 +86,16 @@ export default function UploadModal({ onUploaded }: UploadModalProps) {
   const startUploads = useCallback(
     (files: File[]) => {
       if (files.length === 0) return
-      uploadQueue.add(files, layoutMode)
+      uploadQueue.add(files, layoutMode, notebookId)
     },
-    [layoutMode]
+    [layoutMode, notebookId]
   )
 
   const handleUrl = async () => {
     if (!url.trim()) return
     setUrlBusy(true)
     try {
-      await uploadFromUrl(url.trim())
+      await uploadFromUrl(url.trim(), notebookId)
       setUrl("")
       onUploaded()
       setUploadModalOpen(false)
@@ -127,6 +129,8 @@ export default function UploadModal({ onUploaded }: UploadModalProps) {
             <X className="h-4 w-4" />
           </button>
         </div>
+
+        {notebookName && <p className="mb-4 text-xs text-cream-dim">Adding to {notebookName}</p>}
 
         <div className="mb-4 flex gap-1 rounded-lg bg-void p-1">
           {(["file", "url"] as const).map((t) => (

@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.celery_app import celery_app
 from app.database import SessionLocal
-from app.models import Document, ExtractedText
-from app.tasks.pdf_tasks import _chain_summaries
+from app.models import Document
+from app.tasks.pdf_tasks import _chain_summaries, _replace_extracted_pages
 from app.tasks.shared import guard_zip_decompression
 
 # DOCX/PPTX parse budgets, explicit instead of the Celery global (600/900):
@@ -48,21 +48,20 @@ def parse_docx(self, file_path: str, doc_id: int) -> dict:
                 headings.append({"title": para.text, "level": level})
 
         full_text = "\n".join(p.text for p in paragraphs)
+        pages = []
         page_num = 1
         chunk_size = 3000
 
         for i in range(0, len(full_text), chunk_size):
             chunk = full_text[i : i + chunk_size]
-            et = ExtractedText(
-                document_id=doc_id,
-                page_number=page_num,
-                content=chunk,
-                bounding_boxes=None,
-                headings=headings if page_num == 1 else None,
-            )
-            db.add(et)
+            pages.append({
+                "page_number": page_num,
+                "content": chunk,
+                "headings": headings if page_num == 1 else None,
+            })
             page_num += 1
 
+        _replace_extracted_pages(db, doc_id, pages)
         doc.num_pages = max(page_num - 1, 1)
         doc.processing_status = "extracted"
         db.commit()
@@ -105,6 +104,7 @@ def parse_pptx(self, file_path: str, doc_id: int) -> dict:
 
         prs = PptxPresentation(file_path)
         headings = []
+        pages = []
 
         for idx, slide in enumerate(prs.slides, 1):
             slide_text = []
@@ -117,15 +117,13 @@ def parse_pptx(self, file_path: str, doc_id: int) -> dict:
                             if para.level == 0:
                                 headings.append({"title": txt, "level": 1})
 
-            et = ExtractedText(
-                document_id=doc_id,
-                page_number=idx,
-                content="\n".join(slide_text),
-                bounding_boxes=None,
-                headings=headings if idx == 1 else None,
-            )
-            db.add(et)
+            pages.append({
+                "page_number": idx,
+                "content": "\n".join(slide_text),
+                "headings": list(headings) if idx == 1 else None,
+            })
 
+        _replace_extracted_pages(db, doc_id, pages)
         doc.num_pages = len(prs.slides)
         doc.processing_status = "extracted"
         db.commit()

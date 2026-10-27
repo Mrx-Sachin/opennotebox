@@ -1,21 +1,31 @@
+FROM ghcr.io/astral-sh/uv:0.11.27 AS uv
+
 FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY pyproject.toml ./
-COPY app/ ./app/
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 
-RUN pip install --no-cache-dir .
+COPY --from=uv /uv /uvx /bin/
+COPY backend/pyproject.toml backend/uv.lock ./
+RUN uv export --frozen --no-dev --no-emit-project --output-file /tmp/requirements.txt \
+    && uv pip install --system --no-cache --requirement /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
 
-COPY alembic.ini ./
-COPY alembic/ ./alembic/
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY backend/app/ ./app/
+COPY backend/alembic.ini ./alembic.ini
+COPY backend/alembic/ ./alembic/
+COPY backend/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY prompts/ ./prompts/
+COPY tools/omniroute_bridge.py /opt/omniroute_bridge.py
 
-RUN mkdir -p /app/data/uploads /app/data/extracted /app/data/summaries /app/data/tts-cache
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
+    && mkdir -p /app/data/uploads /app/data/extracted /app/data/summaries /app/data/tts-cache
 
 EXPOSE 8000
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+
 # --proxy-headers is REQUIRED for the auth rate limiter to work in this
 # deployment: uvicorn is only ever reached through Traefik (the port publish
 # is loopback-bound), so without it every request's client IP is Traefik's

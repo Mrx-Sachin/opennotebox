@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import {
@@ -354,6 +355,7 @@ function NoteCard({
   const setPage = useReader((s) => s.setPage)
   const selectedDocId = useReader((s) => s.selectedDocId)
   const selectDoc = useReader((s) => s.selectDoc)
+  const router = useRouter()
   const cardRef = useRef<HTMLDivElement>(null)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(note.note || "")
@@ -373,7 +375,10 @@ function NoteCard({
     focusNote(note.id)
     // In "All docs" search a note can belong to a different document than the
     // one open in the reader; open its document first so the jump lands there.
-    if (note.document_id !== selectedDocId) selectDoc(note.document_id)
+    if (note.document_id !== selectedDocId) {
+      selectDoc(note.document_id, undefined, note.page_number)
+      router.push(`/dashboard/read/${note.document_id}`)
+    }
     if (note.quote) jumpToCitation(note.page_number, note.quote)
     else setPage(note.page_number)
   }

@@ -10,15 +10,22 @@ from loguru import logger
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from app.celery_app import celery_app
 from app.database import SessionLocal
-from app.models import Document, Summary, ExtractedText, Podcast
+from app.models import Document, Summary, ExtractedText, LibraryEntry, Podcast
 from app.services.prompts import render_jinja
 from app.services.json_extract import extract_json
 from app.services.llm_settings import get_active_llm
+from app.services.llm_semaphore import background_llm_semaphore
 from app.config import settings
 from app.tasks.shared import run_async
+from app.services.library_access import (
+    get_document_for_user,
+    get_library_entry,
+    visible_document_title,
+)
 
 SILENCE_SECONDS = 0.3
 SPEAKER_VOICE = {"A": "kokoro-am_michael", "B": "kokoro-af_bella"}
@@ -74,14 +81,20 @@ def _split_content_segments(content: str, n: int) -> List[str]:
     return segments
 
 
-def _gather_content(db: Session, doc_id: int, scope: str, section_title: Optional[str]) -> str:
+def _gather_content(
+    db: Session, doc_id: int, scope: str, section_title: Optional[str], user_id: int
+) -> str:
     """Build the source material text for the dialogue prompt."""
     if scope == "section":
         section = db.query(Summary).filter(
             Summary.document_id == doc_id,
             Summary.mode == "section",
             Summary.section_title == section_title,
-        ).first()
+            or_(
+                Summary.user_id == user_id,
+                (Summary.user_id.is_(None) & (Summary.content == "")),
+            ),
+        ).order_by(Summary.user_id.is_(None)).first()
         if section:
             # The section's `content` is its generated summary, which is an
             # EMPTY stub unless the user already generated it via the
@@ -99,12 +112,14 @@ def _gather_content(db: Session, doc_id: int, scope: str, section_title: Optiona
                 pages = query.order_by(ExtractedText.page_number).all()
                 if pages:
                     return "\n\n".join(f"[page {p.page_number}]\n{p.content}" for p in pages)
-            return section.content
+            return section.content if section.user_id == user_id else ""
         return ""
 
     summaries = db.query(Summary).filter(
         Summary.document_id == doc_id,
         Summary.mode == "page",
+        Summary.user_id == user_id,
+        Summary.content != "",
     ).order_by(Summary.page_number).all()
 
     if summaries:
@@ -129,10 +144,11 @@ async def _generate_script(prompt: str, user_id: Optional[int] = None) -> str:
         # timeout on a deep_dive's later segments.
         timeout=480,
     )
-    response = await model.ainvoke([
-        SystemMessage(content="You produce strict JSON only, no prose, no markdown fences."),
-        HumanMessage(content=prompt),
-    ])
+    async with background_llm_semaphore():
+        response = await model.ainvoke([
+            SystemMessage(content="You produce strict JSON only, no prose, no markdown fences."),
+            HumanMessage(content=prompt),
+        ])
     return response.content
 
 
@@ -280,25 +296,73 @@ def generate_podcast(self, podcast_id: int) -> dict:
         podcast = db.query(Podcast).filter(Podcast.id == podcast_id).first()
         if not podcast:
             raise ValueError(f"Podcast {podcast_id} not found")
+        requesting_user_id = podcast.user_id
+        document_id = podcast.document_id
 
-        doc = db.query(Document).filter(Document.id == podcast.document_id).first()
+        doc = get_document_for_user(db, requesting_user_id, document_id)
         if not doc:
-            raise ValueError(f"Document {podcast.document_id} not found")
+            raise ValueError(f"Document {document_id} not found for user {requesting_user_id}")
 
         length_cfg = LENGTH_CONFIG.get(podcast.length or "medium", LENGTH_CONFIG["medium"])
 
-        content = _gather_content(db, doc.id, podcast.scope, podcast.section_title)
+        content = _gather_content(
+            db, doc.id, podcast.scope, podcast.section_title, requesting_user_id
+        )
         if not content.strip():
             raise ValueError("No content available to generate a podcast from")
 
-        title, scratchpad, cleaned_lines = _generate_dialogue_segments(
-            doc.title, podcast.section_title, content, length_cfg, podcast.user_id
+        document_title = visible_document_title(
+            doc, get_library_entry(db, requesting_user_id, document_id)
         )
+        title, scratchpad, cleaned_lines = _generate_dialogue_segments(
+            document_title, podcast.section_title, content, length_cfg, requesting_user_id
+        )
+
+        db.rollback()
+        membership = db.query(LibraryEntry.id).filter(
+            LibraryEntry.user_id == requesting_user_id,
+            LibraryEntry.document_id == document_id,
+        ).first()
+        if not membership:
+            current_podcast = db.query(Podcast).filter(
+                Podcast.id == podcast_id,
+                Podcast.user_id == requesting_user_id,
+            ).first()
+            if current_podcast:
+                current_podcast.status = "failed"
+                current_podcast.error = "Requesting user no longer has library access"
+                db.commit()
+            return {"podcast_id": podcast_id, "status": "not_accessible"}
 
         wav_clips = []
         for line in cleaned_lines:
             voice = SPEAKER_VOICE[line["speaker"]]
             wav_clips.append(_synthesize_line(line["text"], voice))
+
+        db.rollback()
+        membership = db.query(LibraryEntry.id).filter(
+            LibraryEntry.user_id == requesting_user_id,
+            LibraryEntry.document_id == document_id,
+        ).with_for_update().first()
+        if not membership:
+            current_podcast = db.query(Podcast).filter(
+                Podcast.id == podcast_id,
+                Podcast.user_id == requesting_user_id,
+            ).first()
+            if current_podcast:
+                current_podcast.status = "failed"
+                current_podcast.error = "Requesting user no longer has library access"
+                db.commit()
+            return {"podcast_id": podcast_id, "status": "not_accessible"}
+
+        podcast = db.query(Podcast).filter(
+            Podcast.id == podcast_id,
+            Podcast.user_id == requesting_user_id,
+        ).first()
+        doc = db.query(Document).filter(Document.id == document_id).first()
+        if not podcast or not doc:
+            db.rollback()
+            return {"podcast_id": podcast_id, "status": "not_accessible"}
 
         output_dir = os.path.join(settings.data_dir, "podcasts")
         os.makedirs(output_dir, exist_ok=True)
@@ -310,7 +374,7 @@ def generate_podcast(self, podcast_id: int) -> dict:
         podcast.audio_path = output_path
         podcast.duration = duration
         podcast.transcript = {
-            "title": title or doc.title,
+            "title": title or document_title,
             "lines": cleaned_lines,
             # Kept for QA on dialogue quality, not shown in the player UI.
             "scratchpad": scratchpad,

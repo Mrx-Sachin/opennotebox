@@ -12,7 +12,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.services.prompts import render_jinja
-from app.services.llm_semaphore import llm_semaphore
+from app.services.llm_semaphore import background_llm_semaphore
 
 # Phrases that mean the model refused/misunderstood the summarization request
 # rather than producing an actual summary. Content matching these must never be
@@ -86,7 +86,7 @@ class SummarizerService:
         )
 
         try:
-            async with llm_semaphore():
+            async with background_llm_semaphore():
                 response = await self._make_model(user_id).ainvoke([
                     SystemMessage(content=system_prompt),
                     HumanMessage(content=user_prompt)
@@ -123,7 +123,7 @@ class SummarizerService:
         )
 
         try:
-            async with llm_semaphore():
+            async with background_llm_semaphore():
                 response = await self._make_model(user_id).ainvoke([
                     SystemMessage(content=system_prompt),
                     HumanMessage(content=user_prompt)

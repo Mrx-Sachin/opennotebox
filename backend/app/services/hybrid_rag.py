@@ -15,10 +15,13 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
-from app.models import Document
 from app.models.kg import KgExtractionState
 from app.services import retrieval
-from app.services.chat_engine import format_source_line, chat_engine
+from app.services.chat_engine import (
+    chat_engine,
+    format_source_line,
+    library_document_titles,
+)
 from app.services.kg_retrieval import retrieve_from_graph
 from app.services.metrics import get_metrics
 from app.services.llm_semaphore import llm_semaphore
@@ -42,6 +45,7 @@ def retrieve_hybrid(
     rephrasings: List[str],
     use_vector: bool = True,
     use_graph: bool = True,
+    user_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Run hybrid retrieval: vector + graph, return combined result.
 
@@ -90,10 +94,7 @@ def retrieve_hybrid(
         # Pick top candidates.
         hits = merged[:TOP_K]
 
-        titles: Dict[int, str] = {
-            d.id: d.title
-            for d in db.query(Document).filter(Document.id.in_(doc_ids)).all()
-        }
+        titles = library_document_titles(db, doc_ids, user_id)
         used = 0
         for h in hits:
             if used + len(h["text"]) > HYBRID_SOURCE_CHAR_BUDGET:
@@ -308,9 +309,8 @@ async def answer_hybrid(
 
     db = SessionLocal()
     try:
-        doc_titles = [
-            d.title for d in db.query(Document).filter(Document.id.in_(doc_ids)).all()
-        ]
+        title_map = library_document_titles(db, doc_ids, user_id)
+        doc_titles = [title_map[doc_id] for doc_id in doc_ids if doc_id in title_map]
 
         # Rewrite query for vector retrieval (if needed).
         phrases: List[str] = []
@@ -330,6 +330,7 @@ async def answer_hybrid(
             retrieve_hybrid,
             db, doc_ids, question, phrases, rephrasings,
             use_vector=use_vector, use_graph=use_graph,
+            user_id=user_id,
         )
         sources = result["combined_sources"]
 

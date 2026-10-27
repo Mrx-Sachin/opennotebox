@@ -6,11 +6,11 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User, Document, ExtractedText, Note, Flashcard
+from app.models import User, Document, ExtractedText, Note, Flashcard, LibraryEntry
 from app.routers.auth import get_current_user_from_token
 from app.schemas import (
     NoteCreate,
@@ -23,6 +23,10 @@ from app.schemas import (
 )
 from app.services import note_colors
 from app.services.note_flashcard import existing_card_for_note, make_flashcard_from_note
+from app.services.library_access import (
+    get_document_for_user,
+    get_library_entry,
+)
 
 router = APIRouter(prefix="/api/notes", tags=["notes"])
 
@@ -32,10 +36,7 @@ _TAG_LEN = 32
 
 
 def _owned_document(db: Session, user: User, document_id: int) -> Document:
-    doc = db.query(Document).filter(
-        Document.id == document_id,
-        Document.user_id == user.id,
-    ).first()
+    doc = get_document_for_user(db, user.id, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return doc
@@ -43,7 +44,7 @@ def _owned_document(db: Session, user: User, document_id: int) -> Document:
 
 def _owned_note(db: Session, user: User, note_id: int) -> Note:
     note = db.query(Note).filter(Note.id == note_id, Note.user_id == user.id).first()
-    if not note:
+    if not note or not get_document_for_user(db, user.id, note.document_id):
         raise HTTPException(status_code=404, detail="Note not found")
     return note
 
@@ -76,12 +77,12 @@ def _clean_tags(tags: Optional[List[str]]) -> List[str]:
     return out
 
 
-def _flashcard_map(db: Session, note_ids: List[int]) -> dict[int, int]:
+def _flashcard_map(db: Session, user_id: int, note_ids: List[int]) -> dict[int, int]:
     if not note_ids:
         return {}
     rows = (
         db.query(Flashcard.source_note_id, Flashcard.id)
-        .filter(Flashcard.source_note_id.in_(note_ids))
+        .filter(Flashcard.source_note_id.in_(note_ids), Flashcard.user_id == user_id)
         .all()
     )
     return {nid: fid for nid, fid in rows if nid is not None}
@@ -109,6 +110,15 @@ def _note_out(
         created_at=note.created_at,
         updated_at=note.updated_at,
     )
+
+
+def _document_title(
+    document_id: int,
+    entry_title: Optional[str],
+    shared_title: Optional[str],
+    is_shared: bool,
+) -> str:
+    return entry_title or (shared_title if is_shared else None) or f"Document {document_id}"
 
 
 def _validate_word_range(word_range: Optional[List[int]]) -> Optional[List[int]]:
@@ -256,18 +266,32 @@ def export_notes(
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
-    q = db.query(Note, Document.title).join(Document, Document.id == Note.document_id).filter(
-        Note.user_id == user.id
+    q = db.query(
+        Note,
+        Document.id,
+        LibraryEntry.title,
+        Document.shared_title,
+        Document.is_shared,
+    ).join(Document, Document.id == Note.document_id).join(
+        LibraryEntry,
+        (LibraryEntry.document_id == Document.id) & (LibraryEntry.user_id == user.id),
+    ).filter(
+        Note.user_id == user.id,
+        Note.document_id.in_(select(LibraryEntry.document_id).where(
+            LibraryEntry.user_id == user.id
+        )),
     )
     title = "All documents"
     if document_id is not None:
         doc = _owned_document(db, user, document_id)
-        title = doc.title
+        entry = get_library_entry(db, user.id, doc.id)
+        title = _document_title(doc.id, entry.title, doc.shared_title, doc.is_shared)
         q = q.filter(Note.document_id == document_id)
-    rows = q.order_by(Document.title, Note.page_number, Note.id).all()
+    rows = q.order_by(LibraryEntry.title, Note.page_number, Note.id).all()
     lines = [f"# Notes: {title}", "", f"Exported {datetime.now(timezone.utc).strftime('%Y-%m-%d')}", ""]
     current_doc = None
-    for note, doc_title in rows:
+    for note, row_doc_id, entry_title, shared_title, is_shared in rows:
+        doc_title = _document_title(row_doc_id, entry_title, shared_title, is_shared)
         if document_id is None and doc_title != current_doc:
             current_doc = doc_title
             lines.extend([f"## {doc_title}", ""])
@@ -303,14 +327,29 @@ def list_notes(
 ):
     if document_id is None and not (q or "").strip():
         raise HTTPException(status_code=400, detail="document_id or q is required")
-    query = db.query(Note).filter(Note.user_id == user.id)
+    query = db.query(Note).filter(
+        Note.user_id == user.id,
+        Note.document_id.in_(select(LibraryEntry.document_id).where(
+            LibraryEntry.user_id == user.id
+        )),
+    )
     titles: dict[int, str] = {}
     if document_id is not None:
         _owned_document(db, user, document_id)
         query = query.filter(Note.document_id == document_id)
     else:
-        docs = db.query(Document.id, Document.title).filter(Document.user_id == user.id).all()
-        titles = {d.id: d.title for d in docs}
+        docs = db.query(
+            Document.id,
+            LibraryEntry.title,
+            Document.shared_title,
+            Document.is_shared,
+        ).join(LibraryEntry, LibraryEntry.document_id == Document.id).filter(
+            LibraryEntry.user_id == user.id
+        ).all()
+        titles = {
+            doc_id: _document_title(doc_id, entry_title, shared_title, is_shared)
+            for doc_id, entry_title, shared_title, is_shared in docs
+        }
     needle = (q or "").strip()
     if needle:
         like = f"%{needle}%"
@@ -322,7 +361,7 @@ def list_notes(
             n for n in notes
             if any(str(t).lower() == tag_l for t in (n.tags or []))
         ]
-    fmap = _flashcard_map(db, [n.id for n in notes])
+    fmap = _flashcard_map(db, user.id, [n.id for n in notes])
     return [
         _note_out(n, flashcard_id=fmap.get(n.id), document_title=titles.get(n.document_id))
         for n in notes
@@ -336,7 +375,7 @@ def get_note(
     db: Session = Depends(get_db),
 ):
     note = _owned_note(db, user, note_id)
-    card = existing_card_for_note(db, note.id)
+    card = existing_card_for_note(db, note.id, user.id)
     return _note_out(note, flashcard_id=card.id if card else None)
 
 
@@ -363,7 +402,7 @@ def update_note(
         note.tags = _clean_tags(body.tags)
     db.commit()
     db.refresh(note)
-    card = existing_card_for_note(db, note.id)
+    card = existing_card_for_note(db, note.id, user.id)
     return _note_out(note, flashcard_id=card.id if card else None)
 
 

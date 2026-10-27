@@ -19,6 +19,7 @@ export async function login(page: Page, user = E2E_USER, password = E2E_PASSWORD
 }
 
 export async function openLibrary(page: Page) {
+  if (new URL(page.url()).pathname === "/dashboard") return
   const lib = page.getByRole("button", { name: "Library" })
   if ((await lib.getAttribute("aria-pressed")) !== "true") {
     await lib.click()
@@ -27,8 +28,14 @@ export async function openLibrary(page: Page) {
 }
 
 export async function openSampleDoc(page: Page) {
-  await openLibrary(page)
-  await page.getByRole("button", { name: /e2e-sample/ }).click()
+  if (new URL(page.url()).pathname === "/dashboard") {
+    if (!new URL(page.url()).searchParams.has("view")) await page.getByRole("button", { name: /^All documents/ }).click()
+    await page.getByLabel("Search documents").fill("e2e-sample")
+    await page.locator(".library-shelf").getByRole("link", { name: "Open e2e-sample", exact: true }).click()
+  } else {
+    await openLibrary(page)
+    await page.getByRole("button", { name: /e2e-sample/ }).click()
+  }
   await expect(page.locator('input[type="number"][max="2"]')).toBeVisible({ timeout: 20_000 })
   await expect(page.locator("#pdf-page-container-1 .textLayer span").first()).toBeVisible({
     timeout: 20_000,

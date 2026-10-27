@@ -1,0 +1,116 @@
+# Isolated preview of the new app. The env file and cloned data stay outside Git.
+name: deepread-preview
+
+x-backend: &backend
+  image: deepread-preview-backend:local
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  environment: &backend-env
+    DATABASE_URL: postgresql+psycopg://deepread_preview:${PREVIEW_DB_PASSWORD:?}@postgres:5432/deepread_preview
+    JWT_SECRET: ${PREVIEW_JWT_SECRET:?}
+    DATA_DIR: /app/data
+    EXPORT_DIR: /app/exports
+    ALLOW_REGISTRATION: 'false'
+    CELERY_BROKER_URL: redis://redis:6379/0
+    CELERY_RESULT_BACKEND: redis://redis:6379/1
+    LLM_ADMISSION_REDIS_URL: redis://redis:6379/2
+    OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+    VLLM_BASE_URL: http://host.docker.internal:8767/v1
+    VLLM_MODEL: ${VLLM_MODEL:-antigravity/gemini-3.8-flash-tiered}
+    VLLM_API_KEY: ${VLLM_API_KEY:-not-needed}
+    PIPER_TTS_URL: http://tts:5111
+  volumes:
+    - ${PREVIEW_STATE_DIR:?}/data:/app/data
+    - ${PREVIEW_STATE_DIR:?}/exports:/app/exports
+  extra_hosts:
+    - host.docker.internal:host-gateway
+    - iic-h100:100.69.125.79
+    - ninja:100.71.237.116
+  networks: [default, tts-shared]
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: deepread_preview
+      POSTGRES_DB: deepread_preview
+      POSTGRES_PASSWORD: ${PREVIEW_DB_PASSWORD:?}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U deepread_preview -d deepread_preview']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  api:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      RUN_MIGRATIONS: '1'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker:
+    <<: *backend
+    command: celery -A app.celery_app worker -l info -c 4 -Q default
+    depends_on: [api]
+
+  worker-tts:
+    <<: *backend
+    command: celery -A app.celery_app worker -l info -c 2 -Q tts
+    depends_on: [api]
+
+  frontend:
+    image: deepread-preview-frontend:local
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+    restart: unless-stopped
+
+  gateway:
+    image: traefik:v3.0
+    command:
+      - --entrypoints.weblocal.address=:8080
+      - --providers.file.filename=/etc/traefik/routes.yml
+    ports:
+      - 127.0.0.1:${PREVIEW_PORT:-3013}:8080
+    volumes:
+      - ./traefik/preview.yml:/etc/traefik/routes.yml:ro
+    depends_on: [api, frontend]
+    restart: unless-stopped
+
+  omniroute-bridge:
+    image: deepread-preview-backend:local
+    entrypoint: [python, /opt/omniroute_bridge.py]
+    command: []
+    network_mode: host
+    environment:
+      BRIDGE_HOST: 0.0.0.0
+      BRIDGE_PORT: '8767'
+      BRIDGE_ALLOWED_CIDRS: 127.0.0.0/8,172.16.0.0/12
+    restart: unless-stopped
+
+networks:
+  tts-shared:
+    external: true
+    name: deepread-preview-tts
+
+volumes:
+  pg_data:
+  redis_data:

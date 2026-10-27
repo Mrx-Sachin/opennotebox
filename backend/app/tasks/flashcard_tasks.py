@@ -8,20 +8,28 @@ from sqlalchemy.orm import Session
 
 from app.celery_app import celery_app
 from app.database import SessionLocal
-from app.models import Document, Summary
+from app.models import Document, LibraryEntry, Summary
 from app.services.prompts import render_jinja
 from app.services.json_extract import extract_json
 from app.services.llm_settings import get_active_llm
+from app.services.llm_semaphore import background_llm_semaphore
 from app.services.cloze import cloze_indices
 from app.services.flashcard_cards import create_basic_card, create_cloze_cards
 from app.tasks.shared import run_async
+from app.services.library_access import (
+    accessible_document_query,
+    get_library_entry,
+    visible_document_title,
+)
 
 
-def _gather_content(db: Session, doc_id: int) -> str:
+def _gather_content(db: Session, doc_id: int, user_id: int) -> str:
     """Build a page-tagged text blob from page summaries (falling back to raw pages)."""
     summaries = db.query(Summary).filter(
         Summary.document_id == doc_id,
         Summary.mode == "page",
+        Summary.user_id == user_id,
+        Summary.content != "",
     ).order_by(Summary.page_number).all()
 
     if summaries:
@@ -42,10 +50,11 @@ async def _generate(prompt: str, user_id: Optional[int] = None) -> str:
         api_key=active["api_key"],
         temperature=0.4,
     )
-    response = await model.ainvoke([
-        SystemMessage(content="You produce strict JSON only, no prose, no markdown fences."),
-        HumanMessage(content=prompt),
-    ])
+    async with background_llm_semaphore():
+        response = await model.ainvoke([
+            SystemMessage(content="You produce strict JSON only, no prose, no markdown fences."),
+            HumanMessage(content=prompt),
+        ])
     return response.content
 
 
@@ -54,28 +63,27 @@ def generate_flashcards(self, user_id: int, document_id: int) -> dict:
     """Generate 15-30 flashcards for a document and store them."""
     db: Session = SessionLocal()
     try:
-        # Constrain by user_id as well as id: the task trusts whatever
-        # (user_id, document_id) pair it is handed, and the cards it writes
-        # are stamped with that user_id. Checking ownership here means a
-        # mismatched pair fails loudly instead of quietly generating one
-        # user's cards from another user's document, rather than relying
-        # solely on every present and future caller having checked first.
-        doc = (
-            db.query(Document)
-            .filter(Document.id == document_id, Document.user_id == user_id)
-            .first()
-        )
+        # Recheck membership in the worker so a stale or forged task cannot
+        # create personal cards from a document outside the user's library.
+        doc = accessible_document_query(db, user_id).filter(
+            Document.id == document_id
+        ).first()
         if not doc:
-            raise ValueError(f"Document {document_id} not found for user {user_id}")
+            logger.warning(
+                f"Flashcard generation stopped: user {user_id} no longer has access to document {document_id}"
+            )
+            return {"document_id": document_id, "card_count": 0, "status": "not_accessible"}
 
-        content = _gather_content(db, document_id)
+        content = _gather_content(db, document_id, user_id)
         if not content.strip():
             logger.warning(f"No content available to generate flashcards for doc {document_id}")
             return {"document_id": document_id, "card_count": 0}
 
         prompt = render_jinja(
             "flashcards/generate",
-            document_title=doc.title,
+            document_title=visible_document_title(
+                doc, get_library_entry(db, user_id, document_id)
+            ),
             content=content[:60000],
         )
 
@@ -83,6 +91,14 @@ def generate_flashcards(self, user_id: int, document_id: int) -> dict:
         cards = extract_json(raw)
         if not isinstance(cards, list):
             raise ValueError("Expected a JSON array of flashcards")
+
+        db.rollback()
+        membership = db.query(LibraryEntry.id).filter(
+            LibraryEntry.user_id == user_id,
+            LibraryEntry.document_id == document_id,
+        ).with_for_update().first()
+        if not membership:
+            return {"document_id": document_id, "card_count": 0, "status": "not_accessible"}
 
         count = 0
         for entry in cards:

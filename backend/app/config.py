@@ -113,10 +113,19 @@ class Settings(BaseSettings):
     piper_tts_url: str = "http://tts:5111"
     piper_voice_model: str = "en_US-lessac-medium"
 
-    # LLM concurrency limit for single-GPU backends. 2 concurrent requests
-    # avoids OOM on consumer GPUs (24-28 GiB) while keeping latency reasonable.
-    # Raise for multi-GPU or cloud backends; lower if models are large.
-    llm_max_concurrency: int = 2
+    # Shared provider admission applies across API and Celery processes. These
+    # are application-side bounds, not a claim about provider capacity. The
+    # foreground lane can use 20 slots while background jobs are capped at 4,
+    # leaving a bounded amount of room for uploads/readers without allowing
+    # them to consume the whole interactive budget.
+    llm_max_concurrency: int = 24
+    llm_foreground_max_concurrency: int = 20
+    llm_background_max_concurrency: int = 4
+    llm_foreground_wait_seconds: float = 5.0
+    llm_background_wait_seconds: float = 120.0
+    llm_admission_lease_seconds: int = 90
+    llm_admission_redis_url: str = "redis://redis:6379/2"
+    llm_admission_key_prefix: str = "deepread:llm-admission"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

@@ -55,6 +55,9 @@ celery_app.conf.update(
         "app.tasks.podcast_tasks",
         "app.tasks.flashcard_tasks",
         "app.tasks.export_tasks",
+        "app.tasks.embedding_tasks",
+        "app.tasks.preview_tasks",
+        "app.tasks.asset_tasks",
     ],
     # TTS/podcast synthesis is interactive-latency-sensitive (a user waiting on
     # narration) but a bulk document re-parse or batch page-summary job can

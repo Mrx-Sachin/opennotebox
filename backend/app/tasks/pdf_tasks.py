@@ -4,6 +4,7 @@ Parse tasks extract text and store in DB, then chain summary tasks.
 """
 
 from loguru import logger
+from sqlalchemy import text as sql
 from sqlalchemy.orm import Session
 
 from app.celery_app import celery_app
@@ -38,6 +39,40 @@ def _chain_summaries(doc_id: int):
     generate_section_summaries.delay(doc_id)
 
 
+def _replace_extracted_pages(db: Session, doc_id: int, pages: list[dict]) -> None:
+    """Replace one document's extracted pages and invalidate its retrieval index.
+
+    Parse retries and duplicate queue deliveries are normal Celery behavior.
+    Replacing inside one transaction keeps them from duplicating page rows or
+    serving chunks built from an older extraction.
+    """
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        db.execute(
+            sql("SELECT pg_advisory_xact_lock(:namespace, :doc_id)"),
+            {"namespace": 2030401, "doc_id": int(doc_id)},
+        )
+
+    from app.services import retrieval
+
+    db.query(ExtractedText).filter(
+        ExtractedText.document_id == doc_id
+    ).delete(synchronize_session=False)
+    retrieval.delete_document_chunks(db, doc_id)
+
+    db.add_all(
+        ExtractedText(
+            document_id=doc_id,
+            page_number=page["page_number"],
+            content=page["content"],
+            bounding_boxes=page.get("bounding_boxes"),
+            headings=page.get("headings"),
+            tables=page.get("tables"),
+            images=page.get("images"),
+        )
+        for page in pages
+    )
+
+
 @celery_app.task(bind=True, max_retries=3, soft_time_limit=300)
 def parse_pdf_document(self, doc_id: int) -> dict:
     """Parse a PDF document using OpenDataLoader, store extracted text per page."""
@@ -61,18 +96,7 @@ def parse_pdf_document(self, doc_id: int) -> dict:
         doc.processing_status = "extracting"
         db.commit()
 
-        for page_data in result["pages"]:
-            et = ExtractedText(
-                document_id=doc_id,
-                page_number=page_data["page_number"],
-                content=page_data["content"],
-                bounding_boxes=page_data.get("bounding_boxes"),
-                headings=page_data.get("headings"),
-                tables=page_data.get("tables"),
-                images=page_data.get("images"),
-            )
-            db.add(et)
-
+        _replace_extracted_pages(db, doc_id, result["pages"])
         doc.processing_status = "extracted"
         db.commit()
         logger.info(
@@ -114,26 +138,6 @@ def reparse_pdf_document(self, doc_id: int) -> dict:
         doc.processing_status = "parsing"
         db.commit()
 
-        # Drop previous page extractions so we don't accumulate duplicates.
-        db.query(ExtractedText).filter(ExtractedText.document_id == doc_id).delete()
-        # The retrieval chunk index has no FK cascade and no staleness
-        # tracking - drop it here too, otherwise the next chat keeps
-        # retrieving the OLD text (the lazy indexer skips any document that
-        # already has chunks).
-        from app.services import retrieval
-
-        retrieval.delete_document_chunks(db, doc_id)
-        # Drop empty section stubs (no content yet) so detection re-runs.
-        # Keep rows that already have generated summary content.
-        empty_sections = db.query(Summary).filter(
-            Summary.document_id == doc_id,
-            Summary.mode == "section",
-            Summary.content == "",
-        ).all()
-        for s in empty_sections:
-            db.delete(s)
-        db.flush()
-
         layout_mode = getattr(doc, "layout_mode", None) or "auto"
         result = pdf_parser.parse_pdf(
             doc.file_path, use_ocr=_resolve_ocr(), layout_mode=layout_mode
@@ -141,19 +145,18 @@ def reparse_pdf_document(self, doc_id: int) -> dict:
         if result is None:
             raise RuntimeError(f"PDF re-parse returned None for document {doc_id}")
 
-        doc.num_pages = result["num_pages"]
-        for page_data in result["pages"]:
-            et = ExtractedText(
-                document_id=doc_id,
-                page_number=page_data["page_number"],
-                content=page_data["content"],
-                bounding_boxes=page_data.get("bounding_boxes"),
-                headings=page_data.get("headings"),
-                tables=page_data.get("tables"),
-                images=page_data.get("images"),
-            )
-            db.add(et)
+        _replace_extracted_pages(db, doc_id, result["pages"])
+        # Drop empty section stubs so section detection re-runs with the new
+        # text. Keep rows that already have generated summary content.
+        empty_sections = db.query(Summary).filter(
+            Summary.document_id == doc_id,
+            Summary.mode == "section",
+            Summary.content == "",
+        ).all()
+        for summary in empty_sections:
+            db.delete(summary)
 
+        doc.num_pages = result["num_pages"]
         doc.processing_status = "extracted"
         db.commit()
         logger.info(
@@ -196,20 +199,16 @@ def parse_txt(file_path: str, title: str, doc_id: int) -> dict:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
 
+        pages = []
         page_num = 1
         chunk_size = 3000
 
         for i in range(0, len(content), chunk_size):
             chunk = content[i:i + chunk_size]
-            et = ExtractedText(
-                document_id=doc_id,
-                page_number=page_num,
-                content=chunk,
-                bounding_boxes=None,
-            )
-            db.add(et)
+            pages.append({"page_number": page_num, "content": chunk})
             page_num += 1
 
+        _replace_extracted_pages(db, doc_id, pages)
         doc.num_pages = max(page_num - 1, 1)
         doc.processing_status = "extracted"
         db.commit()
@@ -249,14 +248,11 @@ def parse_md(file_path: str, title: str, doc_id: int) -> dict:
             if line.startswith("#"):
                 headings.append({"title": line.lstrip("# ").strip(), "level": len(line) - len(line.lstrip("#"))})
 
-        et = ExtractedText(
-            document_id=doc_id,
-            page_number=1,
-            content=content,
-            bounding_boxes=None,
-            headings=headings,
+        _replace_extracted_pages(
+            db,
+            doc_id,
+            [{"page_number": 1, "content": content, "headings": headings}],
         )
-        db.add(et)
         doc.num_pages = 1
         doc.processing_status = "extracted"
         db.commit()

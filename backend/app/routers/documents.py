@@ -1,5 +1,6 @@
 """Document upload, listing, and management router."""
 import asyncio
+import hashlib
 import ipaddress
 from datetime import datetime, timezone
 import httpx
@@ -7,7 +8,8 @@ import logging
 import os
 import socket
 import uuid
-from typing import Optional
+from pathlib import Path
+from typing import Literal, Optional
 
 import httpcore
 
@@ -15,11 +17,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, 
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 from app.database import get_db
-from app.models import User, Document, ExtractedText, Summary, TTSCache
+from app.models import (User, Document, ExtractedText, Summary, TTSCache, Podcast, Notebook, LibraryEntry, Note, Bookmark, Flashcard)
 from app.schemas import (
     DocumentResponse,
+    DocumentLibraryResponse,
     ExtractedTextResponse,
     ReadingProgressIn,
     SectionSummaryGenerateRequest,
@@ -31,6 +36,7 @@ from app.tasks.pdf_tasks import parse_pdf_document, parse_txt, parse_md, reparse
 from app.tasks.doc_tasks import parse_docx, parse_pptx
 from app.tasks.epub_tasks import parse_epub
 from app.services.summarizer import summarizer
+from app.services.library_access import (get_document_for_user, get_library_entry, document_response)
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +122,107 @@ def _dispatch_parse(fmt: str, file_path: str, filename: str, doc_id: int) -> Non
 _EXTRACTED_STATUSES = {"extracted", "summarizing_pages", "summarizing_sections", "completed"}
 
 
-def _ensure_section_stubs(db: Session, doc: Document) -> None:
+def _serialize_documents(db: Session, documents: list[Document], user_id: int) -> list[dict]:
+    if not documents:
+        return []
+    ids = [doc.id for doc in documents]
+    entries = {entry.document_id: entry for entry in db.query(LibraryEntry).filter(
+        LibraryEntry.user_id == user_id, LibraryEntry.document_id.in_(ids)
+    ).all()}
+    counts = dict(db.query(LibraryEntry.document_id, func.count(LibraryEntry.id)).filter(
+        LibraryEntry.document_id.in_(ids)
+    ).group_by(LibraryEntry.document_id).all())
+    return [document_response(doc, entries[doc.id], member_count=counts.get(doc.id, 0)) for doc in documents]
+
+
+def _lock_library_entry(db: Session, user_id: int, doc_id: int) -> LibraryEntry:
+    entry = db.query(LibraryEntry).filter(
+        LibraryEntry.user_id == user_id, LibraryEntry.document_id == doc_id
+    ).with_for_update().first()
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return entry
+
+
+def _enqueue_personal_summary(db: Session, summary: Summary, task, *args) -> None:
+    summary.status = "generating"
+    db.commit()
+    try:
+        task.delay(*args)
+    except Exception:
+        summary.status = "failed"
+        db.commit()
+        logger.exception("Could not queue personal summary %s", summary.id)
+        raise HTTPException(status_code=503, detail="Summary processing is temporarily unavailable") from None
+    db.refresh(summary)
+
+
+def _file_fingerprint(file_path: str) -> str:
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(128 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _reuse_uploaded_asset(db: Session, asset: Document, user: User, title: str,
+                         notebook_id: int | None, original_url: str | None) -> Document:
+    # Serialize with publication changes and removal; existing attachments are never moved implicitly.
+    asset = db.query(Document).filter(Document.id == asset.id).with_for_update().one_or_none()
+    if asset is None:
+        return None
+    entry = db.query(LibraryEntry).filter(
+        LibraryEntry.user_id == user.id, LibraryEntry.document_id == asset.id
+    ).first()
+    if entry is None:
+        entry = LibraryEntry(user_id=user.id, document_id=asset.id, notebook_id=notebook_id,
+                             title=title, original_url=original_url, can_publish=True)
+        db.add(entry)
+    else:
+        entry.can_publish = True
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        entry = get_library_entry(db, user.id, asset.id)
+        entry.can_publish = True
+        db.commit()
+    return asset
+
+
+def _save_uploaded_asset(db: Session, user: User, title: str, fmt: str, file_path: str,
+                         file_size: int, notebook_id: int | None, layout_mode: str = "auto",
+                         original_url: str | None = None) -> tuple[Document, bool]:
+    fingerprint = _file_fingerprint(file_path)
+    existing = db.query(Document).filter(Document.content_hash == fingerprint).first()
+    if existing is not None:
+        reused = _reuse_uploaded_asset(db, existing, user, title, notebook_id, original_url)
+        if reused is not None:
+            Path(file_path).unlink(missing_ok=True)
+            return reused, False
+    asset = Document(user_id=user.id, notebook_id=notebook_id, title=title, format=fmt,
+                     file_path=file_path, file_size=file_size, content_hash=fingerprint,
+                     layout_mode=layout_mode, original_url=original_url, processing_status="pending")
+    db.add(asset)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.query(Document).filter(Document.content_hash == fingerprint).first()
+        if existing is None:
+            Path(file_path).unlink(missing_ok=True)
+            raise
+        reused = _reuse_uploaded_asset(db, existing, user, title, notebook_id, original_url)
+        if reused is None:
+            return _save_uploaded_asset(db, user, title, fmt, file_path, file_size, notebook_id,
+                                        layout_mode, original_url)
+        Path(file_path).unlink(missing_ok=True)
+        return reused, False
+    db.refresh(asset)
+    return asset, True
+
+
+def _ensure_section_stubs(db: Session, doc: Document, user_id: int) -> None:
     """Backfill section detection for documents processed before on-demand
     chapter summaries existed, or whose only stored "section" is the old
     heading-heuristic single blob ("Full Document" / "Remaining"). Cheap: no
@@ -126,7 +232,7 @@ def _ensure_section_stubs(db: Session, doc: Document) -> None:
         return
 
     existing = db.query(Summary).filter(
-        Summary.document_id == doc.id, Summary.mode == "section"
+        Summary.document_id == doc.id, Summary.mode == "section", Summary.user_id == user_id
     ).all()
     has_real_sections = any(
         s.section_title not in (None, "Full Document", "Remaining") for s in existing
@@ -137,6 +243,20 @@ def _ensure_section_stubs(db: Session, doc: Document) -> None:
     all_levels_null = bool(existing) and all(s.level is None for s in existing)
     if has_real_sections and not all_levels_null:
         return
+
+    if not existing:
+        source = db.query(Summary.section_title, Summary.start_page, Summary.end_page,
+                          Summary.level, Summary.page_number).filter(
+            Summary.document_id == doc.id, Summary.mode == "section",
+            Summary.user_id == doc.user_id,
+        ).all() if doc.user_id is not None else []
+        if source:
+            for row in source:
+                db.add(Summary(document_id=doc.id, user_id=user_id, mode="section", content="",
+                               section_title=row.section_title, start_page=row.start_page,
+                               end_page=row.end_page, level=row.level, page_number=row.page_number))
+            db.commit()
+            return
 
     pages = db.query(ExtractedText).filter(
         ExtractedText.document_id == doc.id
@@ -166,27 +286,120 @@ def _ensure_section_stubs(db: Session, doc: Document) -> None:
         if not s.content:
             db.delete(s)
     db.flush()
-    persist_section_stubs(db, doc.id, sections_meta)
+    persist_section_stubs(db, doc.id, sections_meta, user_id=user_id)
+
+
+@router.get("/library", response_model=DocumentLibraryResponse)
+def get_library(
+    search: str = Query(default="", max_length=200),
+    format: Optional[Literal["pdf", "epub", "docx", "pptx", "txt", "md"]] = None,
+    shelf: Literal["all", "reading", "unread", "processing", "failed"] = "all",
+    sort: Literal["recent", "newest", "title"] = "newest",
+    notebook_id: Optional[int] = Query(default=None, ge=1),
+    unfiled: bool = False,
+    limit: int = Query(default=24, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Return a searchable page of the current user's library and shelf counts."""
+    if notebook_id is not None and unfiled:
+        raise HTTPException(
+            status_code=422,
+            detail="notebook_id and unfiled cannot be used together",
+        )
+    library = db.query(Document).join(LibraryEntry, LibraryEntry.document_id == Document.id).filter(LibraryEntry.user_id == user.id)
+    if notebook_id is not None:
+        owned_notebook = db.query(Notebook.id).filter(
+            Notebook.id == notebook_id,
+            Notebook.user_id == user.id,
+        ).first()
+        if owned_notebook is None:
+            raise HTTPException(status_code=404, detail="Notebook not found")
+        library = library.filter(LibraryEntry.notebook_id == notebook_id)
+    elif unfiled:
+        library = library.filter(LibraryEntry.notebook_id.is_(None))
+    reading = library.filter(LibraryEntry.last_read_at.isnot(None))
+    processing = library.filter(
+        Document.processing_status.notin_(_EXTRACTED_STATUSES | {"failed"})
+    )
+    failed = library.filter(Document.processing_status == "failed")
+    query = library
+    if search.strip():
+        query = query.filter(LibraryEntry.title.icontains(search.strip(), autoescape=True))
+    if format:
+        query = query.filter(Document.format == format)
+    if shelf == "reading":
+        query = query.filter(LibraryEntry.last_read_at.isnot(None))
+    elif shelf == "unread":
+        query = query.filter(LibraryEntry.last_read_at.is_(None))
+    elif shelf == "processing":
+        query = query.filter(
+            Document.processing_status.notin_(_EXTRACTED_STATUSES | {"failed"})
+        )
+    elif shelf == "failed":
+        query = query.filter(Document.processing_status == "failed")
+    total = query.count()
+    if sort == "title":
+        query = query.order_by(func.lower(LibraryEntry.title), Document.id)
+    elif sort == "recent":
+        query = query.order_by(
+            func.coalesce(LibraryEntry.last_read_at, LibraryEntry.added_at).desc(), Document.id.desc()
+        )
+    else:
+        query = query.order_by(LibraryEntry.added_at.desc(), Document.id.desc())
+    # Use the same base scope for aggregate format counts, including notebook
+    # and unfiled filters, while leaving search and shelf selectors out of it.
+    format_query = (
+        db.query(Document.format, func.count(Document.id))
+        .join(LibraryEntry, LibraryEntry.document_id == Document.id)
+        .filter(LibraryEntry.user_id == user.id)
+    )
+    if notebook_id is not None:
+        format_query = format_query.filter(LibraryEntry.notebook_id == notebook_id)
+    elif unfiled:
+        format_query = format_query.filter(LibraryEntry.notebook_id.is_(None))
+    formats = format_query.group_by(Document.format).all()
+    return {
+        "documents": _serialize_documents(db, query.offset(offset).limit(limit).all(), user.id),
+        "total": total,
+        "library_total": library.count(),
+        "reading_count": reading.count(),
+        "processing_count": processing.count(),
+        "failed_count": failed.count(),
+        "formats": dict(formats),
+        "recent": _serialize_documents(db, reading.order_by(LibraryEntry.last_read_at.desc(), Document.id.desc()).limit(3).all(), user.id),
+    }
 
 
 @router.get("", response_model=list[DocumentResponse])
 def list_documents(
     limit: int = Query(default=50, ge=1, le=200),  # 50 covers a full page; 200 is the hard cap
     offset: int = Query(default=0, ge=0),
+    notebook_id: Optional[int] = Query(default=None, ge=1),
+    unfiled: bool = False,
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
-    """List all documents for the current user."""
-    docs = db.query(Document).filter(
-        Document.user_id == user.id
-    ).order_by(Document.created_at.desc()).offset(offset).limit(limit).all()
-    return docs
+    """List owned documents, optionally scoped to a notebook."""
+    query = db.query(Document).join(LibraryEntry, LibraryEntry.document_id == Document.id).filter(LibraryEntry.user_id == user.id)
+    if notebook_id is not None and unfiled:
+        raise HTTPException(status_code=422, detail="Choose a notebook or Unfiled")
+    if notebook_id is not None:
+        if not db.query(Notebook.id).filter(Notebook.id == notebook_id, Notebook.user_id == user.id).first():
+            raise HTTPException(status_code=404, detail="Notebook not found")
+        query = query.filter(LibraryEntry.notebook_id == notebook_id)
+    elif unfiled:
+        query = query.filter(LibraryEntry.notebook_id.is_(None))
+    docs = query.order_by(LibraryEntry.added_at.desc()).offset(offset).limit(limit).all()
+    return _serialize_documents(db, docs, user.id)
 
 
 @router.post("/upload", response_model=DocumentResponse)
 async def upload_document(
     file: UploadFile = File(...),
     layout_mode: str = Form("auto"),
+    notebook_id: Optional[int] = Form(None, ge=1),
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
@@ -195,6 +408,12 @@ async def upload_document(
     layout_mode: auto | single_column | research_paper
     """
     import asyncio
+
+    if notebook_id is not None and not db.query(Notebook.id).filter(
+        Notebook.id == notebook_id,
+        Notebook.user_id == user.id,
+    ).first():
+        raise HTTPException(status_code=404, detail="Notebook not found")
 
     file_ext = os.path.splitext(file.filename)[1].lower()
 
@@ -226,19 +445,12 @@ async def upload_document(
             detail=f"File too large (max {settings.upload_max_size_mb} MB)",
         )
 
-    doc = Document(
-        user_id=user.id,
-        title=file.filename,
-        format=fmt,
-        file_path=file_path,
-        file_size=file_size,
-        layout_mode=layout_mode if fmt == "pdf" else "single_column",
-        processing_status="pending",
+    doc, created = await asyncio.to_thread(
+        _save_uploaded_asset, db, user, file.filename, fmt, file_path, file_size,
+        notebook_id, layout_mode if fmt == "pdf" else "single_column",
     )
-
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
+    if not created:
+        return document_response(doc, get_library_entry(db, user.id, doc.id))
 
     # Dispatch parse task only - summary tasks are chained from within the parse task
     try:
@@ -253,7 +465,7 @@ async def upload_document(
         db.commit()
         raise HTTPException(status_code=500, detail=f"Upload saved but processing failed to start: {e}")
 
-    return doc
+    return document_response(doc, get_library_entry(db, user.id, doc.id))
 
 
 # Magic-byte sniffing for the formats this endpoint accepts. A URL ending in
@@ -303,11 +515,11 @@ class _PinnedIPNetworkBackend(httpcore.SyncBackend):
         self._default = httpcore.SyncBackend()
 
     def _pinned(self, host: str, port: int) -> tuple[str, ...] | None:
-        ip = ipaddress.ip_address(host)
-        if ip.version == 6:
-            key = f"[{host}]:{port}"
+        normalized_host = host.removeprefix("[").removesuffix("]").lower().rstrip(".")
+        if ":" in normalized_host:
+            key = f"[{normalized_host}]:{port}"
         else:
-            key = f"{host}:{port}"
+            key = f"{normalized_host}:{port}"
         return self._pins.get(key)
 
     def connect_tcp(
@@ -364,6 +576,9 @@ def _pinned_client(
     )
 
     class _PinnedTransport(httpx.BaseTransport):
+        def __init__(self, connection_pool: httpcore.ConnectionPool):
+            self._pool = connection_pool
+
         def handle_request(self, request):
             # Same httpx->httpcore conversion httpx's own HTTPTransport does.
             from httpx._transports.default import (
@@ -394,7 +609,7 @@ def _pinned_client(
         def close(self):
             self._pool.close()
 
-    kwargs = {"transport": _PinnedTransport()}
+    kwargs = {"transport": _PinnedTransport(pool)}
     if response_hook is not None:
         kwargs["event_hooks"] = {"response": [response_hook]}
     return httpx.Client(**kwargs)
@@ -455,10 +670,17 @@ def _validate_download_url(url: str) -> dict[str, tuple[str, ...]]:
 @router.post("/upload-url")
 async def upload_from_url(
     url: str = Form(...),
+    notebook_id: Optional[int] = Form(None, ge=1),
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
     """Download a document from a URL and add it for processing."""
+    if notebook_id is not None and not db.query(Notebook.id).filter(
+        Notebook.id == notebook_id,
+        Notebook.user_id == user.id,
+    ).first():
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
     # Validate the initial URL (scheme + resolved IP) before touching the
     # network. The returned pins are the ONLY addresses the fetch will
     # connect to: no second DNS lookup ever happens, so a 0-TTL rebinding
@@ -575,18 +797,12 @@ async def upload_from_url(
             "in a browser first to get a direct download URL.",
         )
 
-    doc = Document(
-        user_id=user.id,
-        title=safe_title,
-        format=fmt,
-        file_path=file_path,
-        file_size=file_size,
-        original_url=url,
-        processing_status="pending",
+    doc, created = await asyncio.to_thread(
+        _save_uploaded_asset, db, user, safe_title, fmt, file_path, file_size,
+        notebook_id, "auto", url,
     )
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
+    if not created:
+        return {"id": doc.id, "status": doc.processing_status}
 
     # Dispatch parse task only - summary tasks are chained from within the parse task
     try:
@@ -621,12 +837,12 @@ def reparse_document(
     After re-parsing, section detection re-runs automatically while any
     existing summaries are preserved.
     """
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user.id,
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = get_document_for_user(db, user.id, doc_id)
+
+    doc = db.query(Document).filter(Document.id == doc_id).with_for_update().one()
+    members = db.query(LibraryEntry.id).filter(LibraryEntry.document_id == doc_id).count()
+    if doc.user_id != user.id or doc.is_shared or members > 1:
+        raise HTTPException(status_code=409, detail="This document version is shared or reused. Upload a revised PDF to create a new version.")
 
     if doc.format != "pdf":
         raise HTTPException(
@@ -652,13 +868,8 @@ def get_document(
     db: Session = Depends(get_db),
 ):
     """Get a single document by ID."""
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user.id
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-    return doc
+    doc = get_document_for_user(db, user.id, doc_id)
+    return document_response(doc, get_library_entry(db, user.id, doc_id))
 
 
 @router.get("/{doc_id}/status")
@@ -668,12 +879,7 @@ def get_document_status(
     db: Session = Depends(get_db),
 ):
     """Get processing status for a document."""
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user.id
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = get_document_for_user(db, user.id, doc_id)
     return {"id": doc.id, "processing_status": doc.processing_status, "num_pages": doc.num_pages}
 
 
@@ -692,12 +898,7 @@ def update_reading_progress(
     one useful value, and keeping every intermediate scroll position would be
     a write per second per reader in exchange for nothing anyone would read.
     """
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user.id
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = get_document_for_user(db, user.id, doc_id)
 
     # Clamp rather than reject: a page count can shrink under the reader when
     # a document is re-parsed with a different layout mode, and failing the
@@ -706,11 +907,12 @@ def update_reading_progress(
     if doc.num_pages:
         page = max(1, min(page, doc.num_pages))
 
-    doc.last_read_page = page
-    doc.last_read_position = body.position
-    doc.last_read_at = datetime.now(timezone.utc)
+    entry = get_library_entry(db, user.id, doc_id)
+    entry.last_read_page = page
+    entry.last_read_position = body.position
+    entry.last_read_at = datetime.now(timezone.utc)
     db.commit()
-    return doc
+    return document_response(doc, entry)
 
 
 @router.get("/{doc_id}/pages", response_model=list[ExtractedTextResponse])
@@ -722,12 +924,7 @@ def get_document_pages(
     db: Session = Depends(get_db),
 ):
     """Get extracted pages for a document, paginated."""
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user.id
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    get_document_for_user(db, user.id, doc_id)
 
     pages = db.query(ExtractedText).filter(
         ExtractedText.document_id == doc_id
@@ -743,12 +940,7 @@ def get_page(
     db: Session = Depends(get_db),
 ):
     """Get a specific page's extracted text."""
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user.id
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    get_document_for_user(db, user.id, doc_id)
 
     page = db.query(ExtractedText).filter(
         ExtractedText.document_id == doc_id,
@@ -767,18 +959,15 @@ def get_document_summaries(
     db: Session = Depends(get_db),
 ):
     """Get all summaries for a document."""
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user.id
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = get_document_for_user(db, user.id, doc_id)
 
     if mode is None or mode == "section":
-        _ensure_section_stubs(db, doc)
+        _ensure_section_stubs(db, doc, user.id)
 
     query = db.query(Summary).filter(
-        Summary.document_id == doc_id
+        Summary.document_id == doc_id,
+        Summary.user_id == user.id,
+        Summary.mode != "page_job",
     )
     if mode:
         query = query.filter(Summary.mode == mode)
@@ -798,17 +987,14 @@ def generate_section_summary(
     detected section. Lets the user pick just the chapter they want to read
     instead of waiting for whole-book background summarization.
     """
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user.id
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = get_document_for_user(db, user.id, doc_id)
 
-    _ensure_section_stubs(db, doc)
+    _ensure_section_stubs(db, doc, user.id)
+    _lock_library_entry(db, user.id, doc_id)
 
     summary = db.query(Summary).filter(
         Summary.document_id == doc_id,
+        Summary.user_id == user.id,
         Summary.mode == "section",
         Summary.section_title == body.section_title,
     ).first()
@@ -820,10 +1006,8 @@ def generate_section_summary(
 
     if summary.status != "generating":
         from app.tasks.summary_tasks import generate_single_section_summary
-        generate_single_section_summary.delay(doc_id, body.section_title)
-        summary.status = "generating"
-        db.commit()
-        db.refresh(summary)
+        _enqueue_personal_summary(db, summary, generate_single_section_summary,
+                                  doc_id, body.section_title, user.id)
 
     return summary
 
@@ -840,12 +1024,8 @@ def generate_page_summary(
     user read a page's guided-teaching explanation without waiting for the
     whole document to be summarized.
     """
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user.id
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    get_document_for_user(db, user.id, doc_id)
+    _lock_library_entry(db, user.id, doc_id)
 
     page = db.query(ExtractedText).filter(
         ExtractedText.document_id == doc_id,
@@ -856,29 +1036,28 @@ def generate_page_summary(
 
     summary = db.query(Summary).filter(
         Summary.document_id == doc_id,
+        Summary.user_id == user.id,
         Summary.mode == "page",
         Summary.page_number == body.page_number,
     ).first()
     if not summary:
         summary = Summary(
             document_id=doc_id,
+            user_id=user.id,
             mode="page",
             page_number=body.page_number,
             content="",
         )
         db.add(summary)
-        db.commit()
-        db.refresh(summary)
+        db.flush()
 
     if summary.content:
         return summary
 
     if summary.status != "generating":
         from app.tasks.summary_tasks import generate_single_page_summary
-        generate_single_page_summary.delay(doc_id, body.page_number)
-        summary.status = "generating"
-        db.commit()
-        db.refresh(summary)
+        _enqueue_personal_summary(db, summary, generate_single_page_summary,
+                                  doc_id, body.page_number, user.id)
 
     return summary
 
@@ -893,15 +1072,36 @@ def generate_all_page_summaries(
     upload-time behavior). Can take hours for a large book - idempotent
     across retries, see tasks/summary_tasks.generate_page_summaries.
     """
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user.id
+    get_document_for_user(db, user.id, doc_id)
+    doc = db.query(Document).filter(Document.id == doc_id).with_for_update().one()
+    if doc.processing_status not in _EXTRACTED_STATUSES:
+        raise HTTPException(status_code=409, detail="Document text is not ready for summaries")
+    marker = db.query(Summary).filter(
+        Summary.document_id == doc_id,
+        Summary.user_id == user.id,
+        Summary.mode == "page_job",
     ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    if marker is not None and marker.status == "generating":
+        return {"doc_id": doc_id, "status": "already_generating"}
+    if marker is None:
+        marker = Summary(
+            document_id=doc_id,
+            user_id=user.id,
+            mode="page_job",
+            page_number=0,
+            content="",
+        )
+        db.add(marker)
+    marker.status = "generating"
+    db.commit()
 
     from app.tasks.summary_tasks import generate_page_summaries
-    generate_page_summaries.delay(doc_id)
+    try:
+        generate_page_summaries.delay(doc_id, user.id)
+    except Exception:
+        marker.status = "failed"
+        db.commit()
+        raise HTTPException(status_code=503, detail="Summary processing is temporarily unavailable") from None
     return {"doc_id": doc_id, "status": "queued"}
 
 
@@ -911,43 +1111,58 @@ def delete_document(
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
-    """Delete a document and its associated data."""
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user.id
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    if os.path.exists(doc.file_path):
-        os.remove(doc.file_path)
-
-    # TTSCache has no ORM relationship/FK cascade to Document (it's keyed by
-    # text_hash, not document_id, and rows from /api/tts/play/text have
-    # document_id=NULL entirely), so deleting the Document row alone leaves
-    # its narration audio orphaned on disk forever - this was silently
-    # happening for every delete (391MB / 511 files found stranded before
-    # this fix). Remove the cache rows and their .wav files explicitly,
-    # before deleting the document itself.
-    tts_rows = db.query(TTSCache).filter(TTSCache.document_id == doc_id).all()
-    for row in tts_rows:
-        if row.audio_path and os.path.exists(row.audio_path):
-            try:
-                os.remove(row.audio_path)
-            except OSError:
-                pass
-        db.delete(row)
-
-    # The chunk table is a raw-SQL derived index with no FK cascade, so the
-    # old chunks would otherwise keep serving deleted documents' full text
-    # to BM25/semantic search forever.
-    from app.services import retrieval
-
-    retrieval.delete_document_chunks(db, doc_id)
-
-    db.delete(doc)
+    """Remove the requester's library entry while retaining other users' book data."""
+    doc = get_document_for_user(db, user.id, doc_id)
+    doc = db.query(Document).filter(Document.id == doc_id).with_for_update().one()
+    entry = get_library_entry(db, user.id, doc_id)
+    from app.services.asset_lifecycle import asset_has_active_jobs, delete_unreferenced_asset, remove_asset_files
+    had_active_jobs = asset_has_active_jobs(db, doc)
+    removable_audio = []
+    for model in (TTSCache, Podcast):
+        for row in db.query(model).filter(model.document_id == doc_id, model.user_id == user.id).all():
+            path = row.audio_path
+            if path:
+                removable_audio.append(path)
+            db.delete(row)
+    for model in (Note, Bookmark, Flashcard, Summary):
+        db.query(model).filter(model.document_id == doc_id, model.user_id == user.id).delete(synchronize_session=False)
+    db.delete(entry)
+    if doc.shared_by_user_id == user.id:
+        doc.is_shared = False
+        doc.shared_by_user_id = None
+    db.flush()
+    remaining = db.query(LibraryEntry.id).filter(LibraryEntry.document_id == doc_id).count()
+    asset_path = None
+    if remaining == 0 and not doc.is_shared and not had_active_jobs:
+        asset_path = delete_unreferenced_asset(db, doc)
     db.commit()
-    return {"detail": "Document deleted"}
+    # Removing a file only after its last committed reference avoids deleting a retained asset.
+    for path in removable_audio:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove personal audio artifact", exc_info=True)
+    if asset_path:
+        remove_asset_files(doc_id, asset_path)
+    elif remaining == 0 and not doc.is_shared:
+        from app.tasks.asset_tasks import collect_unreferenced_asset
+        try:
+            collect_unreferenced_asset.apply_async(args=[doc_id], countdown=300)
+        except Exception:
+            logger.warning("Could not queue asset collection for %s", doc_id, exc_info=True)
+    return {"detail": "Document removed from your library"}
+
+
+@router.get("/{doc_id}/preview")
+def get_document_preview(
+    doc_id: int,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Serve a cached asset cover after checking personal membership."""
+    doc = get_document_for_user(db, user.id, doc_id)
+    from app.services.document_preview import serve_document_preview
+    return serve_document_preview(doc)
 
 
 @router.get("/{doc_id}/file")
@@ -957,16 +1172,11 @@ def download_file(
     db: Session = Depends(get_db),
 ):
     """Download the original document file (for PDF.js viewer)."""
-    doc = db.query(Document).filter(
-        Document.id == doc_id,
-        Document.user_id == user.id,
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = get_document_for_user(db, user.id, doc_id)
     if not os.path.exists(doc.file_path):
         raise HTTPException(status_code=404, detail="File not found on disk")
     return FileResponse(
         doc.file_path,
         media_type="application/pdf",
-        filename=doc.title,
+        filename=get_library_entry(db, user.id, doc_id).title or "document.pdf",
     )

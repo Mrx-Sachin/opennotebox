@@ -57,11 +57,37 @@ export const getMe = () =>
 export const listUsers = () =>
   api.get<User[]>("/api/auth/users").then((r) => r.data)
 
+export interface AdminDocInfo {
+  id: number
+  title: string
+  file_size: number
+  num_pages: number
+  format: string
+  processing_status: string
+  created_at: string | null
+}
+
+export interface UserStats {
+  id: number
+  username: string
+  is_admin: boolean
+  created_at: string | null
+  doc_count: number
+  total_bytes: number
+  documents: AdminDocInfo[]
+}
+
+export const getUserStats = () =>
+  api.get<UserStats[]>("/api/auth/users/stats").then((r) => r.data)
+
 export const updateUser = (userId: number, isAdmin: boolean) =>
   api.patch<User>(`/api/auth/users/${userId}`, { is_admin: isAdmin }).then((r) => r.data)
 
 export const deleteUser = (userId: number) =>
   api.delete(`/api/auth/users/${userId}`).then((r) => r.data)
+
+export const adminCreateUser = (username: string, password: string) =>
+  api.post<User>("/api/auth/users", { username, password }).then((r) => r.data)
 
 // --- 401 handling -----------------------------------------------------
 // The access token expires (24h) long before the user's session ends, and
@@ -183,9 +209,10 @@ export const reparseDocument = (docId: number, layoutMode?: LayoutMode) =>
     )
     .then((r) => r.data)
 
-export const uploadFromUrl = (url: string) => {
+export const uploadFromUrl = (url: string, notebookId?: number | null) => {
   const formData = new FormData()
   formData.append("url", url)
+  if (notebookId != null) formData.append("notebook_id", String(notebookId))
   return api.post("/api/documents/upload-url", formData).then((r) => r.data)
 }
 

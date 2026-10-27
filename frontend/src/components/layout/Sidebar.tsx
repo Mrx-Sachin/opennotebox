@@ -1,10 +1,11 @@
 "use client"
 
 import React, { useEffect, useMemo, useRef, useState } from "react"
-import { Plus, FileText, ChevronsRight, X } from "lucide-react"
+import { Plus, FileText, ChevronsRight, X, UsersRound } from "lucide-react"
 import { useReader } from "@/stores/reader"
 import { Document, User } from "@/services/api"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 
 interface SidebarProps {
   documents: Document[]
@@ -54,6 +55,7 @@ function statusBadge(status: string) {
 }
 
 export default function Sidebar({ documents, loading, onDelete, user }: SidebarProps) {
+  const router = useRouter()
   const { sidebarCollapsed, selectedDocId, selectDoc, setUploadModalOpen, toggleSidebar } = useReader()
 
   // Rendered order of doc ids. Deliberately decoupled from `documents`'
@@ -186,6 +188,15 @@ export default function Sidebar({ documents, loading, onDelete, user }: SidebarP
           <Plus className="h-4 w-4 shrink-0" />
           {!sidebarCollapsed && <span>Add</span>}
         </button>
+        <Link
+          href="/dashboard/shared"
+          title="Shared library"
+          aria-label="Shared library"
+          className={`mt-2 flex items-center justify-center gap-2 rounded-lg border border-surface py-2 text-xs text-cream-dim transition-colors hover:bg-surface hover:text-cream focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo ${sidebarCollapsed ? "w-10 px-0" : "w-full px-3"}`}
+        >
+          <UsersRound className="h-4 w-4 shrink-0" aria-hidden="true" />
+          {!sidebarCollapsed && <span>Shared library</span>}
+        </Link>
       </div>
 
       <nav className="reader-scroll flex-1 overflow-y-auto px-2 pb-3">
@@ -208,7 +219,10 @@ export default function Sidebar({ documents, loading, onDelete, user }: SidebarP
               return (
                 <li key={doc.id}>
                   <button
-                    onClick={() => selectDoc(doc.id, doc.num_pages, doc.last_read_page ?? undefined)}
+                    onClick={() => {
+                      selectDoc(doc.id, doc.num_pages, doc.last_read_page ?? undefined)
+                      router.push(`/dashboard/read/${doc.id}`)
+                    }}
                     title={doc.title}
                     className={`group flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
                       active

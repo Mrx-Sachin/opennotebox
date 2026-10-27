@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """OmniRoute Bridge for DeepRead / OpenNotebox.
 
-Exposes an OpenAI-compatible endpoint on 0.0.0.0:8766 (accessible from Docker
-containers via host.docker.internal:8766) that routes to the local model-router
-at 127.0.0.1:20130 (or OmniRoute at 127.0.0.1:20128).
+Exposes an OpenAI-compatible endpoint that routes to the local model-router at
+127.0.0.1:20130 (or OmniRoute at 127.0.0.1:20128). Direct runs bind to loopback
+by default; Docker Compose explicitly sets BRIDGE_HOST for container access.
 
 Allows Docker containers to reach Gemini 3.8 Flash (antigravity/gemini-3.8-flash-tiered)
 and other models through the same route used by Claude Code, while respecting host
@@ -13,9 +13,9 @@ firewall rules on docker0 (ports 8765-8768 are permitted).
 from __future__ import annotations
 
 import json
+import ipaddress
 import logging
 import os
-import select
 import socket
 import sys
 from http.client import HTTPConnection
@@ -23,10 +23,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Tuple
 from urllib.parse import urlsplit
 
-BIND_HOST = os.environ.get("BRIDGE_HOST", "0.0.0.0")
+BIND_HOST = os.environ.get("BRIDGE_HOST", "127.0.0.1")
 BIND_PORT = int(os.environ.get("BRIDGE_PORT", "8766"))
 PRIMARY_UPSTREAM = os.environ.get("UPSTREAM_URL", "http://127.0.0.1:20130")
 FALLBACK_UPSTREAM = os.environ.get("FALLBACK_UPSTREAM_URL", "http://127.0.0.1:20128")
+ALLOWED_CLIENT_NETWORKS = tuple(
+    ipaddress.ip_network(network.strip())
+    for network in os.environ.get("BRIDGE_ALLOWED_CIDRS", "127.0.0.0/8,::1/128").split(",")
+    if network.strip()
+)
 
 HOP_BY_HOP = {
     "connection",
@@ -77,6 +82,18 @@ def get_active_upstream() -> str:
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
+    def parse_request(self) -> bool:
+        if not super().parse_request():
+            return False
+        try:
+            address = ipaddress.ip_address(self.client_address[0])
+        except ValueError:
+            address = None
+        if address is None or not any(address in network for network in ALLOWED_CLIENT_NETWORKS):
+            self.send_error(403, "Client network is not allowed")
+            return False
+        return True
+
     def _filter_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}
         for k, v in self.headers.items():
@@ -96,6 +113,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             headers["Content-Length"] = str(len(body))
 
         conn: HTTPConnection | None = None
+        response_started = False
         try:
             conn = HTTPConnection(up_host, up_port, timeout=180.0)
             conn.request(method, self.path, body=body, headers=headers)
@@ -110,9 +128,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Methods", "GET, POST, HEAD, OPTIONS")
             self.send_header("Connection", "close")
             self.end_headers()
+            response_started = True
 
             while True:
-                chunk = resp.read(8192)
+                # read() waits for the requested byte count or EOF. SSE events
+                # are small and may arrive far apart, so that buffers the
+                # stream until many events have accumulated. read1() forwards
+                # the bytes currently available from the upstream socket.
+                chunk = resp.read1(8192)
                 if not chunk:
                     break
                 try:
@@ -122,7 +145,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     break
         except Exception as e:
             log.warning("Proxy error forwarding %s %s: %s", method, self.path, e)
-            if not self.wfile.closed:
+            if not response_started and not self.wfile.closed:
                 try:
                     err_msg = json.dumps({"error": {"message": f"Bridge error: {e}"}}).encode()
                     self.send_response(502)

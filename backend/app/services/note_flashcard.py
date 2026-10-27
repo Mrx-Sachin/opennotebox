@@ -10,6 +10,7 @@ from app.models import Flashcard, Note
 from app.services.flashcard_cards import create_basic_card
 from app.services.json_extract import extract_json
 from app.services.llm_settings import get_active_llm
+from app.services.llm_semaphore import llm_semaphore
 from app.services.prompts import render_jinja
 from app.tasks.shared import run_async
 
@@ -22,19 +23,25 @@ async def _generate(prompt: str, user_id: int) -> str:
         api_key=active["api_key"] or "EMPTY",
         temperature=0.3,
     )
-    response = await model.ainvoke([
-        SystemMessage(content="You produce strict JSON only, no prose, no markdown fences."),
-        HumanMessage(content=prompt),
-    ])
+    async with llm_semaphore():
+        response = await model.ainvoke([
+            SystemMessage(content="You produce strict JSON only, no prose, no markdown fences."),
+            HumanMessage(content=prompt),
+        ])
     return response.content
 
 
-def existing_card_for_note(db: Session, note_id: int) -> Flashcard | None:
-    return db.query(Flashcard).filter(Flashcard.source_note_id == note_id).first()
+def existing_card_for_note(
+    db: Session, note_id: int, user_id: int | None = None
+) -> Flashcard | None:
+    query = db.query(Flashcard).filter(Flashcard.source_note_id == note_id)
+    if user_id is not None:
+        query = query.filter(Flashcard.user_id == user_id)
+    return query.first()
 
 
 def make_flashcard_from_note(db: Session, user_id: int, note: Note) -> Flashcard:
-    existing = existing_card_for_note(db, note.id)
+    existing = existing_card_for_note(db, note.id, user_id)
     if existing:
         return existing
 

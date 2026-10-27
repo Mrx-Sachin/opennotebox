@@ -1,44 +1,63 @@
 #!/bin/sh
 # Bring the schema up to date before starting, then hand off to the command.
-#
-# Four containers share this image (api, worker, worker-tts, beat). Only ONE
-# may run migrations - concurrent `alembic upgrade head` from several
-# containers races on the alembic_version row and can deadlock or double-apply.
-# The api container is elected via RUN_MIGRATIONS=1 in docker-compose.yml;
-# everyone else waits for it to finish instead, so no worker ever starts
-# issuing queries against a half-created schema.
-#
-# Migrating here rather than in the app's lifespan keeps a failure loud and
-# fatal: the container exits instead of serving traffic against a broken
-# schema.
-set -e
+# The api container is the sole migration runner; the other services must
+# verify the database reached the current Alembic head before doing any work.
+set -eu
 
-if [ "${RUN_MIGRATIONS}" = "1" ]; then
+schema_is_at_head() {
+    python - <<'PY'
+import sys
+
+from alembic.config import Config
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from sqlalchemy import create_engine
+
+from app.config import settings
+
+try:
+    config = Config("/app/alembic.ini")
+    expected = set(ScriptDirectory.from_config(config).get_heads())
+    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    try:
+        with engine.connect() as connection:
+            current = set(MigrationContext.configure(connection).get_current_heads())
+    finally:
+        engine.dispose()
+except Exception as exc:
+    print(f"Alembic readiness check failed: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+if not expected or current != expected:
+    print(f"Database revisions {sorted(current)} do not match Alembic heads {sorted(expected)}")
+    sys.exit(1)
+PY
+}
+
+if [ "${RUN_MIGRATIONS:-0}" = "1" ]; then
     echo "[entrypoint] running database migrations..."
     alembic upgrade head
-    echo "[entrypoint] migrations complete."
+    if ! schema_is_at_head; then
+        echo "[entrypoint] migration command completed, but the database is not at the Alembic head." >&2
+        exit 1
+    fi
+    echo "[entrypoint] migrations complete and schema is at the Alembic head."
 else
-    echo "[entrypoint] waiting for migrations to be applied..."
-    i=0
-    while [ "$i" -lt 60 ]; do
-        if python -c "
-import sys
-from sqlalchemy import create_engine, inspect
-from app.config import settings
-try:
-    insp = inspect(create_engine(settings.database_url))
-    sys.exit(0 if 'alembic_version' in insp.get_table_names() else 1)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null; then
-            echo "[entrypoint] schema is ready."
+    echo "[entrypoint] waiting for the database to reach the Alembic head..."
+    wait_seconds=${SCHEMA_WAIT_SECONDS:-120}
+    elapsed=0
+    interval=2
+    while [ "$elapsed" -lt "$wait_seconds" ]; do
+        if schema_is_at_head >/dev/null 2>&1; then
+            echo "[entrypoint] schema is at the Alembic head."
             break
         fi
-        i=$((i + 1))
-        sleep 2
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
     done
-    if [ "$i" -ge 60 ]; then
-        echo "[entrypoint] gave up waiting for the schema after 120s; starting anyway." >&2
+    if [ "$elapsed" -ge "$wait_seconds" ]; then
+        echo "[entrypoint] gave up waiting for the Alembic head after ${wait_seconds}s." >&2
+        exit 1
     fi
 fi
 

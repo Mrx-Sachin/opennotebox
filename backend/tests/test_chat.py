@@ -5,8 +5,12 @@ scope updates, ownership enforcement, and unauthenticated access.
 """
 from __future__ import annotations
 
+import asyncio
+import json
+import time
 from unittest.mock import AsyncMock, patch
 
+import pytest
 
 from app.models import Conversation, Message
 
@@ -241,6 +245,226 @@ class TestChatMessage:
                 )
                 # Empty content should either be accepted (200) or rejected by validation (422)
                 assert resp.status_code in (200, 422)
+
+
+class TestChatStream:
+    """POST /api/chat/sessions/{session_id}/messages/stream."""
+
+    @pytest.mark.parametrize("emit_token", [False, True])
+    async def test_completion_does_not_wait_for_keepalive_timeout(
+        self,
+        client,
+        auth_header,
+        test_conversation,
+        db,
+        monkeypatch,
+        emit_token,
+    ):
+        monkeypatch.setattr("app.routers.chat._STREAM_KEEPALIVE_SECONDS", 0.5)
+
+        async def delayed_answer(*, question, history, user_id, on_token):
+            if emit_token:
+                await on_token("Last token.")
+            await asyncio.sleep(0.01)
+            content = "Last token." if emit_token else "No model tokens."
+            return {"content": content, "citations": [], "token_count": 3}
+
+        with patch("app.routers.chat.SessionLocal", return_value=db):
+            with patch(
+                "app.routers.chat.chat_engine.answer_general",
+                new_callable=AsyncMock,
+                side_effect=delayed_answer,
+            ):
+                started = time.perf_counter()
+                response = await client.post(
+                    f"/api/chat/sessions/{test_conversation.id}/messages/stream",
+                    headers=auth_header,
+                    json={"content": "Finish promptly."},
+                )
+                elapsed = time.perf_counter() - started
+
+        assert response.status_code == 200
+        assert elapsed < 0.25
+        events = [
+            json.loads(block.removeprefix("data: "))
+            for block in response.text.split("\n\n")
+            if block.startswith("data: ")
+        ]
+        assert events[-1]["type"] == "final"
+        assert events[-1]["message"]["content"] == (
+            "Last token." if emit_token else "No model tokens."
+        )
+
+    async def test_stream_emits_tokens_and_persists_once(
+        self, client, auth_header, test_conversation, db
+    ):
+        conversation_id = test_conversation.id
+
+        async def answer_with_tokens(*, question, history, user_id, on_token):
+            await on_token("A streamed ")
+            await on_token("answer.")
+            return {
+                "content": "A streamed answer.",
+                "citations": [],
+                "token_count": 3,
+            }
+
+        with patch("app.routers.chat.SessionLocal", return_value=db):
+            with patch(
+                "app.routers.chat.chat_engine.answer_general",
+                new_callable=AsyncMock,
+                side_effect=answer_with_tokens,
+            ):
+                response = await client.post(
+                    f"/api/chat/sessions/{conversation_id}/messages/stream",
+                    headers=auth_header,
+                    json={"content": "Please stream this answer."},
+                )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        events = [
+            json.loads(block.removeprefix("data: "))
+            for block in response.text.split("\n\n")
+            if block.startswith("data: ")
+        ]
+        assert [event["type"] for event in events] == [
+            "status",
+            "token",
+            "token",
+            "final",
+        ]
+        assert "".join(
+            event["content"] for event in events if event["type"] == "token"
+        ) == "A streamed answer."
+        assert events[-1]["message"]["content"] == "A streamed answer."
+
+        messages = await client.get(
+            f"/api/chat/sessions/{conversation_id}/messages",
+            headers=auth_header,
+        )
+        sent = [
+            row for row in messages.json()
+            if row["role"] == "user" and row["content"] == "Please stream this answer."
+        ]
+        saved_answers = [
+            row for row in messages.json()
+            if row["role"] == "assistant" and row["content"] == "A streamed answer."
+        ]
+        assert len(sent) == 1
+        assert len(saved_answers) == 1
+
+    async def test_stream_drains_burst_tokens_before_final(
+        self, client, auth_header, test_conversation, db
+    ):
+        conversation_id = test_conversation.id
+        tokens = [f"chunk-{index} " for index in range(20)]
+
+        async def answer_with_burst(*, question, history, user_id, on_token):
+            for token in tokens:
+                await on_token(token)
+                await asyncio.sleep(0)
+            return {
+                "content": "".join(tokens),
+                "citations": [],
+                "token_count": len(tokens),
+            }
+
+        with patch("app.routers.chat.SessionLocal", return_value=db):
+            with patch(
+                "app.routers.chat.chat_engine.answer_general",
+                new_callable=AsyncMock,
+                side_effect=answer_with_burst,
+            ):
+                response = await client.post(
+                    f"/api/chat/sessions/{conversation_id}/messages/stream",
+                    headers=auth_header,
+                    json={"content": "Stream every chunk."},
+                )
+
+        events = [
+            json.loads(block.removeprefix("data: "))
+            for block in response.text.split("\n\n")
+            if block.startswith("data: ")
+        ]
+        emitted_tokens = [
+            event["content"] for event in events if event["type"] == "token"
+        ]
+        assert response.status_code == 200
+        assert emitted_tokens == tokens
+        assert events[-1]["type"] == "final"
+        assert events[-1]["message"]["content"] == "".join(tokens)
+
+    async def test_stream_rejects_another_users_document(
+        self, client, auth_header, test_conversation, second_document
+    ):
+        response = await client.post(
+            f"/api/chat/sessions/{test_conversation.id}/messages/stream",
+            headers=auth_header,
+            json={"content": "Read this private document.", "document_ids": [second_document.id]},
+        )
+        assert response.status_code == 404
+
+    async def test_stream_saves_final_rag_citations(
+        self, client, auth_header, test_conversation, test_document, db
+    ):
+        conversation_id = test_conversation.id
+        citations = [{
+            "n": 1,
+            "doc_id": test_document.id,
+            "doc_title": test_document.title,
+            "page": 1,
+            "excerpt": "The test page.",
+        }]
+
+        async def answer_with_citation(*, question, doc_ids, page_scope, history,
+                                       user_id, rag_mode, on_token):
+            await on_token("The source says [1].")
+            return {
+                "content": "The source says [1].",
+                "citations": citations,
+                "token_count": 5,
+            }
+
+        with patch("app.routers.chat.SessionLocal", return_value=db):
+            with patch(
+                "app.routers.chat.chat_engine.answer",
+                new_callable=AsyncMock,
+                side_effect=answer_with_citation,
+            ):
+                response = await client.post(
+                    f"/api/chat/sessions/{conversation_id}/messages/stream",
+                    headers=auth_header,
+                    json={
+                        "content": "What does the source say?",
+                        "document_ids": [test_document.id],
+                    },
+                )
+
+        events = [
+            json.loads(block.removeprefix("data: "))
+            for block in response.text.split("\n\n")
+            if block.startswith("data: ")
+        ]
+        assert response.status_code == 200
+        assert events[-1]["message"]["citations"] == citations
+
+        messages = await client.get(
+            f"/api/chat/sessions/{conversation_id}/messages",
+            headers=auth_header,
+        )
+        saved_answer = next(
+            row for row in messages.json()
+            if row["role"] == "assistant" and row["content"] == "The source says [1]."
+        )
+        assert saved_answer["citations"] == citations
+
+    async def test_stream_requires_auth(self, client, test_conversation):
+        response = await client.post(
+            f"/api/chat/sessions/{test_conversation.id}/messages/stream",
+            json={"content": "Please authenticate."},
+        )
+        assert response.status_code == 401
 
 
 class TestDeleteConversation:

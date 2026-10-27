@@ -242,7 +242,7 @@ def _probe_base_url(raw: str) -> str:
 @router.post("/llm/probe", response_model=LLMProbeOut)
 async def probe_llm_endpoint(
     body: LLMProbeIn,
-    _user: User = Depends(get_current_user_from_token),
+    user: User = Depends(get_current_user_from_token),
 ):
     """List models on an OpenAI-compatible endpoint before it is saved.
 
@@ -252,6 +252,8 @@ async def probe_llm_endpoint(
     connecting Grok: enter URL + key, pick from the list the endpoint
     actually serves.
     """
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Only administrators can probe model endpoints")
     base_url = _probe_base_url(body.base_url)
     result = await asyncio.to_thread(
         check_llm_health, base_url, "", body.api_key or "ollama"

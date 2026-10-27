@@ -1,0 +1,13 @@
+.git
+.env
+.pytest_cache
+**/__pycache__
+**/.pytest_cache
+**/.venv
+**/node_modules
+**/.next
+**/dist
+data
+exports
+certs
+*.py[cod]

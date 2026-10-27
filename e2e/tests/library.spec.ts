@@ -1,0 +1,55 @@
+import { expect, test } from "@playwright/test"
+import { mockLibrary } from "./library-fixture"
+
+test("gallery searches, filters, paginates and supports list view", async ({ page }) => {
+  await mockLibrary(page)
+  await page.goto("/dashboard?view=documents")
+  await expect(page.getByRole("heading", { name: "Your library", exact: true })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Continue reading" })).toBeVisible()
+  await expect(page.locator(".library-shelf .library-document")).toHaveCount(24)
+  await page.getByRole("button", { name: "Next page", exact: true }).click()
+  await expect(page.locator(".library-shelf .library-document")).toHaveCount(5)
+  await expect(page.getByText("Page 2 of 2")).toBeVisible()
+  await page.getByLabel("Search documents").fill("Research")
+  await expect(page.locator(".library-shelf .library-document")).toHaveCount(1)
+  await expect(page.getByRole("link", { name: "Open Research Methods", exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Clear filters" }).click()
+  await page.getByLabel("Document format").selectOption("epub")
+  await expect(page.locator(".library-shelf .library-document")).toHaveCount(1)
+  await page.getByRole("button", { name: "Clear filters" }).click()
+  await page.getByRole("button", { name: /^Processing/ }).click()
+  await expect(page.locator(".library-shelf .library-document")).toHaveCount(1)
+  await expect(page.getByText("Queued", { exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "List view" }).click()
+  await expect(page.locator(".library-list-view")).toBeVisible()
+  await page.getByLabel("Search documents").fill("no matching document")
+  await expect(page.getByRole("heading", { name: "No documents found", exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Show all documents" }).click()
+  await expect(page.locator(".library-shelf .library-document")).toHaveCount(24)
+})
+
+test("gallery opens a document, survives refresh and returns to Unfiled", async ({ page }) => {
+  await mockLibrary(page)
+  await page.goto("/dashboard?view=documents")
+  await page.locator(".library-shelf").getByRole("link", { name: "Open e2e-sample", exact: true }).click()
+  await expect(page).toHaveURL(/\/dashboard\/read\/1$/)
+  await expect(page.locator("#pdf-page-container-1 canvas").first()).toBeVisible()
+  await page.reload()
+  await expect(page.locator("#pdf-page-container-1 canvas").first()).toBeVisible()
+  await page.getByRole("link", { name: "Back to unfiled", exact: true }).click()
+  await expect(page.getByRole("heading", { name: "Unfiled", exact: true })).toBeVisible()
+})
+
+test("empty library offers upload", async ({ page }) => {
+  await mockLibrary(page, { empty: true })
+  await page.goto("/dashboard?view=documents")
+  await page.getByRole("button", { name: "Add your first document" }).click()
+  await expect(page.getByRole("heading", { name: "Add sources", exact: true })).toBeVisible()
+})
+
+test("gallery failures offer a retry", async ({ page }) => {
+  await mockLibrary(page, { error: true })
+  await page.goto("/dashboard?view=documents")
+  await expect(page.locator(".library-empty[role=alert]")).toContainText("Your library could not be loaded")
+  await expect(page.getByRole("button", { name: "Try again" })).toBeVisible()
+})
