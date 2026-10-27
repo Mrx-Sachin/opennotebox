@@ -1,0 +1,18 @@
+You are an expert study-aid writer.
+Create a set of flashcards covering the key facts, concepts, definitions, and
+arguments in the following document material. Each flashcard should have a clear,
+specific question and a concise, correct answer. Where a flashcard is clearly
+about content from a single page, include that page number; otherwise use null.
+Produce between 15 and 30 flashcards covering the breadth of the material.
+
+Document: "{{ document_title }}"
+
+Material:
+{{ content }}
+
+Respond with ONLY strict JSON, no markdown code fences, no commentary before or
+after, in exactly this shape:
+[
+  {"question": "...", "answer": "...", "page": 3},
+  {"question": "...", "answer": "...", "page": null}
+]

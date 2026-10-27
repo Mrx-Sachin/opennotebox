@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenNoteBox - Notes &amp; Highlights Design Proposal</title>
+<style>
+  :root {
+    --bg: #0b0b12;
+    --panel: #0f0f18;
+    --surface: #1a1a2e;
+    --cream: #f5f5f0;
+    --cream-dim: rgba(245, 245, 240, 0.55);
+    --indigo: #818cf8;
+    --grad: linear-gradient(135deg, #7f00ff, #5b0fc8);
+    --amber: #fbbf24;
+    --green: #34d399;
+    --red: #f87171;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--cream);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    line-height: 1.6;
+    padding: 40px 24px 80px;
+    max-width: 980px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 26px; margin-bottom: 6px; }
+  h2 { font-size: 19px; margin: 44px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--surface); }
+  h3 { font-size: 15px; margin: 22px 0 8px; color: var(--indigo); }
+  p { margin: 8px 0; color: var(--cream-dim); font-size: 14.5px; }
+  p strong, li strong { color: var(--cream); }
+  .sub { color: var(--cream-dim); font-size: 14px; margin-bottom: 28px; }
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+    text-transform: uppercase; padding: 3px 10px; border-radius: 999px;
+    background: rgba(129, 140, 248, 0.12); color: var(--indigo);
+    border: 1px solid rgba(129, 140, 248, 0.3); margin-bottom: 14px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--surface);
+    border-radius: 12px; padding: 18px 20px; margin: 14px 0;
+  }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--surface); vertical-align: top; }
+  th { color: var(--cream-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  td { color: var(--cream-dim); }
+  td:first-child { color: var(--cream); font-weight: 500; white-space: nowrap; }
+  code {
+    background: var(--surface); padding: 1.5px 6px; border-radius: 4px;
+    font-size: 12.5px; font-family: 'SF Mono', 'JetBrains Mono', monospace; color: #c4b5fd;
+  }
+  .mock {
+    background: #12121c; border: 1px solid var(--surface); border-radius: 12px;
+    padding: 20px; margin: 16px 0; overflow-x: auto;
+  }
+  .mock-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--cream-dim); margin-bottom: 12px; }
+  /* fake pdf text */
+  .fakepdf { font-size: 12px; color: rgba(245,245,240,0.75); line-height: 1.85; max-width: 520px; }
+  .hl { background: rgba(251, 191, 36, 0.28); border-bottom: 2px solid var(--amber); color: var(--cream); }
+  /* floating action bar */
+  .floatbar {
+    position: relative; margin: 10px auto 4px; width: fit-content;
+    background: #1e1e30; border: 1px solid var(--surface); border-radius: 999px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.5); display: flex; gap: 4px; padding: 5px 8px;
+    align-items: center;
+  }
+  .floatbar .fb-title { font-size: 11px; color: var(--cream-dim); padding: 0 8px 0 4px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fb-btn {
+    display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500;
+    background: transparent; color: var(--cream); border: none; border-radius: 999px;
+    padding: 6px 12px; cursor: pointer; white-space: nowrap;
+  }
+  .fb-btn.primary { background: var(--grad); color: #fff; }
+  .dots { display: inline-flex; gap: 3px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  /* notes list */
+  .notes-list { max-width: 480px; }
+  .note-card {
+    border: 1px solid var(--surface); border-left-width: 3px; border-radius: 8px;
+    background: rgba(11,11,18,0.5); padding: 10px 14px; margin-bottom: 10px;
+  }
+  .note-card.amber { border-left-color: var(--amber); }
+  .note-card.green { border-left-color: var(--green); }
+  .note-card.indigo { border-left-color: var(--indigo); }
+  .note-quote { font-size: 12.5px; color: var(--cream); font-style: italic; margin-bottom: 4px; }
+  .note-body { font-size: 12.5px; color: var(--cream-dim); }
+  .note-meta { display: flex; gap: 10px; margin-top: 6px; font-size: 10.5px; color: var(--cream-dim); }
+  .note-meta .jump { color: var(--indigo); font-weight: 600; }
+  .note-meta .act { opacity: 0.7; }
+  /* tabs */
+  .tabs { display: flex; gap: 4px; background: var(--bg); padding: 4px; border-radius: 9px; max-width: 480px; margin-bottom: 14px; }
+  .tab { flex: 1; text-align: center; font-size: 12px; font-weight: 500; padding: 7px 8px; border-radius: 6px; color: var(--cream-dim); }
+  .tab.active { background: var(--grad); color: #fff; }
+  .q {
+    background: rgba(251, 191, 36, 0.06); border: 1px solid rgba(251,191,36,0.25);
+    border-radius: 10px; padding: 14px 18px; margin: 18px 0;
+  }
+  .q .q-n { font-size: 11px; font-weight: 700; color: var(--amber); letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 4px; }
+  .q p { margin: 4px 0; }
+  .verdict { border-left: 3px solid var(--indigo); }
+  .small { font-size: 12.5px; }
+  .ok { color: var(--green); font-weight: 600; }
+  .warn { color: var(--amber); font-weight: 600; }
+  ul { margin: 8px 0 8px 20px; color: var(--cream-dim); font-size: 14px; }
+  li { margin: 4px 0; }
+  .kbd {
+    background: var(--surface); border: 1px solid rgba(245,245,240,0.15); border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 6px; font-size: 11px; font-family: monospace;
+  }
+</style>
+</head>
+<body>
+
+<span class="badge">Design proposal - for your approval before any code</span>
+<h1>Notes &amp; Highlights for books and papers</h1>
+<p class="sub">Repurposing the unused <strong>Pages</strong> tab in the summary panel &middot; grounded in how the best tools do it &middot; built on what this app already has</p>
+
+<div class="card">
+  <p><strong>Your words:</strong> "this section is not in use, can we make it useful with notes, like highlights and notes are shown here... i want to make something which is reliable and easy to use to take some notes with the books / research papers... we might have to design a new way of writing notes which no one ever thought of."</p>
+  <p><strong>Short answer:</strong> yes, and the app already has the hard 70% - word-level text positions are stored for every page during parsing, the PDF viewer already renders a text layer, and there is already a "jump to page and flash a highlight" mechanism (TTS uses it). The missing piece is a <strong>note that is anchored to exact text</strong>, plus a place to capture and review it. That is the whole design.</p>
+</div>
+
+<h2>1. What the best tools actually do</h2>
+<p>I looked at the four references that define "good PDF notetaking":</p>
+<table>
+  <tr><th>Tool</th><th>Capture</th><th>Display</th><th>The one thing to steal</th></tr>
+  <tr>
+    <td>Zotero</td>
+    <td>Select text in PDF &rarr; color-coded highlight, optional note attached</td>
+    <td>Annotations list per document; PDF shows highlights inline</td>
+    <td><strong>Highlight is first-class, note is optional</strong>. You can mark text in one tap and write nothing.</td>
+  </tr>
+  <tr>
+    <td>MarginNote</td>
+    <td>Highlight &rarr; turn into mind-map card &rarr; flashcard</td>
+    <td>Separate "note page" next to the PDF</td>
+    <td><strong>Every highlight can become a flashcard</strong> - study loop built into the reading flow.</td>
+  </tr>
+  <tr>
+    <td>Readwise Reader</td>
+    <td>Keyboard-driven: <em>H</em> highlight, <em>N</em> note, <em>T</em> tag - fast, hands on keys</td>
+    <td>Notebook sidebar, never covers the content</td>
+    <td><strong>Keyboard-first capture</strong> - note-taking must be faster than the thought it captures.</td>
+  </tr>
+  <tr>
+    <td>Hypothesis</td>
+    <td>Selection &rarr; annotation anchored by <em>quote + surrounding context</em>, not pixel coordinates</td>
+    <td>Sidebar threads; clicking a note jumps to the exact passage</td>
+    <td><strong>Anchoring by text survives reflow</strong>. A note still finds its sentence after any re-layout.</td>
+  </tr>
+</table>
+<div class="card verdict">
+  <p><strong>Common shape across all four:</strong> (1) select &rarr; instant mark, (2) note is optional and attached to the mark, (3) notes shown in a sidebar that never hides the text, (4) bidirectional: note &rarr; passage and passage &rarr; note, (5) highlights can feed spaced repetition.</p>
+</div>
+
+<h2>2. What this app already has (the part everyone else builds from scratch)</h2>
+<div class="card small">
+  <ul>
+    <li><strong>Word-level geometry per page</strong> - every parsed page stores <code>bounding_boxes: [{text, bbox}]</code> for each word. Notes can anchor to exact word ranges and be re-drawn at any zoom.</li>
+    <li><strong>pdf.js text layer + selection handling</strong> - the viewer already intercepts mouse-up after a text selection (currently only to suppress TTS). The selection popup hooks in there.</li>
+    <li><strong>Jump-and-flash mechanism</strong> - <code>pendingHighlight</code> already moves the reader to a page and flashes a region (TTS uses it). Notes reuse it for "note &rarr; passage".</li>
+    <li><strong>Flashcards + FSRS scheduling</strong> - the "highlight &rarr; card" loop from MarginNote is one foreign key away, not a new system.</li>
+    <li><strong>The empty Pages tab</strong> - your pointer in the annotation. Exactly the right home for the notes list.</li>
+  </ul>
+</div>
+
+<h2>3. The design</h2>
+
+<h3>3.1 Capture: select, then one tap</h3>
+<p>Select any text on a page and a small floating bar appears at the end of the selection (Zotero/Readwise pattern). Three actions, nothing else:</p>
+<div class="mock">
+  <div class="mock-label">Floating bar after selecting text on p.12</div>
+  <div class="fakepdf">
+    The transformer model relies <span class="hl">entirely on attention mechanisms</span>, discarding recurrence and convolution in favor of sequence-to-sequence architectures that scale to unprecedented sizes&hellip;
+  </div>
+  <div class="floatbar">
+    <span class="fb-title">"&hellip;entirely on attention&hellip;"</span>
+    <button class="fb-btn primary">&#9998; Note</button>
+    <button class="fb-btn"><span class="dots"><span class="dot" style="background:#fbbf24"></span><span class="dot" style="background:#34d399"></span><span class="dot" style="background:#818cf8"></span></span> Highlight</button>
+    <button class="fb-btn">&times;</button>
+  </div>
+</div>
+<ul>
+  <li><strong>Highlight</strong> - marks the span in a color, no note required. Pure bookmarking of a passage.</li>
+  <li><strong>Note</strong> - opens an inline composer below the bar, pre-filled with the quote. You write your own words; the quote is attached automatically and read-only.</li>
+  <li>Keyboard (Readwise pattern, phase 2): <span class="kbd">H</span> highlight, <span class="kbd">N</span> note on the current selection.</li>
+</ul>
+
+<h3>3.2 Review: the Pages tab becomes the Notes tab</h3>
+<p>The tab you pointed at currently lists auto-generated page summaries (0 of them, for you). It becomes <strong>Notes (N)</strong>: a page-ordered list of everything you captured in this document.</p>
+<div class="mock">
+  <div class="mock-label">Summary panel after the change</div>
+  <div class="tabs">
+    <div class="tab active">Notes (2)</div>
+    <div class="tab">Sections (1)</div>
+  </div>
+  <div class="notes-list">
+    <div class="note-card amber">
+      <div class="note-quote">"entirely on attention mechanisms, discarding recurrence and convolution"</div>
+      <div class="note-body">Key claim - the whole paper rests on this. Contrast with LSTM baselines in &sect;3.</div>
+      <div class="note-meta"><span class="jump">p.12 &nearr;</span><span class="act">Edit</span><span class="act">&bull;&bull;&bull; Flashcard</span><span class="act">&times;</span></div>
+    </div>
+    <div class="note-card indigo">
+      <div class="note-quote">"We train on 4.5 billion words across English-French and English-German"</div>
+      <div class="note-body">Scale numbers to cite in my own writeup: 4.5B words, 8 heads, d_model 512/1024.</div>
+      <div class="note-meta"><span class="jump">p.14 &nearr;</span><span class="act">Edit</span><span class="act">&bull;&bull;&bull; Flashcard</span><span class="act">&times;</span></div>
+    </div>
+    <div class="note-card green">
+      <div class="note-quote">"Multi-head attention allows the model to attend to information from different representation subspaces"</div>
+      <div class="note-body" style="font-style:italic; opacity:0.7">Highlighted (no note yet)</div>
+      <div class="note-meta"><span class="jump">p.14 &nearr;</span><span class="act">+ Note</span><span class="act">&times;</span></div>
+    </div>
+  </div>
+</div>
+<ul>
+  <li><strong>Bidirectional</strong> (Hypothesis pattern): clicking <code>p.12</code> jumps the reader to the passage and flashes it - the existing TTS mechanism. Selecting an already-noted passage shows a "note exists here" chip with a link back to the card.</li>
+  <li>Highlights render <em>inline in the PDF</em> at their color, at any zoom - word bboxes already exist, so no OCR or re-detection.</li>
+  <li>The panel never covers the text on phone: it is the same slide-over you already have for Sections.</li>
+</ul>
+
+<h3>3.3 The part no one else has: a note is a question waiting to happen</h3>
+<div class="card">
+  <p>MarginNote's highlight&rarr;flashcard loop exists, but it is manual - you rewrite the card by hand. This app has an LLM and FSRS built in, so the loop can close itself:</p>
+  <p style="margin:10px 0"><strong>Each note has one tap: &ldquo;Make flashcard&rdquo;.</strong> The LLM turns (quote + your note) into a question/answer pair in the existing Flashcard system, with a <code>source_note_id</code> back-link. The card is scheduled by the same FSRS engine you already have. You read &rarr; capture &rarr; get quizzed, with zero friction and zero data loss - the card always links back to the exact sentence in the exact PDF.</p>
+  <p class="small">That is the genuinely new bit: in every reference tool the highlight and the flashcard live in different products (Zotero + Anki, MarginNote + its own cards). Here the passage, the note, and the future quiz are one object with three faces.</p>
+</div>
+
+<h3>3.4 Data model (small, honest)</h3>
+<div class="card small">
+  <p>New table <code>notes</code>: <code>id, user_id, document_id, page_number, quote, context_before, context_after, note (markdown, nullable), color, word_range [start,end], created_at, updated_at</code></p>
+  <p>Anchoring is <strong>quote + context + word range</strong> (Hypothesis pattern): the word range makes rendering exact, and the quote+context makes the anchor <em>recoverable</em> if a document is re-parsed with a different layout mode - the app re-finds the sentence instead of silently orphaning your notes. Cascade-deletes with the document like every other per-document row.</p>
+  <p><code>flashcards.source_note_id</code> (nullable FK) - one column, full provenance.</p>
+</div>
+
+<h2>4. Phases</h2>
+<table>
+  <tr><th>Phase</th><th>Scope</th><th>Why this cut</th></tr>
+  <tr>
+    <td><strong>1 - MVP</strong></td>
+    <td>Note model + API; selection floating bar (Note + Highlight); Notes tab list with jump-to; inline highlight rendering; delete/edit</td>
+    <td>End-to-end loop usable on day one: capture on the page, review in the panel, jump back. Nothing decorative.</td>
+  </tr>
+  <tr>
+    <td><strong>2 - Study loop</strong></td>
+    <td>"Make flashcard" per note with LLM generation; flashcard&rarr;note back-link; keyboard shortcuts <span class="kbd">H</span>/<span class="kbd">N</span></td>
+    <td>The differentiator, and it rides entirely on existing machinery (Flashcard, FSRS, LLM settings).</td>
+  </tr>
+  <tr>
+    <td><strong>3 - Later</strong></td>
+    <td>Tags, cross-document note search, note export (markdown), per-section note grouping</td>
+    <td>Nice, but each is its own feature; keep v1 fast to ship and stable.</td>
+  </tr>
+</table>
+
+<h2>5. Open questions (answer these and I build)</h2>
+<div class="q">
+  <div class="q-n">Q1 - Tab fate</div>
+  <p><strong>My recommendation:</strong> the "Pages" tab becomes "Notes (N)" outright. Auto page-summaries (rarely generated, the count is 0 for you) move into a collapsible "Page summaries" block at the bottom of the Sections tab, next to the existing "Full Document" entry. <em>Alternative:</em> keep both as a third tab "Notes".</p>
+</div>
+<div class="q">
+  <div class="q-n">Q2 - Highlight colors</div>
+  <p>Start with the three in the mockup (amber / green / indigo)? Zotero-style color-coding is useful (e.g. green = definition, amber = claim, indigo = question) - or do you want a single highlight color to keep it minimal?</p>
+</div>
+<div class="q">
+  <div class="q-n">Q3 - Notes on mobile</div>
+  <p>Selection on a phone PDF is fiddly. Plan: long-press select (native) triggers the same floating bar, plus a "New page note" button at the top of the Notes tab for notes without a text anchor. Is that enough for your phone workflow, or do you want a per-page "margin note" entry point in the reader toolbar?</p>
+</div>
+<div class="q">
+  <div class="q-n">Q4 - Scope check</div>
+  <p>Phase 1 + 2 as one build, or ship Phase 1 first and see you using it before the flashcard loop? (My recommendation: build both - Phase 2 is one endpoint and one button once Phase 1 exists.)</p>
+</div>
+
+<p class="sub" style="margin-top:40px">Reply with your answers (e.g. "Q1: as you recommend, Q2: three colors, Q3: yes, Q4: build both") and I start on Phase 1.</p>
+
+</body>
+</html>

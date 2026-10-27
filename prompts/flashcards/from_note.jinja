@@ -1,0 +1,16 @@
+You turn a highlighted passage and the reader's own note into one study flashcard.
+
+Write a single clear question and a concise correct answer. Prefer a question
+that tests the idea the reader marked, not a trivial "what does this quote say"
+paraphrase. If the reader already wrote a question in their note, use that.
+
+Quote from the document:
+{{ quote }}
+
+Reader's note (may be empty):
+{{ note }}
+
+Page: {{ page_number }}
+
+Respond with ONLY strict JSON, no markdown fences, no commentary:
+{"question": "...", "answer": "..."}

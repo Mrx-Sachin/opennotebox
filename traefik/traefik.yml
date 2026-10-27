@@ -1,0 +1,38 @@
+# Traefik static configuration.
+#
+# Kept as a file rather than a wall of CLI flags in docker-compose.yml: the
+# static config is the part you actually read when something is misrouted,
+# and flags make it a single unreadable line.
+
+# Port 80 is deliberately absent. This host already runs Apache there, and
+# taking it would break that; the app is HTTPS-only instead, which is what the
+# secure-context APIs need anyway.
+entryPoints:
+  websecure:
+    address: ":443"
+  # Plain HTTP for this machine only. Published as 127.0.0.1:3003, so it is
+  # unreachable from the network and no plaintext ever leaves the host. It
+  # exists because http://localhost IS a secure context by definition, so the
+  # app is fully functional over it - and because the alternative, publishing
+  # the frontend container directly, gave a page that loads but whose every
+  # API call 404s against Next.js. A half-working origin is worse than none.
+  weblocal:
+    address: ":8080"
+
+providers:
+  # File-only, no Docker provider. The routing here is two fixed backends
+  # whose names never change, so label-based discovery would buy nothing and
+  # cost two real things: mounting the Docker socket into a container (which
+  # is root on the host, for a component that is the most network-exposed
+  # thing in the stack), and a hard dependency on the daemon's API version -
+  # Traefik 3.0's client asks for API 1.24 and modern dockerd refuses
+  # anything below 1.40, so the Docker provider simply never starts here.
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+log:
+  level: INFO
+
+# No api/dashboard: it is another attack surface on a box that is reachable
+# over LAN and Tailscale, and the routing here is small enough to read.

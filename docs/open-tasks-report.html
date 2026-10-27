@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenNoteBox - Open Tasks &amp; Improvements</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121820;
+    --panel-2: #18202b;
+    --border: #243041;
+    --text: #e7eef8;
+    --muted: #8b9bb0;
+    --accent: #5b9fd4;
+    --accent-2: #7dd3a7;
+    --warn: #e6b35a;
+    --danger: #e07a7a;
+    --ready: #6bcf8e;
+    --blocked: #c9a0dc;
+    --feature: #5b9fd4;
+    --perf: #e6b35a;
+    --debt: #e07a7a;
+    --quick: #7dd3a7;
+    --shadow: 0 12px 40px rgba(0,0,0,.35);
+    --radius: 14px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    background:
+      radial-gradient(1200px 600px at 10% -10%, #1a2a3f 0%, transparent 55%),
+      radial-gradient(900px 500px at 100% 0%, #1a2f28 0%, transparent 50%),
+      var(--bg);
+    color: var(--text);
+    line-height: 1.55;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 32px 20px 80px; }
+  header.hero {
+    background: linear-gradient(135deg, rgba(91,159,212,.12), rgba(125,211,167,.08));
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 28px 32px;
+    box-shadow: var(--shadow);
+    margin-bottom: 28px;
+  }
+  header.hero h1 {
+    margin: 0 0 8px;
+    font-size: 1.85rem;
+    letter-spacing: -0.02em;
+  }
+  header.hero .meta {
+    color: var(--muted);
+    font-size: 0.95rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+  }
+  header.hero .meta span::before {
+    content: "";
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent-2);
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  .lede {
+    margin-top: 16px;
+    max-width: 72ch;
+    color: #c9d5e5;
+  }
+  .grid-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+    margin-top: 22px;
+  }
+  .stat {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+  }
+  .stat .n {
+    font-size: 1.6rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+  }
+  .stat .l { color: var(--muted); font-size: 0.82rem; margin-top: 2px; }
+  nav.toc {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 28px;
+  }
+  nav.toc a {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 7px 14px;
+    font-size: 0.88rem;
+    color: var(--text);
+    text-decoration: none;
+  }
+  nav.toc a:hover { border-color: var(--accent); color: var(--accent); }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 22px 24px 10px;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+  }
+  section h2 {
+    margin: 0 0 6px;
+    font-size: 1.25rem;
+    letter-spacing: -0.01em;
+  }
+  section .sec-sub {
+    color: var(--muted);
+    font-size: 0.9rem;
+    margin-bottom: 16px;
+  }
+  .priority-banner {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  @media (min-width: 820px) {
+    .priority-banner { grid-template-columns: 1.2fr 1fr 1fr; }
+  }
+  .prio-card {
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    padding: 16px 18px;
+    background: var(--panel-2);
+  }
+  .prio-card.ready { border-color: rgba(107,207,142,.45); background: linear-gradient(160deg, rgba(107,207,142,.12), var(--panel-2)); }
+  .prio-card.product { border-color: rgba(91,159,212,.45); background: linear-gradient(160deg, rgba(91,159,212,.12), var(--panel-2)); }
+  .prio-card.measure { border-color: rgba(201,160,220,.45); background: linear-gradient(160deg, rgba(201,160,220,.12), var(--panel-2)); }
+  .prio-card h3 { margin: 0 0 6px; font-size: 1rem; }
+  .prio-card p { margin: 0; color: #c5d0de; font-size: 0.92rem; }
+  .badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 999px;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  .b-ready { background: rgba(107,207,142,.18); color: var(--ready); }
+  .b-blocked { background: rgba(201,160,220,.18); color: var(--blocked); }
+  .b-feature { background: rgba(91,159,212,.18); color: var(--feature); }
+  .b-perf { background: rgba(230,179,90,.18); color: var(--warn); }
+  .b-debt { background: rgba(224,122,122,.18); color: var(--danger); }
+  .b-quick { background: rgba(125,211,167,.18); color: var(--quick); }
+  .b-done { background: rgba(139,155,176,.18); color: var(--muted); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0 0 18px;
+    font-size: 0.92rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th {
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  tr:hover td { background: rgba(255,255,255,.02); }
+  code, .path {
+    font-family: var(--mono);
+    font-size: 0.84em;
+    background: rgba(0,0,0,.28);
+    padding: 1px 6px;
+    border-radius: 5px;
+  }
+  .task {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+    background: var(--panel-2);
+  }
+  .task h4 {
+    margin: 0 0 6px;
+    font-size: 0.98rem;
+  }
+  .task p { margin: 0 0 6px; color: #c9d5e5; font-size: 0.9rem; }
+  .task .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .task .files { color: var(--muted); font-size: 0.82rem; }
+  .task .fix {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-left: 3px solid var(--accent-2);
+    background: rgba(0,0,0,.2);
+    border-radius: 0 8px 8px 0;
+    font-size: 0.88rem;
+  }
+  .flow {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+    margin: 14px 0 18px;
+  }
+  .flow .step {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 14px;
+    position: relative;
+  }
+  .flow .step .num {
+    font-weight: 700;
+    color: var(--accent);
+    font-size: 0.8rem;
+    margin-bottom: 4px;
+  }
+  .flow .step strong { display: block; margin-bottom: 4px; font-size: 0.92rem; }
+  .flow .step span { color: var(--muted); font-size: 0.82rem; }
+  .note {
+    background: rgba(230,179,90,.08);
+    border: 1px solid rgba(230,179,90,.28);
+    border-radius: 10px;
+    padding: 12px 14px;
+    color: #e8d6b0;
+    font-size: 0.9rem;
+    margin: 0 0 16px;
+  }
+  .done-list { columns: 1; column-gap: 24px; margin: 0 0 16px; padding-left: 18px; color: var(--muted); }
+  @media (min-width: 700px) { .done-list { columns: 2; } }
+  .done-list li { margin-bottom: 6px; break-inside: avoid; }
+  footer {
+    margin-top: 28px;
+    color: var(--muted);
+    font-size: 0.85rem;
+    text-align: center;
+  }
+  .src {
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+  details.group {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 12px;
+    background: var(--panel-2);
+    overflow: hidden;
+  }
+  details.group > summary {
+    cursor: pointer;
+    padding: 12px 16px;
+    font-weight: 600;
+    list-style: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+  }
+  details.group > summary::-webkit-details-marker { display: none; }
+  details.group > summary::after {
+    content: "+";
+    color: var(--muted);
+    font-weight: 400;
+    font-size: 1.2rem;
+  }
+  details.group[open] > summary::after { content: "−"; }
+  details.group .body { padding: 0 16px 14px; border-top: 1px solid var(--border); }
+  .effort {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>OpenNoteBox - Open Tasks &amp; Improvements</h1>
+  <div class="meta">
+    <span>Branch: <code>feature/open-tasks</code></span>
+    <span>Generated: 2026-08-14</span>
+    <span>Sources: HANDOFF_*, TODO.md, docs/optimization-audit.md, recent commits</span>
+  </div>
+  <p class="lede">
+    Consolidated board of work that is still open, deliberately deferred, or
+    recommended as improvement. Stale items from July scaffolds that already
+    shipped are called out separately so agents do not re-build finished work.
+  </p>
+  <div class="grid-stats">
+    <div class="stat"><div class="n">1</div><div class="l">Ready next (unblocker)</div></div>
+    <div class="stat"><div class="n">1</div><div class="l">Major product feature</div></div>
+    <div class="stat"><div class="n">4</div><div class="l">Measure-first / blocked</div></div>
+    <div class="stat"><div class="n">10</div><div class="l">Quick wins (audit)</div></div>
+    <div class="stat"><div class="n">30+</div><div class="l">Audit improvements</div></div>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#priority">Priority now</a>
+  <a href="#product">Product features</a>
+  <a href="#longterm">Long-term / measure-first</a>
+  <a href="#quick">Quick wins</a>
+  <a href="#audit">Full audit backlog</a>
+  <a href="#stale">Stale / already done</a>
+  <a href="#not-do">What not to do</a>
+  <a href="#sources">Sources</a>
+</nav>
+
+<section id="priority">
+  <h2>Recommended work order</h2>
+  <p class="sec-sub">If starting a new sprint, this is the honest queue - not every open item is equal.</p>
+
+  <div class="priority-banner">
+    <div class="prio-card ready">
+      <h3><span class="badge b-ready">Ready</span> #1 Chat path instrumentation</h3>
+      <p>
+        Per-stage latency logs for rewrite / retrieval / rerank / generation.
+        Unblocks every chat latency decision. No optimization without numbers.
+      </p>
+    </div>
+    <div class="prio-card product">
+      <h3><span class="badge b-feature">Product</span> #2 PDF annotations</h3>
+      <p>
+        Highlights + notes. Deliberately deferred after reading progress.
+        Schema and re-anchor path are already sketched; text alignment code exists.
+      </p>
+    </div>
+    <div class="prio-card measure">
+      <h3><span class="badge b-quick">Parallel</span> #3 Audit quick wins</h3>
+      <p>
+        Token caps, dead deps, template cleanup, WS reconnect, composite indexes.
+        Low risk, high ROI - can land while product work proceeds.
+      </p>
+    </div>
+  </div>
+
+  <div class="flow">
+    <div class="step">
+      <div class="num">STEP 1</div>
+      <strong>Instrument chat</strong>
+      <span>Log stage ms + token counts</span>
+    </div>
+    <div class="step">
+      <div class="num">STEP 2</div>
+      <strong>Quick wins Q1-Q10</strong>
+      <span>Tokens, deps, indexes, WS</span>
+    </div>
+    <div class="step">
+      <div class="num">STEP 3</div>
+      <strong>Annotations MVP</strong>
+      <span>Highlight + note + list</span>
+    </div>
+    <div class="step">
+      <div class="num">STEP 4</div>
+      <strong>Decide from data</strong>
+      <span>Rerank, embeddings route</span>
+    </div>
+    <div class="step">
+      <div class="num">STEP 5</div>
+      <strong>Heavier backend</strong>
+      <span>DB session scope, OCR, etc.</span>
+    </div>
+  </div>
+</section>
+
+<section id="product">
+  <h2>Product features still open</h2>
+  <p class="sec-sub">User-visible capabilities that are not shipped or only partially shipped.</p>
+
+  <div class="task">
+    <div class="meta-row">
+      <span class="badge b-feature">Feature</span>
+      <span class="badge b-ready">Unblocked</span>
+      <span class="effort">Size: large · Source: HANDOFF_ANNOTATIONS.md</span>
+    </div>
+    <h4>Highlights and notes (PDF annotations)</h4>
+    <p>
+      Reading resume shipped; annotations were deliberately left so resume could
+      be verified cleanly. Reuse citation anchoring (<code>normalizeWithMap</code> /
+      <code>findRange</code> in <code>lib/textAlign.ts</code>) - store text offsets, never
+      pixel rects (fit-to-width scale invalidates rects).
+    </p>
+    <div class="fix">
+      <strong>Sketch:</strong>
+      <code>annotations</code> table (user_id, document_id, page_number, kind highlight|note,
+      color, selected_text, note, text_offset) · CRUD <code>/api/annotations</code> ·
+      selection toolbar over text layer · re-anchor on render · notes list in
+      existing summary/AI panel (not a fourth panel).
+    </div>
+    <p class="files">Open decision: require text range for every note, or allow page-level notes with no selection?</p>
+  </div>
+
+  <div class="task">
+    <div class="meta-row">
+      <span class="badge b-feature">Feature</span>
+      <span class="badge b-blocked">Nice-to-have</span>
+      <span class="effort">Size: medium · Source: TODO.md Phase 1</span>
+    </div>
+    <h4>Multi-document chat</h4>
+    <p>
+      Cross-document Q&amp;A over a selected set of docs. Chat already supports
+      document vs general scope and per-document request isolation; multi-doc
+      retrieval would extend that model.
+    </p>
+  </div>
+
+  <div class="task">
+    <div class="meta-row">
+      <span class="badge b-feature">Feature</span>
+      <span class="badge b-blocked">Phase 3</span>
+      <span class="effort">Size: large · Source: TODO.md Phase 3</span>
+    </div>
+    <h4>Document notebooks &amp; collaborative sharing</h4>
+    <p>
+      Group multiple documents into notebooks; share docs between users.
+      Multi-user auth + admin role exist; sharing ACL does not.
+    </p>
+  </div>
+
+  <div class="task">
+    <div class="meta-row">
+      <span class="badge b-feature">Feature</span>
+      <span class="badge b-blocked">Phase 2-3</span>
+      <span class="effort">Size: medium · Source: TODO.md</span>
+    </div>
+    <h4>Summary / knowledge export formats</h4>
+    <p>
+      Export-to-folder mirror exists for chat/flashcards/podcasts. Explicit
+      PDF/DOCX export of summaries is still open. Upload limit was raised to 200MB.
+    </p>
+  </div>
+
+  <div class="task">
+    <div class="meta-row">
+      <span class="badge b-feature">Feature</span>
+      <span class="badge b-blocked">Phase 3</span>
+      <span class="effort">Size: large · Source: TODO.md</span>
+    </div>
+    <h4>Audio / video support (Whisper transcription)</h4>
+    <p>Ingest spoken media and read/chat against transcripts. No scaffolding yet.</p>
+  </div>
+
+  <div class="task">
+    <div class="meta-row">
+      <span class="badge b-perf">Ops</span>
+      <span class="badge b-ready">Small</span>
+      <span class="effort">Size: tiny · Source: HANDOFF_LONGTERM 4c remaining</span>
+    </div>
+    <h4>CLI bridge origin config</h4>
+    <p>
+      <code>CLI_BRIDGE_ORIGIN</code> must be set when the frontend is not on
+      <code>localhost:3003</code>, otherwise Connect returns 403. Document or auto-detect
+      for HTTPS/Traefik deployments.
+    </p>
+  </div>
+</section>
+
+<section id="longterm">
+  <h2>Long-term / measure-first work</h2>
+  <p class="sec-sub">From HANDOFF_LONGTERM.md. Do not treat blocked items as autonomous ready work.</p>
+
+  <div class="note">
+    The autonomous queue (4c auth, 4a per-user model overrides, 4d launcher supervision)
+    is finished. Remaining long-term items are blocked on measurement - except the
+    instrumentation prerequisite itself.
+  </div>
+
+  <div class="task">
+    <div class="meta-row">
+      <span class="badge b-ready">Ready now</span>
+      <span class="badge b-perf">Instrumentation</span>
+      <span class="effort">Prerequisite for items 2 &amp; 3</span>
+    </div>
+    <h4>Per-stage chat latency instrumentation</h4>
+    <p>
+      Nothing logs stage timing today. Add structured timing (and ideally token
+      counts) for: query rewrite, retrieval (BM25 + semantic), rerank, generation.
+      Emit to logs in a grep-friendly form so a single chat request can be profiled.
+    </p>
+    <div class="fix">
+      <strong>Why first:</strong> rerank frequency and embeddings routing decisions
+      are guesses without this. Optimization without numbers is how we thrash.
+    </div>
+    <p class="files">Likely touch: <code>chat_engine.py</code>, <code>routers/chat.py</code>, <code>retrieval.py</code></p>
+  </div>
+
+  <div class="task">
+    <div class="meta-row">
+      <span class="badge b-blocked">Blocked on metrics</span>
+      <span class="badge b-perf">Latency</span>
+      <span class="effort">HANDOFF_LONGTERM §2</span>
+    </div>
+    <h4>Chat latency: rerank call frequency &amp; candidate counts</h4>
+    <p>
+      Query rewrite already skips for fresh/concrete questions. Next lever is
+      whether rerank needs an LLM call as often, and whether TOP_K / CANDIDATES /
+      SEMANTIC_K constants should change. Measure first; do not guess.
+    </p>
+    <p class="files"><code>backend/app/services/chat_engine.py</code></p>
+  </div>
+
+  <div class="task">
+    <div class="meta-row">
+      <span class="badge b-blocked">Blocked on audit</span>
+      <span class="badge b-perf">Routing</span>
+      <span class="effort">HANDOFF_LONGTERM §3</span>
+    </div>
+    <h4>Embeddings routing always hits Ollama</h4>
+    <p>
+      <code>retrieval.embed_texts()</code> is hardcoded to Ollama
+      <code>nomic-embed-text</code> even when chat uses another backend (e.g. remote vLLM
+      that does not serve embeddings). Need an audit of whether that round-trip is
+      a meaningful fraction of chat latency before changing anything.
+    </p>
+    <p class="files"><code>backend/app/services/retrieval.py</code></p>
+  </div>
+
+  <div class="task">
+    <div class="meta-row">
+      <span class="badge b-blocked">Not urgent</span>
+      <span class="badge b-perf">Image size</span>
+      <span class="effort">HANDOFF_LONGTERM §1</span>
+    </div>
+    <h4>TTS image: lazy Piper voice download</h4>
+    <p>
+      CUDA + onnxruntime layer is multi-GB (mostly irreducible). Real lever:
+      six Piper voices (~800MB) are baked at build time while default voice is
+      Kokoro. Download Piper voices lazily on first selection via existing
+      <code>download_missing_models</code> path.
+    </p>
+    <p class="files"><code>tts/Dockerfile</code>, <code>tts/main.py</code></p>
+  </div>
+
+  <div class="task">
+    <div class="meta-row">
+      <span class="badge b-blocked">Until users complain with numbers</span>
+      <span class="badge b-perf">CLI bridge</span>
+      <span class="effort">HANDOFF_LONGTERM §4b</span>
+    </div>
+    <h4>CLI bridge: cold process per request</h4>
+    <p>
+      Every message spawns a fresh CLI process - multi-second startup, no token
+      streaming (chat is non-streaming app-wide). Persistent sessions would mean
+      per-conversation process lifecycle. Skip until latency complaints include figures.
+    </p>
+  </div>
+</section>
+
+<section id="quick">
+  <h2>Quick wins (low effort, high impact)</h2>
+  <p class="sec-sub">From docs/optimization-audit.md §6. Best parallel track while product work runs.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Change</th>
+        <th>Effort</th>
+        <th>Impact</th>
+        <th>Where</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Q1</td>
+        <td>Cap page summary content 40k → 15k chars</td>
+        <td class="effort">~2 min</td>
+        <td>Huge token savings on long books</td>
+        <td><code>summarizer.py</code></td>
+      </tr>
+      <tr>
+        <td>Q2</td>
+        <td>Extract shared <code>_run_async</code> util (3 copies)</td>
+        <td class="effort">~15 min</td>
+        <td>Maintainability</td>
+        <td>summary / podcast / flashcard tasks</td>
+      </tr>
+      <tr>
+        <td>Q3</td>
+        <td>Remove dead deps <code>react-pdf</code>, <code>framer-motion</code></td>
+        <td class="effort">~5 min</td>
+        <td>Bundle size</td>
+        <td><code>frontend/package.json</code></td>
+      </tr>
+      <tr>
+        <td>Q4</td>
+        <td>Delete unused templates</td>
+        <td class="effort">~2 min</td>
+        <td>Prompt inventory clarity</td>
+        <td><code>prompts/chat/qa.jinja</code>, <code>extraction/structure.jinja</code></td>
+      </tr>
+      <tr>
+        <td>Q5</td>
+        <td>Remove meaningless <code>&lt;system&gt;</code> tags from Jinja</td>
+        <td class="effort">~5 min</td>
+        <td>Token savings</td>
+        <td><code>prompts/*.jinja</code></td>
+      </tr>
+      <tr>
+        <td>Q6</td>
+        <td>flashcardsApi uses shared api client (401 refresh)</td>
+        <td class="effort">~10 min</td>
+        <td>Reliability</td>
+        <td><code>flashcardsApi.ts</code></td>
+      </tr>
+      <tr>
+        <td>Q7</td>
+        <td>Composite DB indexes</td>
+        <td class="effort">~20 min</td>
+        <td>Query speed</td>
+        <td>Alembic + models</td>
+      </tr>
+      <tr>
+        <td>Q8</td>
+        <td>Remove unused async DB engine</td>
+        <td class="effort">~10 min</td>
+        <td>Connection pool savings</td>
+        <td><code>database.py</code></td>
+      </tr>
+      <tr>
+        <td>Q9</td>
+        <td>Stop writing unused per-page JSON files</td>
+        <td class="effort">~5 min</td>
+        <td>Disk / I/O</td>
+        <td><code>pdf_parser.py</code></td>
+      </tr>
+      <tr>
+        <td>Q10</td>
+        <td>WebSocket reconnect with exponential backoff</td>
+        <td class="effort">~15 min</td>
+        <td>Progress reliability</td>
+        <td><code>useWebSocket.ts</code></td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="audit">
+  <h2>Full optimization audit backlog</h2>
+  <p class="sec-sub">Consolidated from docs/optimization-audit.md. Expand a group for details.</p>
+
+  <details class="group" open>
+    <summary>
+      <span><span class="badge b-perf">Tokens</span> 1. Token usage &amp; cost</span>
+      <span class="effort">7 items</span>
+    </summary>
+    <div class="body">
+      <table>
+        <thead><tr><th>ID</th><th>Problem</th><th>Fix direction</th></tr></thead>
+        <tbody>
+          <tr><td>1.1</td><td>Page summary sends up to 40k chars/page</td><td>Cap at ~15k</td></tr>
+          <tr><td>1.2</td><td>Section summary re-reads raw text</td><td>Prefer existing page summaries when ≥80% ready</td></tr>
+          <tr><td>1.3</td><td>Conflicting personas (system + template + default)</td><td>One unified Jinja persona</td></tr>
+          <tr><td>1.4</td><td>On-disk templates ignore variables / diverge from defaults</td><td>Align disk templates with defaults</td></tr>
+          <tr><td>1.5</td><td>Dead templates never called</td><td>Delete qa.jinja + structure.jinja</td></tr>
+          <tr><td>1.6</td><td><code>&lt;system&gt;</code> tags inside HumanMessage body</td><td>Remove tags; use real SystemMessage</td></tr>
+          <tr><td>1.7</td><td>Retry max_tokens=2048 for tiny structured calls</td><td>rerank=128, rewrite=512, answer=2048</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </details>
+
+  <details class="group">
+    <summary>
+      <span><span class="badge b-perf">Backend</span> 2. Compute &amp; response speed</span>
+      <span class="effort">12 items</span>
+    </summary>
+    <div class="body">
+      <table>
+        <thead><tr><th>ID</th><th>Problem</th><th>Fix direction</th></tr></thead>
+        <tbody>
+          <tr><td>2.1</td><td>Chat holds DB session across entire LLM call</td><td>Close session around inference</td></tr>
+          <tr><td>2.2</td><td>Up to ~40 concurrent summary LLM calls</td><td>Global asyncio.Semaphore(4-8)</td></tr>
+          <tr><td>2.3</td><td>Dual sync+async engines; async unused</td><td>Drop async engine</td></tr>
+          <tr><td>2.4</td><td>GET /summaries can sync-parse PDF for stubs</td><td>Background outline detection</td></tr>
+          <tr><td>2.5</td><td>N+1 queries in export service</td><td>joinedload / batch queries</td></tr>
+          <tr><td>2.6</td><td>Unbounded list endpoints (no pagination)</td><td>skip/limit defaults</td></tr>
+          <tr><td>2.7</td><td>Missing composite indexes</td><td>Alembic indexes on hot pairs</td></tr>
+          <tr><td>2.8</td><td>Race: double section-summary generation</td><td>Advisory lock / unique partial index</td></tr>
+          <tr><td>2.9</td><td>Flashcard task loads all content then truncates</td><td>Stream with char budget</td></tr>
+          <tr><td>2.10a</td><td>PDF parser holds full doc in RAM</td><td>Batch commit pages</td></tr>
+          <tr><td>2.11</td><td>Redundant page_N.json on disk</td><td>Delete write path</td></tr>
+          <tr><td>2.12</td><td>OCR on by default for all PDFs</td><td>Text-first, OCR fallback</td></tr>
+          <tr><td>2.10b</td><td>Podcast holds all WAV clips in memory</td><td>Temp files then stitch</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </details>
+
+  <details class="group">
+    <summary>
+      <span><span class="badge b-feature">Frontend</span> 3. Frontend performance &amp; memory</span>
+      <span class="effort">6 items</span>
+    </summary>
+    <div class="body">
+      <table>
+        <thead><tr><th>ID</th><th>Problem</th><th>Fix direction</th></tr></thead>
+        <tbody>
+          <tr><td>3.1</td><td>All PDF pages mounted as React components</td><td>Virtualized page window</td></tr>
+          <tr><td>3.2</td><td>Module caches never evict (page text, sentences)</td><td>LRU / age eviction</td></tr>
+          <tr><td>3.3</td><td>Dead deps react-pdf, framer-motion</td><td>Remove from package.json</td></tr>
+          <tr><td>3.4</td><td>flashcardsApi bypasses 401 refresh</td><td>Use shared api client</td></tr>
+          <tr><td>3.5</td><td>WebSocket no reconnect</td><td>Exponential backoff</td></tr>
+          <tr><td>3.6</td><td>Dashboard polls docs every 5s always</td><td>Poll only while processing</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </details>
+
+  <details class="group">
+    <summary>
+      <span><span class="badge b-debt">Reliability</span> 4. Reliability &amp; FE↔BE communication</span>
+      <span class="effort">6 items</span>
+    </summary>
+    <div class="body">
+      <table>
+        <thead><tr><th>ID</th><th>Problem</th><th>Fix direction</th></tr></thead>
+        <tbody>
+          <tr><td>4.1</td><td>No retry for transient GET failures</td><td>2 retries with backoff on idempotent GETs</td></tr>
+          <tr><td>4.2</td><td>No API rate limiting</td><td>Per-user chat + general limits</td></tr>
+          <tr><td>4.3</td><td>WebSocket connections in-process memory only</td><td>Redis pub/sub if multi-replica</td></tr>
+          <tr><td>4.4</td><td>Embedding search does Python dot products</td><td>pgvector ANN (only if scale needs it)</td></tr>
+          <tr><td>4.5</td><td>Full User DB load on every request</td><td>Short TTL cache or JWT-only user_id</td></tr>
+          <tr><td>4.6</td><td>ensure_embeddings embeds ALL chunks first chat</td><td>Lazy embed + background fill</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </details>
+
+  <details class="group">
+    <summary>
+      <span><span class="badge b-perf">Infra</span> 5. Infrastructure &amp; scaling</span>
+      <span class="effort">4 items</span>
+    </summary>
+    <div class="body">
+      <table>
+        <thead><tr><th>ID</th><th>Problem</th><th>Fix direction</th></tr></thead>
+        <tbody>
+          <tr><td>5.1</td><td>Redis only used as Celery broker</td><td>Cache / WS bus / rate-limit counters</td></tr>
+          <tr><td>5.2</td><td>Single Redis, no HA</td><td>AOF+RDB enough for self-host; Sentinel later</td></tr>
+          <tr><td>5.3</td><td>Local volume storage blocks multi-host</td><td>Document limit; S3 later if needed</td></tr>
+          <tr><td>5.4</td><td>Duplicated _run_async helpers</td><td>Shared util</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </details>
+</section>
+
+<section id="stale">
+  <h2>Stale checklist items (already done - do not rebuild)</h2>
+  <p class="sec-sub">TODO.md / older HANDOFF sections still list some of these as open. Reality on master:</p>
+  <ul class="done-list">
+    <li><span class="badge b-done">Done</span> PDF.js + text layer + fit-to-width</li>
+    <li><span class="badge b-done">Done</span> Word-level / sentence TTS highlight + click-to-read</li>
+    <li><span class="badge b-done">Done</span> Piper/Kokoro TTS Docker with real models</li>
+    <li><span class="badge b-done">Done</span> Celery → WebSocket progress path</li>
+    <li><span class="badge b-done">Done</span> Voice selection in Settings</li>
+    <li><span class="badge b-done">Done</span> User prefs (voice, export, model backends)</li>
+    <li><span class="badge b-done">Done</span> Named bookmarks + reading progress resume</li>
+    <li><span class="badge b-done">Done</span> Admin role + user management UI/API</li>
+    <li><span class="badge b-done">Done</span> Semantic / hybrid retrieval (BM25 + embeddings)</li>
+    <li><span class="badge b-done">Done</span> EPUB / DOCX / PPTX support</li>
+    <li><span class="badge b-done">Done</span> Responsive layout + panel toggles</li>
+    <li><span class="badge b-done">Done</span> CLI bridges + auth + launcher supervision</li>
+    <li><span class="badge b-done">Done</span> Per-user model overrides</li>
+    <li><span class="badge b-done">Done</span> Frontend production Next.js build</li>
+    <li><span class="badge b-done">Done</span> Celery <code>worker_max_memory_per_child</code></li>
+    <li><span class="badge b-done">Done</span> chat_engine uses <code>get_active_llm()</code> (old HANDOFF TODO is stale)</li>
+    <li><span class="badge b-done">Done</span> Upload max size raised to 200MB</li>
+  </ul>
+</section>
+
+<section id="not-do">
+  <h2>What not to do</h2>
+  <p class="sec-sub">Carried from HANDOFF_LONGTERM - still holds.</p>
+  <table>
+    <thead><tr><th>Avoid</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Migrate off Celery/Redis</td>
+        <td>Not the bottleneck; high churn risk</td>
+      </tr>
+      <tr>
+        <td>Rewrite retrieval into a separate vector DB</td>
+        <td>Postgres hybrid BM25+embeddings is fine at current scale</td>
+      </tr>
+      <tr>
+        <td>Chase CUDA layer size beyond lazy Piper downloads</td>
+        <td>Diminishing returns; stability matters more for local GPU TTS</td>
+      </tr>
+      <tr>
+        <td>Optimize rerank / embeddings routing without instrumentation</td>
+        <td>Explicitly forbidden by handoff until numbers exist</td>
+      </tr>
+      <tr>
+        <td>Store annotation rects instead of text offsets</td>
+        <td>Fit-to-width scale invalidates pixel geometry</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="sources">
+  <h2>Sources &amp; verification notes</h2>
+  <table>
+    <thead><tr><th>Document</th><th>What it contributed</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>HANDOFF_ANNOTATIONS.md</code></td>
+        <td>Annotations not-done sketch; admin + reading progress done</td>
+      </tr>
+      <tr>
+        <td><code>HANDOFF_LONGTERM.md</code></td>
+        <td>Measure-first items; finished 4a/4c/4d; next = instrumentation</td>
+      </tr>
+      <tr>
+        <td><code>docs/optimization-audit.md</code> (+ .html)</td>
+        <td>Full improvement backlog and quick wins</td>
+      </tr>
+      <tr>
+        <td><code>TODO.md</code> / <code>status.md</code></td>
+        <td>Early roadmap (many items stale as of Aug 2026)</td>
+      </tr>
+      <tr>
+        <td><code>HANDOFF.md</code></td>
+        <td>Historical sprint notes; some TODOs superseded</td>
+      </tr>
+      <tr>
+        <td>Git master @ feature/ui-overhaul merge</td>
+        <td>What actually shipped recently</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note" style="margin-top:16px">
+    <strong>How to use this report:</strong> pick from Priority now, implement with E2E verification,
+    then strike items here (or regenerate) when closed. Prefer small commits per quick win;
+    treat annotations as its own design slice with schema decision first.
+  </div>
+</section>
+
+<footer>
+  OpenNoteBox open-tasks board · branch <code>feature/open-tasks</code> · local report only
+</footer>
+
+</div>
+</body>
+</html>

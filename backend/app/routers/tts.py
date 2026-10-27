@@ -1,0 +1,574 @@
+"""TTS router for text-to-speech playback."""
+import asyncio
+import os
+import hashlib
+import uuid
+from datetime import datetime, timezone
+from typing import Optional
+
+import httpx
+from loguru import logger
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, Field
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import Session
+
+from app.database import get_db, SessionLocal
+from app.models import User, Document, Summary, TTSCache
+from app.routers.auth import get_current_user_from_token
+from app.config import settings
+from app.services.llm_settings import get_default_voice
+from app.services.markdown_strip import strip_markdown
+from app.tasks.tts_tasks import generate_tts as generate_tts_task, _wav_duration
+
+router = APIRouter(prefix="/api/tts", tags=["tts"])
+
+# Mirrors tts/main.py's VOICE_MODELS registry, for the UI voice picker/lab.
+# "high" quality tier sounds markedly less robotic than "medium" but is
+# slower to synthesize - listed honestly so the user can judge the
+# quality/speed tradeoff themselves rather than have it picked for them.
+VOICE_CATALOG = [
+    {
+        "id": "default",
+        "label": "Narrator (libritts_r)",
+        "description": "Used for page and section narration. Warmer, medium quality.",
+    },
+    {
+        "id": "host_a",
+        "label": "Host A - Ryan (male, high quality)",
+        "description": "Podcast dialogue voice. Slower to synthesize.",
+    },
+    {
+        "id": "host_b",
+        "label": "Host B - Lessac (female, high quality)",
+        "description": "Podcast dialogue voice. Slower to synthesize.",
+    },
+    {
+        "id": "en_US-ryan-medium",
+        "label": "Ryan (male, medium quality)",
+        "description": "Faster synthesis, noticeably more robotic than the high-quality tier.",
+    },
+    {
+        "id": "en_US-lessac-medium",
+        "label": "Lessac (female, medium quality)",
+        "description": "Faster synthesis, noticeably more robotic than the high-quality tier.",
+    },
+    # Kokoro-82M: a different, more natural/expressive engine than Piper.
+    # ~4-8s per short sentence on this deployment's CPU vs Piper's ~1.5-4s -
+    # noticeably slower, but the naturalness gap over Piper is large enough
+    # to be worth it for most reading. IDs curated from the model's graded
+    # voice list (huggingface.co/hexgrad/Kokoro-82M/VOICES.md) to the
+    # top-graded voice per gender/accent.
+    {
+        "id": "kokoro-af_heart",
+        "label": "Heart (female, US, Kokoro)",
+        "description": "Top-graded Kokoro voice. Natural, expressive. Slower than Piper.",
+    },
+    {
+        "id": "kokoro-af_bella",
+        "label": "Bella (female, US, Kokoro)",
+        "description": "Natural, expressive. Slower than Piper.",
+    },
+    {
+        "id": "kokoro-am_michael",
+        "label": "Michael (male, US, Kokoro)",
+        "description": "Natural, expressive. Slower than Piper.",
+    },
+    {
+        "id": "kokoro-am_fenrir",
+        "label": "Fenrir (male, US, Kokoro)",
+        "description": "Natural, expressive. Slower than Piper.",
+    },
+    {
+        "id": "kokoro-bf_emma",
+        "label": "Emma (female, British, Kokoro)",
+        "description": "Natural, expressive. Slower than Piper.",
+    },
+    {
+        "id": "kokoro-bm_george",
+        "label": "George (male, British, Kokoro)",
+        "description": "Natural, expressive. Slower than Piper.",
+    },
+]
+
+TEXT_MAX_CHARS = 5000
+
+
+def _hash_text(text: str, user_id: int, voice: str, speed: float = 1.0) -> str:
+    return hashlib.md5(f"{text}{user_id}{voice}{speed}".encode()).hexdigest()
+
+
+def _cached_or_queue(
+    db: Session,
+    user: User,
+    text: str,
+    voice: str,
+    doc_id: Optional[int] = None,
+    summary_id: Optional[int] = None,
+    speed: float = 1.0,
+) -> dict:
+    """Shared cache-check-then-queue logic for all play endpoints."""
+    text_hash = _hash_text(text, user.id, voice, speed)
+
+    query = db.query(TTSCache).filter(
+        TTSCache.text_hash == text_hash,
+        TTSCache.user_id == user.id,
+    )
+    if summary_id is not None:
+        query = query.filter(TTSCache.summary_id == summary_id)
+    cache = query.first()
+
+    if cache and cache.audio_path and os.path.exists(cache.audio_path):
+        return {
+            "status": "cached",
+            "audio_url": f"/api/tts/audio/{cache.id}",
+            "cache_id": cache.id,
+            "text_hash": text_hash,
+            "duration": cache.duration,
+        }
+
+    task = generate_tts_task.delay(
+        user_id=user.id,
+        text=text,
+        doc_id=doc_id,
+        summary_id=summary_id,
+        voice=voice,
+        speed=speed,
+    )
+
+    return {
+        "status": "generating",
+        "task_id": task.id,
+        "text_hash": text_hash,
+    }
+
+
+@router.get("/voices")
+def list_voices():
+    """Voice registry for the UI voice picker/lab (see tts/main.py VOICE_MODELS)."""
+    return {"voices": VOICE_CATALOG}
+
+
+@router.post("/release-gpu")
+async def release_gpu():
+    """Proxy to the TTS service's own /release-gpu (see tts/main.py) - the
+    frontend has no route to that service directly, only through this API.
+    Best-effort: the frontend fires this from a beforeunload/visibilitychange
+    handler and doesn't wait on the result, so a slow or failed TTS service
+    should never surface as an error to a user who is already leaving."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(f"{settings.piper_tts_url}/release-gpu")
+    except Exception as e:
+        logger.warning(f"TTS release-gpu proxy failed: {e}")
+    return {"status": "ok"}
+
+
+class PlayTextRequest(BaseModel):
+    text: str = Field(..., max_length=TEXT_MAX_CHARS)
+    voice: Optional[str] = None
+    # Native synthesis speed (not client-side playbackRate). Each engine has
+    # its own valid range - main.py clamps per-engine (Kokoro: 0.5-2.0) and
+    # the frontend applies any remainder above that as audio.playbackRate.
+    speed: Optional[float] = Field(None, ge=0.1, le=4.0)
+
+
+@router.post("/play/text")
+def play_text(
+    body: PlayTextRequest,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Start TTS playback for an arbitrary text chunk (used by the frontend
+    TTS engine for chunked gapless playback). Same cache/queue contract as
+    the other play endpoints, so the existing frontend poll logic works
+    unchanged. Text is usually already plain, but is markdown-stripped
+    anyway since callers may pass summary-derived chunks.
+
+    Registered before /play/{summary_id} - FastAPI matches path routes in
+    registration order, and a literal "/play/text" would otherwise be
+    swallowed by "/play/{summary_id}" (with "text" failing int parsing)."""
+    spoken_text = strip_markdown(body.text)
+    # Must pass user.id: get_default_voice() with no args returns the seed
+    # default and ignores this user's Settings choice.
+    resolved_voice = body.voice or get_default_voice(user.id)
+    return _cached_or_queue(db, user, spoken_text, resolved_voice, speed=body.speed or 1.0)
+
+
+class StreamRequest(BaseModel):
+    text: str = Field(..., max_length=TEXT_MAX_CHARS)
+    voice: Optional[str] = None
+    speed: Optional[float] = Field(None, ge=0.1, le=4.0)
+
+
+def _cache_dir() -> str:
+    return os.path.join(settings.data_dir, "tts-cache")
+
+
+def _iter_file(path: str, chunk_size: int = 65536):
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+
+
+@router.post("/stream")
+async def stream_tts(
+    body: StreamRequest,
+    request: Request,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Streaming TTS endpoint for interactive narration - bypasses Celery/Redis
+    entirely so a single line of narration doesn't pay queue-and-poll latency
+    (previously: browser -> API -> Redis -> Celery -> HTTP to tts -> DB row ->
+    browser polling /cache-status every 400ms, 1-4s round trip and no way to
+    cancel). This endpoint proxies straight through to the tts service and
+    streams bytes back as they arrive.
+
+    Uses the exact same cache namespace (_hash_text) as the Celery path so a
+    line already synthesized via a podcast/summary batch job - or a previous
+    call to this endpoint - is served instantly, and vice versa.
+
+    Podcasts and summaries deliberately keep using the Celery path
+    (/play/text, /play/{summary_id}) - those are long batch jobs where
+    queueing is fine and retry-on-worker-death (see celery_app.py's
+    acks_late config) actually matters; this endpoint has neither.
+    """
+    spoken_text = strip_markdown(body.text)
+    resolved_voice = body.voice or get_default_voice(user.id)
+    speed = body.speed or 1.0
+    text_hash = _hash_text(spoken_text, user.id, resolved_voice, speed)
+
+    cache = db.query(TTSCache).filter(
+        TTSCache.text_hash == text_hash,
+        TTSCache.user_id == user.id,
+    ).first()
+
+    if cache and cache.audio_path and os.path.exists(cache.audio_path):
+        # Cache hit: bump recency (feeds the LRU eviction sweep, see
+        # tts_tasks.evict_tts_cache) and stream the existing file straight
+        # back - no proxy round trip needed.
+        cache.last_accessed = datetime.now(timezone.utc)
+        db.commit()
+        headers = {
+            "X-TTS-Duration": str(cache.duration or 0),
+            "X-TTS-Cache-Id": str(cache.id),
+            "X-TTS-Cached": "hit",
+        }
+        return StreamingResponse(_iter_file(cache.audio_path), media_type="audio/wav", headers=headers)
+
+    # Cache miss. Reserve a TTSCache row up front (audio_path/duration/
+    # size_bytes all NULL) so we have a real row id to hand back in
+    # X-TTS-Cache-Id before the body has even started streaming - the id is
+    # promised in the response headers, which go out before we know the
+    # final size/duration. A NULL audio_path means this stub is never itself
+    # mistaken for a valid cache hit by any other code path (all cache-hit
+    # checks in this file test `cache.audio_path and os.path.exists(...)`)
+    # until the streaming generator below fills it in.
+    #
+    # on_conflict_do_nothing + re-select (rather than a plain insert) handles
+    # two concurrent identical requests (same user/text/voice/speed) racing
+    # to create the same (text_hash, user_id) row - the loser doesn't crash
+    # on the unique constraint, it just picks up the winner's row id and
+    # proceeds to stream+synthesize its own copy independently (see the
+    # unique temp filename below for why that's safe).
+    now = datetime.now(timezone.utc)
+    stmt = pg_insert(TTSCache).values(
+        user_id=user.id,
+        document_id=None,
+        summary_id=None,
+        text_hash=text_hash,
+        audio_path=None,
+        duration=None,
+        size_bytes=None,
+        created_at=now,
+        last_accessed=now,
+    ).on_conflict_do_nothing(index_elements=["text_hash", "user_id"])
+    db.execute(stmt)
+    db.commit()
+
+    cache = db.query(TTSCache).filter(
+        TTSCache.text_hash == text_hash,
+        TTSCache.user_id == user.id,
+    ).first()
+    cache_id = cache.id
+
+    output_dir = _cache_dir()
+    os.makedirs(output_dir, exist_ok=True)
+    final_path = os.path.join(output_dir, f"{text_hash}.wav")
+    # Unique per-request temp name (not just per-hash) so two concurrent
+    # identical requests each write their own file - neither can see the
+    # other's partial bytes, and the final os.rename is atomic so whichever
+    # finishes second simply wins the rename with an equally valid file.
+    tmp_path = os.path.join(output_dir, f".{text_hash}.{uuid.uuid4().hex}.tmp")
+
+    # Connect to the tts service and check its status BEFORE returning a
+    # StreamingResponse. Once a streaming response has begun, its headers -
+    # including the CORS headers - are already on the wire, so a failure part
+    # way through can only present as a reset connection. In the browser that
+    # surfaces as "CORS request did not succeed" with a null status code,
+    # which is deeply misleading: it points at CORS configuration when the
+    # real fault is upstream (a GPU OOM in Kokoro, in the case that prompted
+    # this). Failing here instead returns an ordinary JSON 502 that carries
+    # normal headers and an error the client can actually act on.
+    client = httpx.AsyncClient(timeout=180.0)
+    stream_ctx = client.stream(
+        "POST",
+        f"{settings.piper_tts_url}/tts",
+        json={
+            "text": spoken_text[:TEXT_MAX_CHARS],
+            "voice": resolved_voice,
+            "speed": speed,
+        },
+    )
+    try:
+        resp = await stream_ctx.__aenter__()
+    except Exception as exc:
+        await client.aclose()
+        logger.error(f"tts service unreachable: {exc}")
+        raise HTTPException(status_code=502, detail="TTS service is unreachable")
+
+    if resp.status_code != 200:
+        error_body = await resp.aread()
+        await stream_ctx.__aexit__(None, None, None)
+        await client.aclose()
+        detail = error_body[:300].decode("utf-8", "replace")
+        logger.error(f"tts service returned {resp.status_code}: {detail}")
+        raise HTTPException(status_code=502, detail=f"TTS synthesis failed: {detail}")
+
+    async def _proxy_and_cache():
+        # Watchdog for client disconnect. Without it, an aborted request
+        # (user clicked a new line, superseding this one) would keep the
+        # tts-service connection open for the rest of the synthesis: the
+        # tts side only notices the closed TCP connection through its own
+        # 0.3s poll, and the synthesis itself runs to completion in the
+        # meantime, holding the single GPU slot and delaying the NEW
+        # request the user is actually waiting on. Closing the upstream
+        # connection as soon as the disconnect is seen lets the tts side
+        # cancel within one poll tick.
+        client_gone = asyncio.Event()
+
+        async def _watch_client():
+            while not client_gone.is_set():
+                try:
+                    if await request.is_disconnected():
+                        client_gone.set()
+                        return
+                except Exception:
+                    client_gone.set()
+                    return
+                await asyncio.sleep(0.25)
+
+        watcher = asyncio.ensure_future(_watch_client())
+        try:
+            wrote_complete = False
+            total_bytes = 0
+            read_task = None
+            # aiter_bytes() is a fresh async generator on every call, so hold
+            # the ONE iterator for the whole body and anext() it repeatedly -
+            # re-calling aiter_bytes() each loop would re-read chunk 1 forever.
+            body_iter = resp.aiter_bytes()
+            try:
+                with open(tmp_path, "wb") as f:
+                    while True:
+                        if read_task is None:
+                            read_task = asyncio.ensure_future(anext(body_iter))
+                        done, _ = await asyncio.wait(
+                            {read_task},
+                            timeout=0.25,
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if not done:
+                            # No upstream byte this tick - did the client
+                            # go away while we were waiting?
+                            if client_gone.is_set():
+                                read_task.cancel()
+                                return
+                            continue
+                        try:
+                            chunk = read_task.result()
+                        except StopAsyncIteration:
+                            read_task = None
+                            break
+                        read_task = None
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        total_bytes += len(chunk)
+                        yield chunk
+                wrote_complete = True
+            finally:
+                if read_task is not None and not read_task.done():
+                    read_task.cancel()
+                # Close the upstream tts connection no matter how we got
+                # here - on a client disconnect this is what lets the tts
+                # service notice and abort its in-flight synthesis.
+                await stream_ctx.__aexit__(None, None, None)
+                await client.aclose()
+                client_gone.set()
+                watcher.cancel()
+        finally:
+            if wrote_complete:
+                # Only rename into place - making the file visible to future
+                # cache-hit lookups - once the full body has actually been
+                # received. This is the crux of "never leave a truncated
+                # file behind": a client disconnect or upstream error raises
+                # inside the `with client.stream(...)` block above, skips
+                # this branch entirely, and falls into the cleanup below
+                # instead, so a half-written file is never left at
+                # final_path for a later request to mistake for a real hit.
+                os.rename(tmp_path, final_path)
+
+                # The request-scoped `db` session (from Depends(get_db)) may
+                # already be closed by the time this generator resumes after
+                # yielding the last chunk - FastAPI/Starlette finalize
+                # dependencies once the endpoint function returns the
+                # Response object, not once a StreamingResponse finishes
+                # iterating. Use a fresh session instead, same pattern as
+                # the Celery task in tts_tasks.py.
+                write_db = SessionLocal()
+                try:
+                    row = write_db.query(TTSCache).filter(TTSCache.id == cache_id).first()
+                    if row:
+                        row.audio_path = final_path
+                        row.size_bytes = total_bytes
+                        row.duration = _wav_duration(final_path)
+                        row.last_accessed = datetime.now(timezone.utc)
+                        write_db.commit()
+                finally:
+                    write_db.close()
+            else:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+
+    headers = {
+        # Duration is genuinely unknown until the full body has been
+        # received (it's derived from the WAV file's frame count), which is
+        # after headers have already been sent - "0" per the documented
+        # best-effort contract.
+        "X-TTS-Duration": "0",
+        "X-TTS-Cache-Id": str(cache_id),
+        "X-TTS-Cached": "miss",
+    }
+    return StreamingResponse(_proxy_and_cache(), media_type="audio/wav", headers=headers)
+
+
+@router.post("/play/{summary_id}")
+def play_summary(
+    summary_id: int,
+    voice: Optional[str] = None,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Start TTS playback for a summary. Returns audio URL or queues generation.
+
+    Summaries are stored as Markdown (see services/prompts.py); Piper would
+    otherwise read the literal symbols aloud ("hash hash", "star star"), so
+    the text is stripped to plain speakable text before hashing/synthesis.
+    """
+    summary = db.query(Summary).filter(Summary.id == summary_id).first()
+    if not summary:
+        raise HTTPException(status_code=404, detail="Summary not found")
+
+    doc = db.query(Document).filter(
+        Document.id == summary.document_id,
+        Document.user_id == user.id,
+    ).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    spoken_text = strip_markdown(summary.content)
+    resolved_voice = voice or get_default_voice(user.id)
+
+    return _cached_or_queue(
+        db, user, spoken_text, resolved_voice, doc_id=doc.id, summary_id=summary_id
+    )
+
+
+@router.get("/audio/{cache_id}")
+def get_audio(
+    cache_id: int,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Stream cached TTS audio file."""
+    cache = db.query(TTSCache).filter(
+        TTSCache.id == cache_id,
+        TTSCache.user_id == user.id,
+    ).first()
+
+    if not cache or not cache.audio_path:
+        raise HTTPException(status_code=404, detail="Audio not found")
+
+    if not os.path.exists(cache.audio_path):
+        raise HTTPException(status_code=404, detail="Audio file missing")
+
+    # Bump recency so this row isn't picked as an eviction candidate while
+    # it's still actively being played (see tts_tasks.evict_tts_cache).
+    cache.last_accessed = datetime.now(timezone.utc)
+    db.commit()
+
+    return FileResponse(
+        cache.audio_path,
+        media_type="audio/wav",
+    )
+
+
+@router.post("/play/page/{doc_id}/{page_num}")
+def play_page(
+    doc_id: int,
+    page_num: int,
+    voice: Optional[str] = None,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Start TTS playback for a raw page's text. Page text is never
+    Markdown, so it is NOT run through strip_markdown (that would risk
+    mangling genuine content, e.g. a page discussing '#' or '*' characters)."""
+    from app.models import ExtractedText
+
+    page = db.query(ExtractedText).filter(
+        ExtractedText.document_id == doc_id,
+        ExtractedText.page_number == page_num,
+    ).first()
+
+    doc = db.query(Document).filter(
+        Document.id == doc_id,
+        Document.user_id == user.id,
+    ).first()
+
+    if not doc or not page:
+        raise HTTPException(status_code=404, detail="Document or page not found")
+
+    resolved_voice = voice or get_default_voice(user.id)
+    return _cached_or_queue(db, user, page.content, resolved_voice, doc_id=doc.id)
+
+
+@router.get("/cache/{text_hash}")
+def check_cache(
+    text_hash: str,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Check if TTS audio is cached/ready, for polling by the frontend."""
+    cache = db.query(TTSCache).filter(
+        TTSCache.text_hash == text_hash,
+        TTSCache.user_id == user.id,
+    ).first()
+
+    if not cache or not cache.audio_path or not os.path.exists(cache.audio_path):
+        return {"status": "generating"}
+
+    return {
+        "status": "ready",
+        "cache_id": cache.id,
+        "audio_url": f"/api/tts/audio/{cache.id}",
+        "duration": cache.duration,
+    }

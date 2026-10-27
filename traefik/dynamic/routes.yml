@@ -1,0 +1,53 @@
+# Routing: one origin, split by path.
+#
+# The browser only ever sees https://<whatever-address>/ - the frontend and
+# the API are the same origin from its point of view. That is what makes the
+# app a secure context (so crypto.randomUUID, navigator.clipboard and friends
+# exist) and what removes cross-origin requests entirely rather than
+# permitting them after the fact.
+http:
+  routers:
+    # Priority beats the frontend catch-all below, which would otherwise also
+    # match /api. Traefik picks the longest rule when priorities are equal,
+    # but stating it explicitly is what stops a later edit reordering silently.
+    api:
+      rule: "PathPrefix(`/api`) || PathPrefix(`/ws`) || Path(`/health`)"
+      priority: 100
+      entryPoints: [websecure]
+      service: api
+      tls: {}
+
+    frontend:
+      rule: "PathPrefix(`/`)"
+      priority: 1
+      entryPoints: [websecure]
+      service: frontend
+      tls: {}
+
+    # Same two rules again on the loopback HTTP entrypoint. Duplicated rather
+    # than adding weblocal to the routers above because `tls: {}` is a property
+    # of the router, not the entrypoint - one router across both would demand
+    # TLS on the plaintext port too. The rules and services stay identical, so
+    # http://localhost:3003 routes exactly like https://<host>, websockets
+    # included.
+    api-local:
+      rule: "PathPrefix(`/api`) || PathPrefix(`/ws`) || Path(`/health`)"
+      priority: 100
+      entryPoints: [weblocal]
+      service: api
+
+    frontend-local:
+      rule: "PathPrefix(`/`)"
+      priority: 1
+      entryPoints: [weblocal]
+      service: frontend
+
+  services:
+    api:
+      loadBalancer:
+        servers:
+          - url: "http://api:8000"
+    frontend:
+      loadBalancer:
+        servers:
+          - url: "http://frontend:3000"

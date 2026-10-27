@@ -1,0 +1,1354 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenNoteBox — Optimization Audit Report</title>
+
+  <link href="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/styles/github-dark.min.css" rel="stylesheet">
+  <script src="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>
+  <script src="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/languages/python.min.js"></script>
+  <script src="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/languages/typescript.min.js"></script>
+  <script src="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/languages/sql.min.js"></script>
+  <script src="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/languages/bash.min.js"></script>
+  <script src="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/languages/rust.min.js"></script>
+  <script>hljs.highlightAll();</script>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });</script>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <style>
+    :root {
+      --bg-primary: #0b0f1a;
+      --bg-secondary: #111827;
+      --bg-card: #1a1f2e;
+      --bg-code: #161b28;
+      --border: #2a3040;
+      --text-primary: #e5e7eb;
+      --text-secondary: #9ca3af;
+      --text-muted: #6b7280;
+      --accent-blue: #3b82f6;
+      --accent-indigo: #6366f1;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-red: #ef4444;
+      --accent-purple: #a855f7;
+      --accent-cyan: #06b6d4;
+      --accent-pink: #ec4899;
+      --accent-orange: #f97316;
+      --gradient-primary: linear-gradient(135deg, #6366f1, #8b5cf6);
+      --shadow-card: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+      --shadow-glow: 0 0 20px rgba(99,102,241,0.15);
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.7;
+      overflow-x: hidden;
+    }
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg-primary); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .hero {
+      position: relative;
+      padding: 4rem 2rem 3rem;
+      text-align: center;
+      background: linear-gradient(180deg, rgba(99,102,241,0.08) 0%, transparent 100%);
+      border-bottom: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -50%; left: 50%; transform: translateX(-50%);
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, rgba(99,102,241,0.1) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero h1 {
+      font-size: 2.5rem; font-weight: 800;
+      background: linear-gradient(135deg, #e5e7eb, #6366f1);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      margin-bottom: 0.5rem; position: relative;
+    }
+    .hero .subtitle {
+      font-size: 1.1rem; color: var(--text-secondary);
+      max-width: 700px; margin: 0 auto; position: relative;
+    }
+    .hero .meta-row {
+      display: flex; justify-content: center; gap: 2rem;
+      margin-top: 1.5rem; font-size: 0.85rem; color: var(--text-muted);
+      position: relative; flex-wrap: wrap;
+    }
+    .hero .meta-row span { display: flex; align-items: center; gap: 0.4rem; }
+
+    .toc {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(11,15,26,0.9); backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border); padding: 0 2rem;
+    }
+    .toc-inner {
+      display: flex; gap: 0;
+      max-width: 1400px; margin: 0 auto; overflow-x: auto;
+    }
+    .toc a {
+      display: block; padding: 1rem 1.25rem;
+      color: var(--text-secondary); text-decoration: none;
+      font-size: 0.85rem; font-weight: 500; white-space: nowrap;
+      border-bottom: 2px solid transparent; transition: all 0.2s;
+    }
+    .toc a:hover { color: var(--text-primary); border-bottom-color: var(--accent-indigo); }
+
+    .container { max-width: 1300px; margin: 0 auto; padding: 3rem 2rem; }
+    .section { margin-bottom: 4rem; }
+    .section-label {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      padding: 0.35rem 0.85rem; border-radius: 100px;
+      font-size: 0.75rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.08em; margin-bottom: 1rem;
+    }
+    .label-blue { background: rgba(59,130,246,0.15); color: var(--accent-blue); }
+    .label-indigo { background: rgba(99,102,241,0.15); color: var(--accent-indigo); }
+    .label-emerald { background: rgba(16,185,129,0.15); color: var(--accent-emerald); }
+    .label-amber { background: rgba(245,158,11,0.15); color: var(--accent-amber); }
+    .label-red { background: rgba(239,68,68,0.15); color: var(--accent-red); }
+    .label-purple { background: rgba(168,85,247,0.15); color: var(--accent-purple); }
+    .label-cyan { background: rgba(6,182,212,0.15); color: var(--accent-cyan); }
+    .label-pink { background: rgba(236,72,153,0.15); color: var(--accent-pink); }
+    .label-orange { background: rgba(249,115,22,0.15); color: var(--accent-orange); }
+
+    .section h2 { font-size: 1.75rem; font-weight: 700; margin-bottom: 0.75rem; color: #fff; }
+    .section-intro { color: var(--text-secondary); font-size: 1.05rem; max-width: 800px; margin-bottom: 2rem; }
+
+    .finding-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
+      gap: 1.25rem;
+    }
+    .finding-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1.5rem; transition: all 0.2s;
+      box-shadow: var(--shadow-card);
+    }
+    .finding-card:hover {
+      border-color: var(--accent-indigo);
+      box-shadow: var(--shadow-glow); transform: translateY(-2px);
+    }
+    .finding-card.full-width { grid-column: 1 / -1; }
+    .finding-header {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 1rem; margin-bottom: 0.75rem;
+    }
+    .finding-title { font-size: 1.05rem; font-weight: 600; color: #fff; }
+    .severity-badge {
+      flex-shrink: 0; padding: 0.2rem 0.6rem; border-radius: 6px;
+      font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .sev-critical { background: rgba(239,68,68,0.2); color: var(--accent-red); }
+    .sev-high { background: rgba(245,158,11,0.2); color: var(--accent-amber); }
+    .sev-medium { background: rgba(59,130,246,0.2); color: var(--accent-blue); }
+    .sev-low { background: rgba(107,114,128,0.2); color: var(--text-muted); }
+    .sev-info { background: rgba(6,182,212,0.2); color: var(--accent-cyan); }
+
+    .finding-file {
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 0.8rem; color: var(--accent-cyan);
+      background: rgba(6,182,212,0.1); padding: 0.15rem 0.5rem;
+      border-radius: 4px; display: inline-block; margin-bottom: 0.5rem;
+    }
+    .finding-desc { color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 0.75rem; }
+    .finding-fix {
+      color: var(--accent-emerald); font-size: 0.85rem;
+      padding: 0.75rem; background: rgba(16,185,129,0.06);
+      border-radius: 8px; border-left: 3px solid var(--accent-emerald);
+    }
+    .finding-fix strong { color: var(--accent-emerald); }
+    .finding-impact {
+      margin-top: 0.5rem; color: var(--accent-red); font-size: 0.85rem;
+      padding: 0.75rem; background: rgba(239,68,68,0.06);
+      border-radius: 8px; border-left: 3px solid var(--accent-red);
+    }
+
+    pre {
+      background: var(--bg-code) !important; border: 1px solid var(--border);
+      border-radius: 10px; padding: 1.25rem; margin: 1rem 0;
+      overflow-x: auto; font-size: 0.82rem; line-height: 1.6;
+    }
+    code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85em; }
+    .inline-code {
+      background: rgba(99,102,241,0.12); color: var(--accent-indigo);
+      padding: 0.15em 0.45em; border-radius: 4px; font-size: 0.85em;
+    }
+
+    .stats-row {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 1rem; margin-bottom: 3rem;
+    }
+    .stat-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1.5rem; text-align: center;
+    }
+    .stat-value {
+      font-size: 2rem; font-weight: 800;
+      background: var(--gradient-primary);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .stat-label { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; }
+
+    .table-wrap {
+      overflow-x: auto; border: 1px solid var(--border);
+      border-radius: 12px; margin: 1.5rem 0;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th {
+      text-align: left; padding: 1rem 1.25rem; background: var(--bg-card);
+      color: var(--text-secondary); font-weight: 600; font-size: 0.8rem;
+      text-transform: uppercase; letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border);
+    }
+    td { padding: 0.85rem 1.25rem; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(99,102,241,0.04); }
+
+    .diagram-box {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 2rem; margin: 1.5rem 0; overflow-x: auto;
+    }
+    .diagram-title {
+      font-size: 0.85rem; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.05em;
+      margin-bottom: 1rem; text-align: center;
+    }
+
+    .chart-container {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1.5rem; margin: 1.5rem 0;
+      max-width: 650px;
+    }
+    .chart-container.wide { max-width: 100%; }
+
+    .checklist { list-style: none; }
+    .checklist li {
+      display: flex; align-items: flex-start; gap: 0.75rem;
+      padding: 0.85rem 1rem; background: var(--bg-card);
+      border: 1px solid var(--border); border-radius: 10px;
+      margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-secondary);
+    }
+    .checklist li .num {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; border-radius: 6px;
+      font-size: 0.75rem; font-weight: 700;
+      background: var(--gradient-primary); color: #fff; flex-shrink: 0;
+    }
+    .checklist li .effort {
+      margin-left: auto; font-size: 0.75rem; padding: 0.2rem 0.5rem;
+      border-radius: 4px; background: rgba(16,185,129,0.15);
+      color: var(--accent-emerald); white-space: nowrap; flex-shrink: 0;
+    }
+
+    .callout {
+      padding: 1.25rem 1.5rem; border-radius: 12px;
+      margin: 1.5rem 0; font-size: 0.9rem;
+    }
+    .callout-info {
+      background: rgba(6,182,212,0.08); border: 1px solid rgba(6,182,212,0.2);
+      color: var(--accent-cyan);
+    }
+    .callout-warn {
+      background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.2);
+      color: var(--accent-amber);
+    }
+    .callout-good {
+      background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.2);
+      color: var(--accent-emerald);
+    }
+
+    .rust-matrix {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1rem; margin: 1.5rem 0;
+    }
+    .rust-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 1.25rem;
+    }
+    .rust-card h4 { font-size: 0.95rem; color: #fff; margin-bottom: 0.5rem; }
+    .rust-card .speed {
+      font-size: 1.5rem; font-weight: 800; color: var(--accent-emerald);
+      margin: 0.5rem 0;
+    }
+    .rust-card .meta { font-size: 0.8rem; color: var(--text-muted); }
+
+    .footer {
+      text-align: center; padding: 3rem 2rem;
+      border-top: 1px solid var(--border);
+      color: var(--text-muted); font-size: 0.85rem;
+    }
+
+    @media (max-width: 768px) {
+      .finding-grid { grid-template-columns: 1fr; }
+      .hero h1 { font-size: 1.75rem; }
+      .stats-row { grid-template-columns: repeat(2, 1fr); }
+      .rust-matrix { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <header class="hero">
+    <h1>OpenNoteBox Optimization Audit</h1>
+    <p class="subtitle">
+      Comprehensive analysis — backend compute, AI token usage, frontend performance, Rust migration candidates, RAG best practices, vector caching, and test infrastructure.
+    </p>
+    <div class="meta-row">
+      <span>📅 August 10, 2026</span>
+      <span>🔍 5 areas audited</span>
+      <span>⚡ 40+ findings</span>
+      <span>💰 ~2M tokens saveable</span>
+      <span>🦀 3 Rust candidates</span>
+    </div>
+  </header>
+
+  <nav class="toc">
+    <div class="toc-inner">
+      <a href="#overview">Overview</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#tokens">Token &amp; Cost</a>
+      <a href="#backend">Backend Speed</a>
+      <a href="#frontend">Frontend</a>
+      <a href="#reliability">Reliability</a>
+      <a href="#rust">Rust Migration</a>
+      <a href="#rag">RAG Best Practices</a>
+      <a href="#vectors">Vector Caching</a>
+      <a href="#testing">Test Plan</a>
+      <a href="#roadmap">Roadmap</a>
+    </div>
+  </nav>
+
+  <main class="container">
+
+    <!-- ============================================================ -->
+    <!-- OVERVIEW -->
+    <!-- ============================================================ -->
+    <section class="section" id="overview">
+      <div class="section-label label-indigo">Section 1</div>
+      <h2>Executive Summary</h2>
+      <p class="section-intro">
+        Five parallel deep-dive audits covered backend compute &amp; scaling, prompt/token efficiency, frontend performance, Rust migration candidates, and RAG best practices. The findings below are consolidated and prioritized by impact.
+      </p>
+
+      <div class="stats-row">
+        <div class="stat-card"><div class="stat-value">40+</div><div class="stat-label">Findings total</div></div>
+        <div class="stat-card"><div class="stat-value">~2M</div><div class="stat-label">Tokens wasted per 300-page book</div></div>
+        <div class="stat-card"><div class="stat-value">10-20×</div><div class="stat-label">Speedup from Rust vector math</div></div>
+        <div class="stat-card"><div class="stat-value">3</div><div class="stat-label">Rust migration candidates</div></div>
+        <div class="stat-card"><div class="stat-value">3</div><div class="stat-label">RAG improvements from research</div></div>
+        <div class="stat-card"><div class="stat-value">10</div><div class="stat-label">Critical benchmarks needed</div></div>
+      </div>
+
+      <div class="chart-container">
+        <div class="diagram-title">Token Waste Breakdown (per 300-page book)</div>
+        <canvas id="tokenChart"></canvas>
+      </div>
+
+      <div class="chart-container" style="max-width:450px; margin-left:auto; margin-right:auto;">
+        <div class="diagram-title">Findings by Severity</div>
+        <canvas id="severityChart"></canvas>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- ARCHITECTURE -->
+    <!-- ============================================================ -->
+    <section class="section" id="architecture">
+      <div class="section-label label-cyan">Section 2</div>
+      <h2>System Architecture</h2>
+      <p class="section-intro">Current architecture showing data flow, services, and where the bottlenecks sit.</p>
+
+      <div class="diagram-box">
+        <div class="diagram-title">Service Topology</div>
+        <pre class="mermaid">
+graph TB
+    subgraph Frontend["🖥 Frontend (Next.js)"]
+      PDF["PDF Viewer<br/>PdfViewer.tsx"]
+      Chat["Chat Panel<br/>ChatPanel.tsx"]
+      TTS["TTS Engine<br/>ttsEngine.ts"]
+      WS["WebSocket Client<br/>useWebSocket.ts"]
+    end
+    subgraph Backend["⚙️ Backend (FastAPI + Celery)"]
+      API["REST API<br/>routes/*.py"]
+      WS_SVC["WebSocket<br/>websocket.py"]
+      PDF_P["PDF Parser<br/>pdf_parser.py"]
+      SUM["Summarizer<br/>summarizer.py"]
+      CHAT_E["Chat Engine<br/>chat_engine.py"]
+      RET["Retrieval<br/>retrieval.py"]
+      POD["Podcast Tasks<br/>podcast_tasks.py"]
+      FLASH["Flashcard Tasks<br/>flashcard_tasks.py"]
+    end
+    subgraph Infra["🗄 Infrastructure"]
+      PG["PostgreSQL<br/>max_conn=200"]
+      RED["Redis<br/>broker only"]
+      OLLAMA["Ollama / LLM<br/>single GPU"]
+      KO["Kokoro TTS<br/>max 2-4 concurrent"]
+      DISK["Disk Volume<br/>/app/data"]
+    end
+    Frontend --> API
+    Frontend --> WS_SVC
+    API --> PG
+    API --> OLLAMA
+    API --> KO
+    API --> DISK
+    API --> PDF_P
+    API --> SUM
+    API --> CHAT_E
+    CHAT_E --> RET
+    RET --> PG
+    RET --> OLLAMA
+    PDF_P --> DISK
+    PDF_P --> PG
+    RED --> Backend
+    SUM --> OLLAMA
+    POD --> OLLAMA
+    FLASH --> OLLAMA
+    style PDF fill:#1e1b4b,stroke:#6366f1
+    style CHAT_E fill:#451a03,stroke:#f59e0b
+    style RET fill:#451a03,stroke:#f59e0b
+    style SUM fill:#451a03,stroke:#f59e0b
+    style WS fill:#451a0a,stroke:#ef4444
+        </pre>
+      </div>
+
+      <div class="diagram-box">
+        <div class="diagram-title">Chat Request — DB Connection Held for Entire Duration</div>
+        <pre class="mermaid">
+graph LR
+    A["User sends message"] --> B["Save user msg<br/>0.5s"]
+    B --> C["index_document<br/>load ALL text"]
+    C --> D["ensure_embeddings<br/>HTTP x29 batches"]
+    D --> E["LLM inference<br/>30-40s"]
+    E --> F["Save response<br/>1s"]
+    subgraph "⚠️ DB connection held open"
+      B; C; D; E; F
+    end
+    style C fill:#450a0a,stroke:#ef4444
+    style D fill:#450a0a,stroke:#ef4444
+    style E fill:#450a0a,stroke:#ef4444
+        </pre>
+      </div>
+
+      <div class="diagram-box">
+        <div class="diagram-title">Summary Generation — 40 Concurrent LLM Calls</div>
+        <pre class="mermaid">
+graph LR
+    A["generate_page_summaries<br/>500 pages"] --> B["Batch 1: 10 pages"]
+    A --> C["Batch 2: 10 pages"]
+    A --> D["Batch 3: 10 pages"]
+    A --> E["..."]
+    subgraph Workers["4 Celery Workers"]
+      W1["Worker 1"]
+      W2["Worker 2"]
+      W3["Worker 3"]
+      W4["Worker 4"]
+    end
+    B --> W1
+    C --> W2
+    D --> W3
+    E --> W4
+    W1 --> LLM["Ollama<br/>single GPU"]
+    W2 --> LLM
+    W3 --> LLM
+    W4 --> LLM
+    style LLM fill:#450a0a,stroke:#ef4444
+        </pre>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- TOKEN & COST -->
+    <!-- ============================================================ -->
+    <section class="section" id="tokens">
+      <div class="section-label label-emerald">Section 3</div>
+      <h2>Token Usage &amp; Cost Reduction</h2>
+      <p class="section-intro">The biggest savings come from page content sent to the LLM. Trimming wasted input and reusing distilled summaries cuts token usage by 60-80%.</p>
+
+      <div class="finding-grid">
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Page content sends 40,000 chars — most is waste</div>
+            <span class="severity-badge sev-critical">Critical</span>
+          </div>
+          <div class="finding-file">summarizer.py : 80, 115</div>
+          <div class="finding-desc">
+            <code class="inline-code">content=page_content[:40000]</code> sends ~10,000 tokens per page. Typical pages have 2,000-5,000 chars. For 300 pages that wastes <strong style="color:var(--accent-red)">~1.875M input tokens</strong>.
+          </div>
+          <div class="finding-fix"><strong>Fix:</strong> Reduce to <code class="inline-code">[:15000]</code>. Still 3,750+ tokens of context.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Section summary re-reads raw text instead of page summaries</div>
+            <span class="severity-badge sev-high">High</span>
+          </div>
+          <div class="finding-file">summary_tasks.py : 314-321</div>
+          <div class="finding-desc">Concatenates raw <code class="inline-code">ExtractedText</code> for the whole section. Page summaries are 3-5x smaller with the same signal. 50-page chapter: 150k chars vs ~22k from summaries.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Use existing page summaries when &ge;80% are available.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Three conflicting personas for the same task</div>
+            <span class="severity-badge sev-medium">Medium</span>
+          </div>
+          <div class="finding-file">summarizer.py : 74-77, 109-112</div>
+          <div class="finding-desc">System message says "brilliant teacher", template says "expert document analyst", default says "encyclopedic teacher". ~35 redundant tokens per call.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Remove system messages, unify persona in one Jinja template.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">On-disk vs hardcoded templates are inconsistent</div>
+            <span class="severity-badge sev-high">High</span>
+          </div>
+          <div class="finding-file">prompts/*.jinja vs prompts.py</div>
+          <div class="finding-desc"><code class="inline-code">summary/page.jinja</code> hardcodes "under 300 words" and lacks <code class="inline-code">{{ max_words }}</code>. On-disk flashcards only produces basic cards; default supports cloze. Deployments behave differently.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Update on-disk templates to match defaults or delete them.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Dead templates — no callers</div>
+            <span class="severity-badge sev-low">Low</span>
+          </div>
+          <div class="finding-file">prompts/chat/qa.jinja, prompts/extraction/structure.jinja</div>
+          <div class="finding-desc"><code class="inline-code">chat/qa.jinja</code> uses an old citation format. <code class="inline-code">extraction/structure.jinja</code> has zero callers.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Delete both files.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title"><code>&lt;system&gt;</code> tags in Jinja are noise</div>
+            <span class="severity-badge sev-low">Low</span>
+          </div>
+          <div class="finding-file">All prompts/*.jinja line 1</div>
+          <div class="finding-desc">Rendered into <code class="inline-code">HumanMessage</code> body, not the system message. 20-40 tokens per call, zero effect on model behavior.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Remove tags, move persona to actual <code class="inline-code">SystemMessage</code>.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- BACKEND COMPUTE -->
+    <!-- ============================================================ -->
+    <section class="section" id="backend">
+      <div class="section-label label-amber">Section 4</div>
+      <h2>Backend Compute &amp; Response Speed</h2>
+      <p class="section-intro">Chat holds DB connections for 30+ seconds, summary tasks fire unbounded concurrent LLM calls, and several endpoints return unbounded result sets.</p>
+
+      <div class="finding-grid">
+        <div class="finding-card full-width">
+          <div class="finding-header">
+            <div class="finding-title">Chat holds a DB connection for the entire LLM call (30+ seconds)</div>
+            <span class="severity-badge sev-critical">Critical</span>
+          </div>
+          <div class="finding-file">chat.py : 122-207, chat_engine.py : 151-234</div>
+          <div class="finding-desc">
+            Two DB connections tied up per chat request for 30-60 seconds. <code class="inline-code">chat_engine.answer()</code> holds a session while running <code class="inline-code">index_document()</code> and <code class="inline-code">ensure_embeddings()</code> with 120s timeout.
+          </div>
+          <pre><code class="python"># Better flow
+async def send_message(request, doc_id, message, db=Depends(get_db)):
+    db.save(user_message)
+    db.close()
+    ai_response = await chat_engine.answer(doc_id, message)  # no DB held
+    db2 = SessionLocal()
+    db2.save(ai_response)
+    db2.close()</code></pre>
+          <div class="finding-fix"><strong>Fix:</strong> Save user message → close session → run LLM pipeline → new session → save response.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">summarize_pages_batch fires 40 concurrent LLM calls</div>
+            <span class="severity-badge sev-critical">Critical</span>
+          </div>
+          <div class="finding-file">summary_tasks.py : 85-86</div>
+          <div class="finding-desc">10 pages per batch × 4 Celery workers = 40 simultaneous LLM calls. Single-GPU Ollama queues all 40, cascading timeouts.</div>
+          <div class="finding-fix"><strong>Fix:</strong> <code class="inline-code">asyncio.Semaphore(6)</code> to cap concurrent LLM calls.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Dual sync+async DB engines waste connections</div>
+            <span class="severity-badge sev-medium">Medium</span>
+          </div>
+          <div class="finding-file">database.py : 27-43</div>
+          <div class="finding-desc">Both engines created with <code class="inline-code">pool_size=5</code>. Async engine is never used. 10 connections per process instead of 5.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Remove async engine entirely.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">_ensure_section_stubs blocks GET with PDF parsing</div>
+            <span class="severity-badge sev-high">High</span>
+          </div>
+          <div class="finding-file">documents.py : 85-136, 520</div>
+          <div class="finding-desc"><code class="inline-code">GET /summaries</code> opens PDF with pypdfium2 synchronously if stubs don't exist.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Move outline detection to background task.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">N+1 queries in export service</div>
+            <span class="severity-badge sev-medium">Medium</span>
+          </div>
+          <div class="finding-file">export_service.py : 113-147</div>
+          <div class="finding-desc">One query per conversation/document inside a loop. N conversations = N+1 queries.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Use <code class="inline-code">joinedload</code>/<code class="inline-code">subqueryload</code>.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Unbounded queries — no pagination</div>
+            <span class="severity-badge sev-medium">Medium</span>
+          </div>
+          <div class="finding-file">chat.py : 217, flashcards.py : 81, documents.py : 460</div>
+          <div class="finding-desc"><code class="inline-code">get_messages()</code>, <code class="inline-code">list_flashcards()</code>, <code class="inline-code">get_document_pages()</code> return everything with no LIMIT.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Add <code class="inline-code">skip</code>/<code class="inline-code">limit</code>. Default 50-100.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Missing composite database indexes</div>
+            <span class="severity-badge sev-medium">Medium</span>
+          </div>
+          <div class="finding-file">models/__init__.py</div>
+          <div class="finding-desc">Separate indexes on <code class="inline-code">document_id</code> and <code class="inline-code">page_number</code> but queries always filter+order by both. Same for Summary and Flashcard tables.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Add <code class="inline-code">(doc_id, page_num)</code>, <code class="inline-code">(doc_id, mode)</code>, <code class="inline-code">(user_id, due)</code>, <code class="inline-code">(user_id, reps)</code>.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Race condition on section summary generation</div>
+            <span class="severity-badge sev-high">High</span>
+          </div>
+          <div class="finding-file">documents.py : 560-567</div>
+          <div class="finding-desc">Two concurrent requests both see <code class="inline-code">status != "generating"</code>, both dispatch Celery tasks. Double LLM cost.</div>
+          <div class="finding-fix"><strong>Fix:</strong> DB advisory lock or UNIQUE partial index.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">PDF parser loads entire document into memory</div>
+            <span class="severity-badge sev-high">High</span>
+          </div>
+          <div class="finding-file">pdf_parser.py : 18-65</div>
+          <div class="finding-desc">All page data accumulated in a list before commit. 500-page scanned PDF = several GB RAM.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Process in batches of 10-20, commit each batch.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Unnecessary full-document OCR</div>
+            <span class="severity-badge sev-high">High</span>
+          </div>
+          <div class="finding-file">pdf_parser.py : 41</div>
+          <div class="finding-desc"><code class="inline-code">use_ocr=True</code> by default. Every PDF gets OCR'd even if already digital text.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Try text extraction first, fall back to OCR only if pages are empty.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- FRONTEND -->
+    <!-- ============================================================ -->
+    <section class="section" id="frontend">
+      <div class="section-label label-purple">Section 5</div>
+      <h2>Frontend Performance &amp; Memory</h2>
+      <p class="section-intro">The PDF viewer mounts every page as a React component, module-level caches never shrink, and dead dependencies add ~80KB to the bundle.</p>
+
+      <div class="finding-grid">
+        <div class="finding-card full-width">
+          <div class="finding-header">
+            <div class="finding-title">All PDF pages mounted as React components</div>
+            <span class="severity-badge sev-critical">Critical</span>
+          </div>
+          <div class="finding-file">PdfViewer.tsx : 548-563</div>
+          <div class="finding-desc">
+            1000-page PDF = 1000 component instances with state, refs, and effect subscriptions. IntersectionObserver helps with canvas rendering but the full React tree exists.
+          </div>
+          <pre><code class="typescript">// Better: virtualized window
+return pdfDoc.numPages.map((_, i) => {
+  if (Math.abs(i - currentPage) > windowSize) {
+    return &lt;div key={i} style={placeholderStyle} /&gt;;
+  }
+  return &lt;PdfPage key={i} pageNumber={i + 1} /&gt;;
+})</code></pre>
+          <div class="finding-fix"><strong>Fix:</strong> Only mount <code class="inline-code">PdfPage</code> for pages near viewport. Use placeholder divs for off-screen pages.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Module-level caches never evict</div>
+            <span class="severity-badge sev-high">High</span>
+          </div>
+          <div class="finding-file">PdfViewer.tsx : 51, ttsEngine.ts : 226</div>
+          <div class="finding-desc"><code class="inline-code">pageTextCache</code> and <code class="inline-code">pageSentencesCache</code> grow without bound. Tens of MB for large documents.</div>
+          <div class="finding-fix"><strong>Fix:</strong> LRU cache (max 50 entries) or age-based eviction.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Dead dependencies</div>
+            <span class="severity-badge sev-medium">Medium</span>
+          </div>
+          <div class="finding-file">package.json</div>
+          <div class="finding-desc"><code class="inline-code">react-pdf</code> (~1MB), <code class="inline-code">framer-motion</code> (~60KB gzipped) never imported. <code class="inline-code">@tanstack/react-query</code> provided but unused.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Remove react-pdf and framer-motion. Saves ~80KB gzipped.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">flashcardsApi.ts bypasses 401 token refresh</div>
+            <span class="severity-badge sev-high">High</span>
+          </div>
+          <div class="finding-file">flashcardsApi.ts : 11-22</div>
+          <div class="finding-desc">Own axios client without shared 401-refresh interceptor. Expired token = raw errors.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Import shared <code class="inline-code">api</code> client from api.ts.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">WebSocket has no reconnection</div>
+            <span class="severity-badge sev-high">High</span>
+          </div>
+          <div class="finding-file">useWebSocket.ts : 26</div>
+          <div class="finding-desc">When WebSocket closes, progress state becomes <code class="inline-code">null</code>. No reconnect attempt.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Exponential backoff (1s, 2s, 4s, max 30s, 10 attempts).</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Dashboard polls every 5 seconds unconditionally</div>
+            <span class="severity-badge sev-medium">Medium</span>
+          </div>
+          <div class="finding-file">dashboard/page.tsx : 79-88</div>
+          <div class="finding-desc">Fires even when nothing is processing. Wastes bandwidth.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Only poll when documents are in non-terminal states.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- RELIABILITY -->
+    <!-- ============================================================ -->
+    <section class="section" id="reliability">
+      <div class="section-label label-red">Section 6</div>
+      <h2>Reliability &amp; Communication</h2>
+      <p class="section-intro">No request retry, no rate limiting, embedding search runs in Python, WebSocket state prevents multi-replica scaling.</p>
+
+      <div class="finding-grid">
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">No request retry for transient failures</div>
+            <span class="severity-badge sev-medium">Medium</span>
+          </div>
+          <div class="finding-file">api.ts : 6-9</div>
+          <div class="finding-desc">Transient network blip = immediate failure. Only 401 gets retry.</div>
+          <div class="finding-fix"><strong>Fix:</strong> 2 retries, 1s/2s backoff, GET requests only.</div>
+        </div>
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">No rate limiting on any endpoint</div>
+            <span class="severity-badge sev-high">High</span>
+          </div>
+          <div class="finding-desc">Hundreds of concurrent chat requests consume DB connections and queue LLM calls.</div>
+          <div class="finding-fix"><strong>Fix:</strong> 10 req/min for chat, 30/min general API.</div>
+        </div>
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Embedding dot products in Python</div>
+            <span class="severity-badge sev-medium">Medium</span>
+          </div>
+          <div class="finding-file">retrieval.py : 230-233</div>
+          <div class="finding-desc">900 chunks × 3 queries × 768 dims in pure Python. Heavy CPU.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Migrate to pgvector HNSW index.</div>
+        </div>
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">ensure_embeddings blocks first chat</div>
+            <span class="severity-badge sev-high">High</span>
+          </div>
+          <div class="finding-file">retrieval.py : 179-202</div>
+          <div class="finding-desc">On first chat, ALL chunks embedded in batches of 32. 900 chunks = 29 HTTP roundtrips before chat starts.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Lazy-embed: only embed BM25 window on first search, background-embed the rest.</div>
+        </div>
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">WebSocket in-memory only</div>
+            <span class="severity-badge sev-medium">Medium</span>
+          </div>
+          <div class="finding-file">websocket.py : 13-14</div>
+          <div class="finding-desc">Scaling API to multiple replicas breaks WebSocket delivery.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Redis Pub/Sub for cross-process messages.</div>
+        </div>
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">get_current_user DB query on every request</div>
+            <span class="severity-badge sev-low">Low</span>
+          </div>
+          <div class="finding-file">auth.py : 76-86</div>
+          <div class="finding-desc">Full User object loaded from DB on every authenticated request.</div>
+          <div class="finding-fix"><strong>Fix:</strong> In-memory cache with 5s TTL.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- RUST MIGRATION -->
+    <!-- ============================================================ -->
+    <section class="section" id="rust">
+      <div class="section-label label-orange">Section 7</div>
+      <h2>Rust Migration Candidates</h2>
+      <p class="section-intro">Three areas would benefit measurably from Rust via PyO3 FFI. The remaining areas (text chunking, Celery orchestration, WebSocket) do not justify the cost.</p>
+
+      <div class="rust-matrix">
+        <div class="rust-card">
+          <span class="severity-badge sev-critical" style="margin-bottom:0.75rem">Priority 1 — Highest ROI</span>
+          <h4>Retrieval Vector Math</h4>
+          <div class="finding-file">retrieval.py : 229-244</div>
+          <div class="speed">10-20×</div>
+          <p class="meta">CPU time on semantic search</p>
+          <p style="color:var(--text-secondary);font-size:0.85rem;margin-top:0.5rem">
+            Pure Python <code class="inline-code">sum(a*b for a,b in zip(qv,vec))</code> for every chunk × every query vector. Creates millions of Python float objects. Rust with SIMD + zero-copy from raw bytes eliminates all of it.
+          </p>
+          <p style="color:var(--accent-emerald);font-size:0.8rem;margin-top:0.5rem"><strong>Risk: Small | Effort: Small</strong></p>
+        </div>
+
+        <div class="rust-card">
+          <span class="severity-badge sev-high" style="margin-bottom:0.75rem">Priority 2 — Big Payoff</span>
+          <h4>PDF Layout Analysis</h4>
+          <div class="finding-file">pdf_parser.py (784 lines)</div>
+          <div class="speed">5-10×</div>
+          <p class="meta">CPU time, 10-50× memory reduction</p>
+          <p style="color:var(--text-secondary);font-size:0.85rem;margin-top:0.5rem">
+            Repeated sorting, binning, grid-marking over word bounding box data. 500-page PDF with 300 words/page = 150,000 Python dicts. Structured Rust types + SIMD histogram construction + streaming page processing.
+          </p>
+          <p style="color:var(--accent-amber);font-size:0.8rem;margin-top:0.5rem"><strong>Risk: Medium | Effort: Large</strong></p>
+        </div>
+
+        <div class="rust-card">
+          <span class="severity-badge sev-medium" style="margin-bottom:0.75rem">Priority 3 — Polish</span>
+          <h4>TTS Audio Stitching</h4>
+          <div class="finding-file">podcast_tasks.py : 167-215</div>
+          <div class="speed">2-5×</div>
+          <p class="meta">Speed, 10× memory reduction</p>
+          <p style="color:var(--text-secondary);font-size:0.85rem;margin-top:0.5rem">
+            All WAV clips accumulated in memory, written to temp files, read back, then deleted. Rust can stream synthesis → decode → write with zero-copy WAV parsing.
+          </p>
+          <p style="color:var(--accent-emerald);font-size:0.8rem;margin-top:0.5rem"><strong>Risk: Small | Effort: Small</strong></p>
+        </div>
+      </div>
+
+      <div class="callout callout-info">
+        <strong>Integration Strategy:</strong> All three use <strong>PyO3 FFI</strong> — expose Python-callable functions from Rust crates. The Python callers stay the same, the underlying computation switches to Rust. Can ship with feature flags falling back to Python on error.
+      </div>
+
+      <div class="diagram-box">
+        <div class="diagram-title">PyO3 Integration Pattern</div>
+        <pre class="mermaid">
+graph LR
+    subgraph Python["Python (FastAPI / Celery)"]
+      P1["retrieval.py<br/>semantic_search()"]
+      P2["pdf_parser.py<br/>parse_pdf()"]
+      P3["podcast_tasks.py<br/>_stitch_wavs()"]
+    end
+    subgraph Rust["Rust Crates (PyO3)"]
+      R1["opennotebox-search<br/>batch_dot_product()"]
+      R2["opennotebox-pdf<br/>analyze_layout()"]
+      R3["opennotebox-audio<br/>stitch_wavs()"]
+    end
+    P1 --> R1
+    P2 --> R2
+    P3 --> R3
+    style R1 fill:#1e293b,stroke:#f97316
+    style R2 fill:#1e293b,stroke:#f97316
+    style R3 fill:#1e293b,stroke:#f97316
+        </pre>
+      </div>
+
+      <h3 style="margin-top:2rem;margin-bottom:1rem;color:#fff">Areas Where Rust Would NOT Help</h3>
+      <div class="finding-grid">
+        <div class="finding-card">
+          <div class="finding-title">Text Chunking</div>
+          <div class="finding-file">retrieval.py : _split_page()</div>
+          <div class="finding-desc">Regex splits and character counting. Trivial workload, &lt;2x improvement.</div>
+        </div>
+        <div class="finding-card">
+          <div class="finding-title">Celery Task Orchestration</div>
+          <div class="finding-file">celery_app.py, tasks/*.py</div>
+          <div class="finding-desc">I/O bound coordination. The win comes from Rust libraries <em>inside</em> tasks, not replacing Celery itself.</div>
+        </div>
+        <div class="finding-card">
+          <div class="finding-title">WebSocket Server</div>
+          <div class="finding-file">websocket.py</div>
+          <div class="finding-desc">&lt;100 concurrent connections, O(1) dict operations. The problem is architectural (per-worker siloing), not performance.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- RAG BEST PRACTICES -->
+    <!-- ============================================================ -->
+    <section class="section" id="rag">
+      <div class="section-label label-blue">Section 8</div>
+      <h2>RAG Best Practices (2025-2026)</h2>
+      <p class="section-intro">Research across Perplexity, ChatGPT, Anthropic benchmarks, and open-source RAG systems. Your pipeline architecture is sound — the gaps are in candidate count, reranking, and context management.</p>
+
+      <div class="diagram-box">
+        <div class="diagram-title">Current RAG Pipeline vs Best Practice</div>
+        <pre class="mermaid">
+graph TB
+    subgraph Current["Current"]
+      C1["Query rewrite<br/>+ HyDE"] --> C2["BM25 + Semantic<br/>pure Python dot product"]
+      C2 --> C3["Percentile blending<br/>60/40 BM25/Semantic"]
+      C3 --> C4["LLM reranker<br/>24 → 8 candidates"]
+      C4 --> C5["Answer generation<br/>8 chunks in context"]
+    end
+    subgraph Best["Best Practice"]
+      B1["Query rewrite<br/>+ HyDE ✓"] --> B2["BM25 + pgvector<br/>HNSW index"]
+      B2 --> B3["Reciprocal Rank Fusion"]
+      B3 --> B4["Cross-encoder reranker<br/>BGE / mxbai"]
+      B4 --> B5["Answer generation<br/>15-20 chunks in context"]
+    end
+    Current -. gaps .-> Best
+        </pre>
+      </div>
+
+      <div class="finding-grid">
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Replace LLM reranker with cross-encoder</div>
+            <span class="severity-badge sev-high">High Impact</span>
+          </div>
+          <div class="finding-desc">
+            Your LLM reranker is slow and expensive. <strong>Cross-encoder models</strong> (<code class="inline-code">BAAI/bge-reranker-v2-m3</code>, <code class="inline-code">mixedbread-ai/mxbai-rerank-xsmall</code>) are 10-50x faster and often more accurate. No LLM call needed — runs locally via ONNX.
+          </div>
+          <div class="finding-fix"><strong>Fix:</strong> Load cross-encoder ONNX model. Score (query, passage) pairs. 100-200 candidates → top 15.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Increase candidate count: 8 → 15-20</div>
+            <span class="severity-badge sev-high">High Impact</span>
+          </div>
+          <div class="finding-desc">Anthropic's benchmarks: 20 chunks consistently outperforms 5-10. Modern context windows easily handle 20 chunks at 1600 chars each (~3,200 tokens). Your current limit of 8 leaves quality on the table.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Change <code class="inline-code">TOP_K</code> from 8 to 15-20. With cross-encoder reranker the cost is negligible.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Migrate to pgvector HNSW index</div>
+            <span class="severity-badge sev-high">High Impact</span>
+          </div>
+          <div class="finding-desc">
+            You already store embeddings as BYTEA — you're doing storage but not fast search. Pure Python dot products over 5000 vectors = ~100ms per query. pgvector HNSW = &lt;1ms.
+          </div>
+          <pre><code class="sql">ALTER TABLE chunk ADD COLUMN emb_vec vector(768);
+-- migrate BYTEA → vector
+CREATE INDEX ON chunk USING hnsw (emb_vec vector_cosine_ops);
+
+-- Query becomes:
+SELECT *, emb_vec <=> :query_vec as similarity
+FROM chunk WHERE document_id = :doc_id
+ORDER BY similarity LIMIT 30;</code></pre>
+          <div class="finding-fix"><strong>Fix:</strong> Add vector column, create HNSW index. Keep same embedding model, same pipeline.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Switch to Reciprocal Rank Fusion</div>
+            <span class="severity-badge sev-medium">Medium Impact</span>
+          </div>
+          <div class="finding-desc">Your "60% BM25 + 40% semantic by percentile" blending requires tuning. RRF (<code class="inline-code">1/(k + rank)</code>, k=60) is more robust across query types — no parameters to tune.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Replace percentile blending with RRF. Simpler code, better results.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Embed at upload time, not first chat</div>
+            <span class="severity-badge sev-medium">Medium Impact</span>
+          </div>
+          <div class="finding-desc">Currently the first chat question triggers chunking + embedding (tens of seconds). Users experience a long delay on their first message.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Run embedding as a Celery task after parsing completes. Chat is instant from first question.</div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Parent document retrieval</div>
+            <span class="severity-badge sev-medium">Medium Impact</span>
+          </div>
+          <div class="finding-desc">Store sentence-level chunks for retrieval accuracy, return full paragraph for context. Your current 1600-char chunks are fine for retrieval but sometimes cut meaningful content.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Store small chunks + parent paragraph reference. Return parent text for the LLM.</div>
+        </div>
+      </div>
+
+      <div class="callout callout-good">
+        <strong>What you already do well:</strong> Hybrid BM25 + semantic search, HyDE with passage generation, query rewriting with keyword/rephrasing separation, junk filtering (TOC, index pages), page-scoped boosting for current reading position, citation filtering, fast-fail when Ollama is down.
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- VECTOR CACHING -->
+    <!-- ============================================================ -->
+    <section class="section" id="vectors">
+      <div class="section-label label-purple">Section 9</div>
+      <h2>Vector Caching Strategy</h2>
+      <p class="section-intro">How to cache vector data for RAG search and whether it helps local vs. cloud LLMs.</p>
+
+      <div class="diagram-box">
+        <div class="diagram-title">Vector Cache — Current vs Optimized</div>
+        <pre class="mermaid">
+graph TB
+    subgraph Current["Current — Embed on First Chat"]
+      U1["User uploads PDF"] --> U2["Parse → ExtractedText in DB"]
+      U2 --> U3["User asks first question"]
+      U3 --> U4["ensure_embeddings<br/>chunk ALL → embed ALL<br/>block for 10-30s"]
+      U4 --> U5["Save BYTEA embeddings to DB"]
+      U5 --> U6["Load ALL to Python<br/>dot product loop"]
+      U6 --> U7["Return results"]
+    end
+    subgraph Optimized["Optimized — Embed at Upload + pgvector"]
+      O1["User uploads PDF"] --> O2["Parse → ExtractedText in DB"]
+      O2 --> O3["Celery task: chunk + embed<br/>async in background"]
+      O3 --> O4["Save vector to pgvector<br/>HNSW index built"]
+      O4 --> O5["User asks question"]
+      O5 --> O6["pgvector ANN query<br/>sub-millisecond"]
+      O6 --> O7["Return results"]
+    end
+    Current -. optimization .-> Optimized
+        </pre>
+      </div>
+
+      <div class="finding-grid">
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Vector caching matters more for local LLMs</div>
+            <span class="severity-badge sev-high">Key Insight</span>
+          </div>
+          <div class="finding-desc">
+            <strong>Cloud LLMs</strong> (OpenAI, Anthropic): Fast API, caching embeddings reduces retrieval latency but LLM call dominates.<br><br>
+            <strong>Local LLMs</strong> (Ollama, vLLM): Generation is 10-30 tokens/sec. Every prompt token costs wall-clock time. Efficient retrieval means you pack more relevant context without wasting tokens.<br><br>
+            Your setup uses local LLMs. <strong>Cached embeddings + pgvector = 100ms → &lt;5ms retrieval.</strong> That's 95ms saved per chat query.
+          </div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Pre-compute embeddings at upload time</div>
+            <span class="severity-badge sev-medium">Recommendation</span>
+          </div>
+          <div class="finding-desc">
+            Embeddings are deterministic — same text always produces the same vector. No benefit to recomputing. Your code already checks <code class="inline-code">emb IS NULL</code> before embedding. Move the triggering from "first chat" to "after parsing completes."
+          </div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Incremental embedding for updated documents</div>
+            <span class="severity-badge sev-info">Already Partial</span>
+          </div>
+          <div class="finding-desc">
+            Only re-embed when document content changes. Your current <code class="inline-code">ensure_embeddings</code> already skips NULL-checked rows. For re-uploads, compare chunk hash before re-embedding.
+          </div>
+        </div>
+
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">pgvector quantization options</div>
+            <span class="severity-badge sev-info">Future Option</span>
+          </div>
+          <div class="finding-desc">
+            <strong>Half-precision</strong> (<code class="inline-code">halfvec</code>): 50% storage, minimal quality loss.<br>
+            <strong>Binary quantization</strong> (<code class="inline-code">bit</code>): 97% storage reduction, usable for pre-filtering before float comparison.<br>
+            Not needed now, but available as documents scale.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- TTS LATENCY -->
+    <!-- ============================================================ -->
+    <section class="section" id="tts">
+      <div class="section-label label-cyan">Section 10</div>
+      <h2>TTS Latency — Already Good, Minor Tweaks</h2>
+      <p class="section-intro">The current TTS pipeline is well-designed with chunked gapless playback, prefetch buffer (25s), and DB-backed cache. TTFB is acceptable for the current usage. Two small improvements remain.</p>
+
+      <div class="finding-grid">
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">Podcast WAV stitching holds all clips in memory</div>
+            <span class="severity-badge sev-medium">Memory</span>
+          </div>
+          <div class="finding-file">podcast_tasks.py : 310-313</div>
+          <div class="finding-desc">All WAV clips accumulated as bytes objects. Deep dive (200 exchanges) = hundreds of clips in memory. Write to temp files, read back, delete — unnecessary I/O.</div>
+          <div class="finding-fix"><strong>Fix:</strong> Stream synthesis → write to temp file → stitch from disk. Or use Rust (see Section 7).</div>
+        </div>
+        <div class="finding-card">
+          <div class="finding-header">
+            <div class="finding-title">TTS cache is already well-designed</div>
+            <span class="severity-badge sev-info">Good</span>
+          </div>
+          <div class="finding-desc">DB-backed <code class="inline-code">TTSCache</code> indexed by <code class="inline-code">text_hash + user_id</code>, WAV files on disk, hourly eviction task enforcing 2GiB limit. The streaming endpoint checks connectivity before returning headers. Speed adjustment via <code class="inline-code">playbackRate</code> instead of re-synthesis.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- TEST PLAN -->
+    <!-- ============================================================ -->
+    <section class="section" id="testing">
+      <div class="section-label label-pink">Section 11</div>
+      <h2>Test &amp; Benchmark Infrastructure</h2>
+      <p class="section-intro">
+        Current state: 3 test files, ~210 lines. No frontend tests. No conftest, no coverage. Benchmarks below establish baselines <em>before</em> any changes so improvements are measurable and regressions are caught.
+      </p>
+
+      <div class="callout callout-warn">
+        <strong>Rule:</strong> Set up Phase 1 benchmarks before making any optimization changes. They require zero infrastructure and take 1-2 hours total.
+      </div>
+
+      <h3 style="margin:1.5rem 0 1rem;color:#fff">Phase 1 — Critical (no infrastructure needed)</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>File</th><th>What</th><th>Expected Baseline</th></tr></thead>
+          <tbody>
+            <tr><td><code class="inline-code">benchmarks/bench_semantic_search.py</code></td><td>Python dot-product loop over N chunks vs 4 queries</td><td>&lt;50ms for 1K chunks, &lt;500ms for 10K</td></tr>
+            <tr><td><code class="inline-code">benchmarks/bench_summary_tokens.py</code></td><td>Token count of rendered Jinja prompts at various page sizes</td><td>~4K input tokens per page, ~10K per section</td></tr>
+            <tr><td><code class="inline-code">benchmarks/bench_pdf_mount.mjs</code></td><td>React component tree size for N-page documents</td><td>N components mounted (current), ~10 after fix</td></tr>
+            <tr><td><code class="inline-code">benchmarks/bundle-analysis.sh</code></td><td>Next.js build chunk sizes</td><td>Report dead deps before removal</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 style="margin:1.5rem 0 1rem;color:#fff">Phase 2 — Important (needs running services)</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>File</th><th>What</th><th>Expected Baseline</th></tr></thead>
+          <tbody>
+            <tr><td><code class="inline-code">benchmarks/bench_chat_latency.py</code></td><td>Chat endpoint overhead excluding LLM (mocked)</td><td>&lt;500ms non-LLM portion</td></tr>
+            <tr><td><code class="inline-code">benchmarks/bench_pdf_parsing.py</code></td><td>End-to-end parse time + memory for 100/500-page PDFs</td><td>100 pages &lt;30s, &lt;200MB peak</td></tr>
+            <tr><td><code class="inline-code">benchmarks/bench_embeddings.py</code></td><td>Ollama embed API round-trip per batch size</td><td>~100ms/vector single, ~30ms in batch of 32</td></tr>
+            <tr><td><code class="inline-code">benchmarks/bench_tts.py</code></td><td>TTS TTFB for 50/200/500/1000 char texts</td><td>&lt;2s uncached, &lt;50ms cached</td></tr>
+            <tr><td><code class="inline-code">benchmarks/bench_db_pool.py</code></td><td>Pool saturation under 5/10/20 concurrent chats</td><td>No exhaustion at 10 concurrent</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 style="margin:1.5rem 0 1rem;color:#fff">Phase 3 — Integration Tests</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>File</th><th>What</th></tr></thead>
+          <tbody>
+            <tr><td><code class="inline-code">tests/test_ws_reconnect.py</code></td><td>WebSocket recovery after server disconnect</td></tr>
+            <tr><td><code class="inline-code">tests/test_summary_idempotency.py</code></td><td>Concurrent summary requests produce single row per page</td></tr>
+            <tr><td><code class="inline-code">tests/test_token_expiry.py</code></td><td>Clean error when JWT expires mid-streaming</td></tr>
+            <tr><td><code class="inline-code">tests/test_flashcard_large_doc.py</code></td><td>Flashcard generation for 50-section document, no OOM</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="diagram-box">
+        <div class="diagram-title">Proposed Test Directory Structure</div>
+        <pre style="margin:0"><code>open-notebox/
+  backend/
+    benchmarks/                    # NEW
+      bench_semantic_search.py    # Phase 1 — pure Python, synthetic data
+      bench_summary_tokens.py     # Phase 1 — tiktoken + templates
+      bench_chat_latency.py       # Phase 2 — mocked LLM
+      bench_pdf_parsing.py        # Phase 2 — real PDFs
+      bench_embeddings.py         # Phase 2 — Ollama API
+      bench_tts.py                # Phase 2 — TTS service
+      bench_db_pool.py            # Phase 2 — concurrent loads
+    tests/                        # NEW (relocate existing tests)
+      conftest.py                 # Shared fixtures
+      test_ws_reconnect.py        # Phase 3
+      test_summary_idempotency.py # Phase 3
+      test_token_expiry.py        # Phase 3
+  frontend/
+    benchmarks/                   # NEW
+      component-count.mjs         # Phase 1 — static analysis
+      bundle-analysis.sh          # Phase 1 — build sizes
+</code></pre>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- QUICK WINS -->
+    <!-- ============================================================ -->
+    <section class="section" id="quick-wins">
+      <div class="section-label label-emerald">Section 12</div>
+      <h2>Quick Wins</h2>
+      <p class="section-intro">Low-effort changes delivering high impact. All under 30 minutes each.</p>
+
+      <ul class="checklist">
+        <li><span class="num">1</span><div><strong>Reduce page content from 40k to 15k chars</strong><br><span class="inline-code">summarizer.py:80,115</span> — saves ~1.875M tokens per 300-page book</div><span class="effort">2 min</span></li>
+        <li><span class="num">2</span><div><strong>Remove _run_async duplication</strong><br><span class="inline-code">summary_tasks.py, podcast_tasks.py, flashcard_tasks.py</span> — extract to shared util</div><span class="effort">15 min</span></li>
+        <li><span class="num">3</span><div><strong>Delete dead dependencies</strong><br><span class="inline-code">react-pdf, framer-motion</span> — saves ~80KB gzipped</div><span class="effort">5 min</span></li>
+        <li><span class="num">4</span><div><strong>Delete unused templates</strong><br><span class="inline-code">prompts/chat/qa.jinja, prompts/extraction/structure.jinja</span></div><span class="effort">2 min</span></li>
+        <li><span class="num">5</span><div><strong>Remove &lt;system&gt; tags from Jinja templates</strong><br><span class="inline-code">prompts/*.jinja</span> — saves ~40 tokens per LLM call</div><span class="effort">5 min</span></li>
+        <li><span class="num">6</span><div><strong>Fix flashcardsApi.ts to use shared api client</strong><br><span class="inline-code">flashcardsApi.ts:11-22</span> — restores 401 token refresh</div><span class="effort">10 min</span></li>
+        <li><span class="num">7</span><div><strong>Add composite DB indexes</strong><br><span class="inline-code">models/__init__.py</span> — speeds up all summary/chat/flashcard queries</div><span class="effort">20 min</span></li>
+        <li><span class="num">8</span><div><strong>Remove unused async DB engine</strong><br><span class="inline-code">database.py:27-43</span> — frees 5 connections per process</div><span class="effort">10 min</span></li>
+        <li><span class="num">9</span><div><strong>Delete redundant per-page JSON files</strong><br><span class="inline-code">pdf_parser.py:52-55</span> — saves disk I/O and space</div><span class="effort">5 min</span></li>
+        <li><span class="num">10</span><div><strong>Add WebSocket reconnect with backoff</strong><br><span class="inline-code">useWebSocket.ts:26</span> — restores progress after network blips</div><span class="effort">15 min</span></li>
+      </ul>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- ROADMAP -->
+    <!-- ============================================================ -->
+    <section class="section" id="roadmap">
+      <div class="section-label label-indigo">Section 13</div>
+      <h2>Implementation Roadmap</h2>
+      <p class="section-intro">Four phases ordered by risk and dependency. Each phase ships independently.</p>
+
+      <div class="diagram-box">
+        <div class="diagram-title">Phased Rollout</div>
+        <pre class="mermaid">
+graph LR
+    subgraph P0["Phase 0 — Benchmarks (Day 1, zero risk)"]
+      A0["Set up Phase 1 benchmarks<br/>measure baselines"]
+    end
+    subgraph P1["Phase 1 — Quick Wins (Day 1-2, zero risk)"]
+      A1["Q1-Q10 checklist"]
+      A2["Unify prompts"]
+      A3["Delete dead deps"]
+    end
+    subgraph P2["Phase 2 — Compute & Token Savings (Day 3-7)"]
+      B1["DB connection release during chat"]
+      B2["asyncio.Semaphore on LLM calls"]
+      B3["pgvector migration"]
+      B4["Cross-encoder reranker"]
+      B5["Section summary reuse"]
+      B6["Rust: retrieval dot products"]
+    end
+    subgraph P3["Phase 3 — Frontend & Reliability (Day 8-14)"]
+      C1["Virtualized PDF viewer"]
+      C2["LRU caches"]
+      C3["WebSocket reconnect"]
+      C4["Pagination on endpoints"]
+      C5["Embed at upload time"]
+      C6["Integration tests"]
+    end
+    subgraph P4["Phase 4 — Heavy Lift (Day 15-30)"]
+      D1["Rust: PDF layout analysis"]
+      D2["Rust: TTS audio stitching"]
+      D3["Parent document retrieval"]
+      D4["Reciprocal Rank Fusion"]
+    end
+    P0 --> P1
+    P1 --> P2
+    P2 --> P3
+    P3 --> P4
+    style P0 fill:#042f2e,stroke:#06b6d4
+    style P1 fill:#022c22,stroke:#10b981
+    style P2 fill:#451a03,stroke:#f59e0b
+    style P3 fill:#1e1b4b,stroke:#6366f1
+    style P4 fill:#2a0a2e,stroke:#f97316
+        </pre>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Phase</th><th>Timeline</th><th>Items</th><th>Risk</th><th>Impact</th></tr></thead>
+          <tbody>
+            <tr><td><strong style="color:var(--accent-cyan)">Phase 0</strong></td><td>Day 1</td><td>Phase 1 benchmarks (4 files, synthetic data, no infra)</td><td><span style="color:var(--accent-emerald)">Zero</span></td><td>Measurable baselines for everything</td></tr>
+            <tr><td><strong style="color:var(--accent-emerald)">Phase 1</strong></td><td>Day 1-2</td><td>Quick wins Q1-Q10, unify prompts, dead code cleanup</td><td><span style="color:var(--accent-emerald)">Zero</span></td><td>~2M tokens saved, cleaner codebase</td></tr>
+            <tr><td><strong style="color:var(--accent-amber)">Phase 2</strong></td><td>Day 3-7</td><td>DB release, LLM semaphore, pgvector, cross-encoder, section summary reuse, Rust retrieval</td><td><span style="color:var(--accent-emerald)">Low</span></td><td>3-5× faster chat, 10-20× vector search, stable LLM queue</td></tr>
+            <tr><td><strong style="color:var(--accent-indigo)">Phase 3</strong></td><td>Day 8-14</td><td>Virtualized PDF, LRU caches, WebSocket reconnect, pagination, embed-at-upload, integration tests</td><td><span style="color:var(--accent-amber)">Medium</span></td><td>10× less PDF memory, reliable connections, instant first chat</td></tr>
+            <tr><td><strong style="color:var(--accent-orange)">Phase 4</strong></td><td>Day 15-30</td><td>Rust PDF parser, Rust TTS stitching, parent doc retrieval, RRF</td><td><span style="color:var(--accent-amber)">Medium</span></td><td>5-10× PDF parsing, 10× memory reduction, better retrieval quality</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- VERIFICATION -->
+    <!-- ============================================================ -->
+    <section class="section" id="verification">
+      <div class="section-label label-cyan">Section 14</div>
+      <h2>Verification Plan</h2>
+      <p class="section-intro">How to validate each category of change after implementation.</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Area</th><th>How to Verify</th><th>Expected Result</th></tr></thead>
+          <tbody>
+            <tr><td><strong style="color:var(--accent-emerald)">Token reduction</strong></td><td>LLM API logs: input/output tokens for summaries, chat</td><td>60-80% fewer input tokens, section summaries 3-5× smaller</td></tr>
+            <tr><td><strong style="color:var(--accent-amber)">Response speed</strong></td><td>Time <code class="inline-code">GET /summaries</code>, <code class="inline-code">POST /chat</code>, upload with 500+ page PDF</td><td>Chat without DB hold, upload without PDF block, instant first chat</td></tr>
+            <tr><td><strong style="color:var(--accent-blue)">Memory</strong></td><td><code class="inline-code">docker stats</code>, browser devtools memory tab</td><td>Workers under 768MB, PDF viewer proportional to viewport</td></tr>
+            <tr><td><strong style="color:var(--accent-purple)">RAG quality</strong></td><td>Same 20 test questions before/after, compare answer quality</td><td>More accurate answers, better citations, fewer hallucinations</td></tr>
+            <tr><td><strong style="color:var(--accent-orange)">Rust correctness</strong></td><td>Byte-identical results vs Python for same input (semantic search scores, PDF reading order)</td><td>Identical or better results, significantly faster</td></tr>
+            <tr><td><strong style="color:var(--accent-red)">Reliability</strong></td><td>Kill WebSocket mid-task, simulate token expiry, network blip during polling</td><td>Auto-reconnect, clean errors, no crashes</td></tr>
+            <tr><td><strong style="color:var(--accent-cyan)">Tests</strong></td><td><code class="inline-code">pytest</code>, <code class="inline-code">npm run build</code>, benchmarks before and after</td><td>All pass, benchmarks show improvement</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    OpenNoteBox Optimization Audit — Generated August 10, 2026 — Five independent audits consolidated
+  </footer>
+
+  <script>
+    const tokenCtx = document.getElementById('tokenChart').getContext('2d');
+    new Chart(tokenCtx, {
+      type: 'bar',
+      data: {
+        labels: ['Raw page text\n(40k char limit)', 'Section summary\n(raw text)', 'Duplicate\nsystem prompts', '<system> tags', 'Retry max_tokens\nover-allocation'],
+        datasets: [{
+          label: 'Tokens wasted (per 300-page book)',
+          data: [1875000, 150000, 21000, 4000, 2000],
+          backgroundColor: ['rgba(239,68,68,0.7)','rgba(245,158,11,0.7)','rgba(59,130,246,0.7)','rgba(168,85,247,0.7)','rgba(107,114,128,0.7)'],
+          borderColor: ['rgba(239,68,68,1)','rgba(245,158,11,1)','rgba(59,130,246,1)','rgba(168,85,247,1)','rgba(107,114,128,1)'],
+          borderWidth: 1, borderRadius: 6,
+        }]
+      },
+      options: {
+        indexAxis: 'y', responsive: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: { backgroundColor: '#1a1f2e', borderColor: '#2a3040', borderWidth: 1, titleColor: '#e5e7eb', bodyColor: '#9ca3af' }
+        },
+        scales: {
+          x: { beginAtZero: true, grid: { color: 'rgba(42,48,64,0.5)' }, ticks: { color: '#6b7280', callback: v => v >= 1000000 ? (v/1000000).toFixed(1)+'M' : v >= 1000 ? (v/1000)+'K' : v } },
+          y: { grid: { display: false }, ticks: { color: '#9ca3af' } }
+        }
+      }
+    });
+
+    const sevCtx = document.getElementById('severityChart').getContext('2d');
+    new Chart(sevCtx, {
+      type: 'doughnut',
+      data: {
+        labels: ['Critical', 'High', 'Medium', 'Low', 'Info'],
+        datasets: [{
+          data: [5, 10, 12, 8, 5],
+          backgroundColor: ['rgba(239,68,68,0.8)','rgba(245,158,11,0.8)','rgba(59,130,246,0.8)','rgba(107,114,128,0.8)','rgba(6,182,212,0.8)'],
+          borderColor: '#1a1f2e', borderWidth: 3, hoverOffset: 8
+        }]
+      },
+      options: {
+        responsive: true, cutout: '60%',
+        plugins: { legend: { position: 'bottom', labels: { color: '#9ca3af', padding: 15, usePointStyle: true, pointStyleWidth: 10 } } }
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+You are an expert podcast script writer.
+Write an engaging, conversational two-host podcast dialogue about the following
+document material. The hosts are "A" and "B". They should sound natural, build on
+each other's points, ask each other questions, react with brief commentary, and
+cover the key ideas, facts, and takeaways from the material below. Avoid reading
+the material verbatim - paraphrase and explain it the way two curious hosts would
+discuss it on a podcast. Produce between 8 and 20 exchanges total (an "exchange"
+is one line from either host).
+
+{% if section_title %}
+This podcast covers the section titled "{{ section_title }}" from the document
+"{{ document_title }}".
+{% else %}
+This podcast covers the full document "{{ document_title }}".
+{% endif %}
+
+Material:
+{{ content }}
+
+Respond with ONLY strict JSON, no markdown code fences, no commentary before or
+after, in exactly this shape:
+{
+  "title": "<a short catchy episode title>",
+  "lines": [
+    {"speaker": "A", "text": "..."},
+    {"speaker": "B", "text": "..."}
+  ]
+}

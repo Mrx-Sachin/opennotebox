@@ -1,0 +1,304 @@
+# Shared networking for every container that may dial an LLM backend.
+# Chat runs in `api`; summaries + flashcards run in `worker` (default queue);
+# podcasts run in `worker-tts` (tts queue). If any one of those is missing
+# these hosts, that feature fails with "Connection error" while the others
+# still work - which is exactly how the podcast-only failure presented.
+# Keep this list as the single source of truth; do not copy-paste per service.
+x-llm-extra-hosts: &llm-extra-hosts
+  # Linux needs an explicit host-gateway mapping (Docker Desktop has this
+  # natively). CLI bridges (Claude/Codex/OpenCode/Grok on 8765-8768) and a
+  # host-local Ollama both use this.
+  - "host.docker.internal:host-gateway"
+  # Tailscale peers used as LLM endpoints. Hard-coded so containers still
+  # resolve them even when Docker's DNS search domain is empty/stale (seen
+  # on long-lived containers that missed a host resolv.conf change).
+  - "iic-h100:100.69.125.79"
+  - "ninja:100.71.237.116"
+
+services:
+  # Single HTTPS entry point for the whole app. Everything a browser touches -
+  # the Next.js frontend, the API, the progress WebSocket - is served from one
+  # origin behind this, which is what removes the cross-origin problem at the
+  # root instead of widening CORS to paper over it, and what makes the app a
+  # secure context so browser APIs restricted to HTTPS actually exist.
+  traefik:
+    image: traefik:v3.0
+    ports:
+      # Explicitly IPv4. An unqualified "443:443" makes Docker listen on both
+      # stacks, and a host with an ISP-assigned global IPv6 address is then
+      # serving this app to the open internet - which a host firewall does not
+      # catch, because Docker's published ports are inserted ahead of it. LAN
+      # and Tailscale both work over IPv4, so nothing is lost. Set HTTPS_BIND
+      # to a single address to narrow it further, or to :: if you actually
+      # intend to serve over IPv6.
+      - "${HTTPS_BIND:-0.0.0.0}:${HTTPS_PORT:-443}:443"
+      # Loopback-only plaintext, for using the app on the machine that runs it
+      # without the certificate prompt. Hard-coded to 127.0.0.1: this one must
+      # never become network-reachable, so it deliberately has no bind variable.
+      - "127.0.0.1:${LOCAL_HTTP_PORT:-3003}:8080"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./certs:/etc/traefik/certs:ro
+    depends_on:
+      - api
+      - frontend
+    restart: always
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-opennotebox}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-opennotebox}
+      - POSTGRES_DB=${POSTGRES_DB:-open_notebox}
+    # The default max_connections of 100 is tight once the API, both Celery
+    # worker pools (each prefork child holds its own SQLAlchemy pool) and beat
+    # are all live with several users active. Raising it is far cheaper than
+    # having requests fail with "too many clients already"; see the pool
+    # sizing note in backend/app/database.py.
+    command: postgres -c max_connections=200
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    # Bound to loopback: nothing outside this host needs to reach the database
+    # directly, and leaving it on 0.0.0.0 with the default password would be a
+    # trivially exploitable hole on any machine with a public interface.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-opennotebox} -d ${POSTGRES_DB:-open_notebox}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: always
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # Loopback-only. Browsers reach the API through Traefik on the same origin
+    # as the page; this stays published purely so the host can curl it while
+    # debugging, and binding it to 127.0.0.1 keeps the plaintext path off the
+    # LAN now that there is an HTTPS one.
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
+      - ./backend/alembic.ini:/app/alembic.ini
+      # Jinja prompt templates live at the repo root (prompts.py resolves
+      # them as /app/prompts). Without this mount every container falls back
+      # to the short in-code defaults - fine for a smoke test, wrong for real
+      # podcast/flashcard/summary quality.
+      - ./prompts:/app/prompts:ro
+      - ./data:/app/data
+      - ${EXPORT_DIR:-./exports}:/app/exports
+    environment:
+      # Elected migration runner: exactly one container may run
+      # "alembic upgrade head" (see backend/docker-entrypoint.sh).
+      - RUN_MIGRATIONS=1
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-opennotebox}:${POSTGRES_PASSWORD:-opennotebox}@postgres:5432/${POSTGRES_DB:-open_notebox}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+      - OLLAMA_MODEL_SUMMARY=${OLLAMA_MODEL_SUMMARY:-gemma3:27b}
+      - OLLAMA_MODEL_CHAT=${OLLAMA_MODEL_CHAT:-qwen2.5:32b}
+      - OLLAMA_MODEL_QWEN=${OLLAMA_MODEL_QWEN:-qwen2.5:32b}
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-}
+      - VLLM_MODEL=${VLLM_MODEL:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-EMPTY}
+      - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env - generate one with "openssl rand -hex 32"}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - UPLOAD_MAX_SIZE_MB=${UPLOAD_MAX_SIZE_MB:-200}
+      # Closed by default - the first registrant becomes admin (see
+      # .env.example). Set true only while creating the initial account.
+      - ALLOW_REGISTRATION=${ALLOW_REGISTRATION:-false}
+      - TTS_CACHE_MAX_GIB=${TTS_CACHE_MAX_GIB:-2}
+      - DATA_DIR=/app/data
+      # Root of the opt-in "export to folder" mirror (services/export_service.py).
+      # Empty/unset means export is unavailable on this deployment regardless
+      # of any user's toggle - leave EXPORT_DIR unset in .env to disable it
+      # entirely rather than mounting a directory nobody wants written to.
+      - EXPORT_DIR=${EXPORT_DIR:-/app/exports}
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - CORS_ORIGINS=${CORS_ORIGINS:-["http://localhost:3000"]}
+      # Lets a second device on the same network (phone, laptop) use the app by
+      # its LAN address without editing CORS_ORIGINS. Set false for a publicly
+      # reachable instance where only CORS_ORIGINS should be honoured.
+      - CORS_ALLOW_PRIVATE_NETWORKS=${CORS_ALLOW_PRIVATE_NETWORKS:-true}
+    # See x-llm-extra-hosts at the top of this file.
+    extra_hosts: *llm-extra-hosts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: always
+
+  # Batch work on the default queue: document parsing, page/section summaries,
+  # flashcard generation, and the hourly export-to-folder resync.
+  # Podcasts are NOT here - they route to the tts queue (worker-tts) because
+  # script generation + audio stitch is interactive-latency-sensitive.
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.celery_app worker -l info -c 4 -Q default
+    volumes:
+      - ./backend/app:/app/app
+      - ./prompts:/app/prompts:ro
+      - ./data:/app/data
+      - ${EXPORT_DIR:-./exports}:/app/exports
+    environment:
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-opennotebox}:${POSTGRES_PASSWORD:-opennotebox}@postgres:5432/${POSTGRES_DB:-open_notebox}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+      - OLLAMA_MODEL_SUMMARY=${OLLAMA_MODEL_SUMMARY:-gemma3:27b}
+      - OLLAMA_MODEL_CHAT=${OLLAMA_MODEL_CHAT:-qwen2.5:32b}
+      - OLLAMA_MODEL_QWEN=${OLLAMA_MODEL_QWEN:-qwen2.5:32b}
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-}
+      - VLLM_MODEL=${VLLM_MODEL:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-EMPTY}
+      - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - TTS_CACHE_MAX_GIB=${TTS_CACHE_MAX_GIB:-2}
+      - DATA_DIR=/app/data
+    extra_hosts: *llm-extra-hosts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      api:
+        condition: service_started
+    restart: always
+
+  # Audio synthesis + podcast generation (script LLM call + TTS stitch), on
+  # its own queue and pool. Sharing one queue with the batch worker meant a
+  # bulk document re-parse - minutes of work per large PDF - could hold every
+  # slot and starve narration completely.
+  #
+  # Podcast script generation uses the user's active LLM backend (often a
+  # host-side CLI bridge at host.docker.internal:8765-8768, or a LAN/Tailscale
+  # host like ninja / iic-h100). Must share x-llm-extra-hosts with api/worker
+  # or those names do not resolve and every podcast fails with "Connection error."
+  worker-tts:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.celery_app worker -l info -c 2 -Q tts
+    volumes:
+      - ./backend/app:/app/app
+      - ./prompts:/app/prompts:ro
+      - ./data:/app/data
+    environment:
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-opennotebox}:${POSTGRES_PASSWORD:-opennotebox}@postgres:5432/${POSTGRES_DB:-open_notebox}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+      - OLLAMA_MODEL_SUMMARY=${OLLAMA_MODEL_SUMMARY:-gemma3:27b}
+      - OLLAMA_MODEL_CHAT=${OLLAMA_MODEL_CHAT:-qwen2.5:32b}
+      - OLLAMA_MODEL_QWEN=${OLLAMA_MODEL_QWEN:-qwen2.5:32b}
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-}
+      - VLLM_MODEL=${VLLM_MODEL:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-EMPTY}
+      - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - TTS_CACHE_MAX_GIB=${TTS_CACHE_MAX_GIB:-2}
+      - DATA_DIR=/app/data
+    extra_hosts: *llm-extra-hosts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: always
+
+  # Periodic jobs (currently: TTS cache eviction + export sync). Separate from
+  # the workers because beat must be a single process - running it inside a
+  # multi-replica worker would schedule every job N times. Beat only enqueues
+  # tasks (it does not call LLMs), but shares x-llm-extra-hosts so a future
+  # scheduled LLM job cannot silently hit the same connection failure mode.
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.celery_app beat -l info
+    volumes:
+      - ./backend/app:/app/app
+      - ./data:/app/data
+      - ${EXPORT_DIR:-./exports}:/app/exports
+    environment:
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-opennotebox}:${POSTGRES_PASSWORD:-opennotebox}@postgres:5432/${POSTGRES_DB:-open_notebox}
+      - JWT_SECRET=${JWT_SECRET:?set JWT_SECRET in .env}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - DATA_DIR=/app/data
+      - EXPORT_DIR=${EXPORT_DIR:-/app/exports}
+    extra_hosts: *llm-extra-hosts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: always
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    # Loopback-only, same reasoning as api above: Traefik serves this to the
+    # network over HTTPS, and the published port is a debugging convenience.
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    environment:
+      # Empty means "same origin as the page", which is the whole point of
+      # putting both behind Traefik: no baked-in hostname to get wrong, no
+      # cross-origin request to authorise, and it follows the user from
+      # localhost to a LAN address to Tailscale with no rebuild. Set these
+      # only if you deliberately split the API onto another host.
+      - NEXT_PUBLIC_API_URL=
+      - NEXT_PUBLIC_WS_URL=
+      - NODE_ENV=production
+    # No source bind mount: the prod Dockerfile (multi-stage, `next build` +
+    # standalone output) bakes the built app into the image. Mounting the
+    # source tree over it here would serve live files instead of what was
+    # actually built - defeating the point of a production image. This also
+    # means the frontend no longer hot-reloads; changes need an image rebuild
+    # (`docker compose build frontend`) to take effect.
+    depends_on:
+      - api
+    restart: always
+
+  tts:
+    build:
+      context: ./tts
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:5111:5111"
+    volumes:
+      - tts_models:/models
+    environment:
+      # Concurrent synthesis slots. The service picks a GPU-aware default
+      # (higher when CUDA is actually active); override here for unusual
+      # hardware. See tts/main.py.
+      - TTS_MAX_CONCURRENCY=${TTS_MAX_CONCURRENCY:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: always
+
+volumes:
+  pg_data:
+  redis_data:
+  tts_models:

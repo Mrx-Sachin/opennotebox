@@ -1,0 +1,352 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* shadcn semantic tokens (light) - used by auth/landing pages, untouched */
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222.2 84% 4.9%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96%;
+    --accent-foreground: 222.2 84% 4.9%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 221.2 83.2% 53.3%;
+    --radius: 0.5rem;
+
+    /* Reader theme tokens (PROJECT_DESIGN.md §11) - dark values are the default;
+       a future light mode overrides these under a .light scope */
+    --void: #030304;
+    --panel: #0f0f18;
+    --surface: #1a1a2e;
+    --cream: #f5f5f0;
+    --cream-dim: rgba(245, 245, 240, 0.55);
+    --indigo: #7f00ff;
+    --violet: #5b0fc8;
+    --rust: #c1440e;
+    --glass-bg: rgba(15, 15, 24, 0.6);
+    --glow: 0 0 20px rgba(127, 0, 255, 0.15);
+    --read-highlight: rgba(251, 191, 36, 0.25);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+@layer components {
+  /* Glass morphism panel (design doc §13) */
+  .glass {
+    background: var(--glass-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  .glow {
+    box-shadow: var(--glow);
+  }
+
+  /* Gradient hairline under the top bar */
+  .gradient-hairline {
+    background: linear-gradient(90deg, transparent, #7f00ff, #5b0fc8, transparent);
+    height: 1px;
+  }
+
+  .gradient-primary {
+    background: linear-gradient(135deg, #7f00ff, #5b0fc8);
+  }
+
+  .gradient-text {
+    background: linear-gradient(135deg, #a855f7, #7f00ff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
+/* Reading highlight: active sentence during TTS (design doc §4 - warm amber) */
+.tts-sentence {
+  border-radius: 2px;
+  transition: background-color 200ms ease-out;
+  cursor: pointer;
+}
+.tts-sentence:hover {
+  background-color: rgba(127, 0, 255, 0.12);
+}
+.tts-sentence-active {
+  background-color: var(--read-highlight);
+}
+.tts-sentence-preparing {
+  background: linear-gradient(
+    90deg,
+    rgba(127, 0, 255, 0.08) 25%,
+    rgba(127, 0, 255, 0.22) 50%,
+    rgba(127, 0, 255, 0.08) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes glow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 20px rgba(127, 0, 255, 0.15);
+  }
+  50% {
+    box-shadow: 0 0 28px rgba(127, 0, 255, 0.35);
+  }
+}
+
+/* Dark scrollbars for the reader surfaces */
+.reader-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface) transparent;
+}
+.reader-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.reader-scroll::-webkit-scrollbar-thumb {
+  background: var(--surface);
+  border-radius: 4px;
+}
+.reader-scroll::-webkit-scrollbar-thumb:hover {
+  background: #2a2a45;
+}
+.reader-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* PDF.js appends bare <canvas class="hiddenCanvasElement"> elements straight to
+   document.body for font measurement (see TextLayer.#getCtx in pdf.mjs) and
+   relies on pdf_viewer.css to hide them. We hand-roll the text-layer styling
+   below instead of importing that stylesheet, so without this rule the canvas
+   sits in normal flow at ~150px tall and makes the *document* scrollable even
+   though the app shell is h-screen/overflow-hidden.
+
+   That stray 150px was the real cause of the "page scrolls and reveals blank
+   space under the player bar" bug: every scrollIntoView() in the app scrolls
+   each scrollable ancestor including the document, so any highlight or
+   scroll-to-sentence dragged the whole shell up. Copied verbatim from
+   pdfjs-dist/web/pdf_viewer.css. */
+#hiddenCopyElement,
+.hiddenCanvasElement {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* PDF.js TextLayer: transparent glyph overlay aligned to the canvas render.
+   Rules for markedContent / endOfContent / ::selection are copied from
+   pdfjs-dist/web/pdf_viewer.css. Without them, marked-content wrappers
+   (and the missing end-of-content spacer) eat pointer events and make
+   selection start a paragraph away from the glyph you clicked. */
+.textLayer {
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 1;
+}
+.textLayer span,
+.textLayer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  user-select: text;
+  transform-origin: 0% 0%;
+}
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+}
+.textLayer span.markedContent {
+  top: 0;
+  height: 0;
+  pointer-events: none;
+}
+.textLayer span[role="img"] {
+  user-select: none;
+  cursor: default;
+  pointer-events: none;
+}
+.textLayer span.no-hit {
+  pointer-events: none;
+}
+.textLayer ::selection {
+  background: rgba(127, 0, 255, 0.28);
+}
+.textLayer br::selection {
+  background: transparent;
+}
+.textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+  pointer-events: none;
+}
+.textLayer.selecting .endOfContent {
+  top: 0;
+}
+.textLayer span.tts-sentence-active {
+  background-color: var(--read-highlight);
+  border-radius: 2px;
+  transition: background-color 200ms ease-out;
+}
+.textLayer span.tts-sentence-preparing {
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    rgba(127, 0, 255, 0.1) 25%,
+    rgba(127, 0, 255, 0.28) 50%,
+    rgba(127, 0, 255, 0.1) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+}
+.textLayer.select-mode span:hover {
+  background-color: rgba(127, 0, 255, 0.08);
+}
+/* Click-to-read line preview. Disabled while a drag is live or while the
+   pointer is over a PDF link (the link overlay paints its own wash). */
+.textLayer:not(.selecting):not(.link-hover) span:not(.no-hit):not(.markedContent):hover {
+  background-color: rgba(127, 0, 255, 0.10);
+}
+.textLayer.link-hover,
+.textLayer.link-hover span {
+  cursor: pointer;
+}
+.pdf-link {
+  position: absolute;
+  border-radius: 2px;
+  pointer-events: none;
+  transition: background-color 120ms ease-out, box-shadow 120ms ease-out;
+}
+.pdf-link.is-hover {
+  background-color: rgba(127, 0, 255, 0.20);
+  box-shadow: inset 0 -1px 0 0 var(--indigo);
+}
+
+/* Phone-only selection handles. Desktop never mounts them. */
+.sel-handle {
+  position: fixed;
+  z-index: 45;
+  width: 44px;
+  height: 52px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.sel-handle-start {
+  transform: translate(-50%, 0);
+}
+.sel-handle-end {
+  transform: translate(-50%, 0);
+}
+.sel-handle-knob {
+  position: absolute;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  border-radius: 50%;
+  background: var(--indigo);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.4);
+}
+.sel-handle-stem {
+  position: absolute;
+  left: 50%;
+  width: 2px;
+  height: 14px;
+  margin-left: -1px;
+  background: var(--indigo);
+}
+.sel-handle-start .sel-handle-knob,
+.sel-handle-end .sel-handle-knob {
+  bottom: 0;
+}
+.sel-handle-start .sel-handle-stem,
+.sel-handle-end .sel-handle-stem {
+  top: 0;
+}
+/* Persistent note / highlight mark. Colour comes from --note-hl-* set in JS. */
+.textLayer span.note-hl {
+  background-color: var(--note-hl-bg);
+  border-bottom: 1.5px solid var(--note-hl-border);
+  border-radius: 1px;
+  box-shadow: inset 0 -0.08em 0 var(--note-hl-bg);
+}
+
+/* Citation jump target: brief indigo flash so the eye lands on the passage */
+.textLayer span.citation-flash {
+  background-color: rgba(127, 0, 255, 0.35);
+  border-radius: 2px;
+  animation: citation-fade 2.6s ease-out forwards;
+}
+@keyframes citation-fade {
+  0%,
+  55% {
+    background-color: rgba(127, 0, 255, 0.35);
+  }
+  100% {
+    background-color: rgba(127, 0, 255, 0);
+  }
+}
+
+/* Sidebar: a document row that just landed from a poll. Draws the eye to
+   what's new instead of making the user infer it from position alone -
+   this is the visual half of the insertion-race fix (see Sidebar.tsx). */
+.sidebar-row-new {
+  animation: sidebar-row-arrive 1.6s ease-out;
+  border-radius: 0.5rem;
+}
+@keyframes sidebar-row-arrive {
+  0% {
+    background-color: rgba(127, 0, 255, 0.3);
+    box-shadow: 0 0 0 1px rgba(127, 0, 255, 0.4);
+  }
+  100% {
+    background-color: rgba(127, 0, 255, 0);
+    box-shadow: 0 0 0 1px rgba(127, 0, 255, 0);
+  }
+}
