@@ -146,19 +146,22 @@ export const useReader = create<ReaderState>((set) => ({
   // rather than treating "no progress" as page 1 keeps "never opened" and
   // "read the first page" distinguishable everywhere else.
   selectDoc: (docId, numPages = 0, startPage) =>
-    set((s) => ({
-      selectedDocId: docId,
-      currentPage: startPage && startPage > 0 ? startPage : 1,
-      // A new document has not been restored yet, whatever the last one did.
-      progressRestoredFor: null,
-      numPages,
-      focusMode: false,
-      // Where the library is an overlay, picking a document means "take me to
-      // it" - leaving the list covering the page it just opened makes the tap
-      // look like it did nothing. On a wide screen the list is a column the
-      // user deliberately keeps open, so it stays.
-      ...(s.panelsExclusive && docId != null ? { sidebarCollapsed: true } : {}),
-    })),
+    set((s) => {
+      if (docId != null && s.selectedDocId === docId) {
+        return {
+          numPages: numPages || s.numPages,
+          ...(s.panelsExclusive ? { sidebarCollapsed: true } : {}),
+        }
+      }
+      return {
+        selectedDocId: docId,
+        currentPage: startPage && startPage > 0 ? startPage : 1,
+        progressRestoredFor: null,
+        numPages,
+        focusMode: false,
+        ...(s.panelsExclusive && docId != null ? { sidebarCollapsed: true } : {}),
+      }
+    }),
   markProgressRestored: (docId) => set({ progressRestoredFor: docId }),
   setPage: (page) => set({ currentPage: page }),
   setNumPages: (n) => set({ numPages: n }),

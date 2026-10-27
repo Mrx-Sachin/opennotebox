@@ -467,26 +467,25 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
   // the placeholder heights are right; scrolling before then lands short by
   // the accumulated difference between the estimate and the real page size.
   const restoredForDoc = useRef<number | null>(null)
+  const progressRestoredFor = useReader((state) => state.progressRestoredFor)
   useEffect(() => {
     if (!pdfDoc || !pageBase) return
-    if (restoredForDoc.current === docId) return
-    restoredForDoc.current = docId
+    if (restoredForDoc.current === docId && progressRestoredFor === docId) return
+    if (useReader.getState().selectedDocId !== docId) return
     const target = useReader.getState().currentPage
     if (target <= 1) {
-      // Nothing to restore, but progress saving still has to be unblocked -
-      // otherwise a document opened at page 1 would never record anything.
+      restoredForDoc.current = docId
       useReader.getState().markProgressRestored(docId)
       return
     }
-    // A frame for the placeholder sizes to be applied before measuring.
     const t = setTimeout(() => {
+      if (useReader.getState().selectedDocId !== docId) return
       scrollToPage(target)
-      // Only now may progress be written: the reader is finally where the
-      // user left it rather than at page 1.
+      restoredForDoc.current = docId
       useReader.getState().markProgressRestored(docId)
     }, 60)
     return () => clearTimeout(t)
-  }, [pdfDoc, pageBase, docId, scrollToPage])
+  }, [pdfDoc, pageBase, docId, scrollToPage, progressRestoredFor])
 
   // Auto-dismiss the "jumped but no highlight" toast
   useEffect(() => {
@@ -504,6 +503,7 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
   // bottom-most. Reading was unaffected, but with reading progress being
   // saved it meant reopening a document crept forward a page each time.
   const updateCurrentPage = useCallback(() => {
+    if (useReader.getState().progressRestoredFor !== docId) return
     if (suppressObserverRef.current) return
     const container = scrollContainerRef.current
     if (!container) return
@@ -526,7 +526,7 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
       lastScrolledPage.current = best.page
       setPage(best.page)
     }
-  }, [setPage])
+  }, [docId, setPage])
 
   useEffect(() => {
     const container = scrollContainerRef.current

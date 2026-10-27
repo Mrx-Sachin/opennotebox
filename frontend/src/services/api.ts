@@ -225,7 +225,10 @@ export const updateReadingProgress = (
   position?: number,
 ) =>
   api
-    .put<Document>(`/api/documents/${docId}/progress`, { page, position })
+    .put<Document>(`/api/documents/${docId}/progress`, { page, position }, {
+      adapter: "fetch",
+      fetchOptions: { keepalive: true },
+    })
     .then((r) => r.data)
 
 export const deleteDocument = (id: number) =>

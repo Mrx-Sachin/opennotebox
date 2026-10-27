@@ -1,5 +1,6 @@
 """Podcast generation router: turns document/section summaries into a two-host audio dialogue."""
 import os
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -7,18 +8,27 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User, Summary, Podcast
+from app.models import User, Summary, Podcast, Document, LibraryEntry
 from app.schemas import PodcastCreate, PodcastResponse
 from app.routers.auth import get_current_user_from_token
 from app.tasks.podcast_tasks import generate_podcast as generate_podcast_task
-from app.services.library_access import get_document_for_user
+from app.services.library_access import (
+    get_document_for_user,
+    visible_document_title,
+)
 
 router = APIRouter(prefix="/api/podcasts", tags=["podcasts"])
 
 
-def _serialize(podcast: Podcast) -> dict:
+def _serialize(podcast: Podcast, document_title: Optional[str] = None) -> dict:
     data = PodcastResponse.model_validate(podcast).model_dump()
-    data["audio_url"] = f"/api/podcasts/{podcast.id}/audio" if podcast.status == "completed" else None
+    data["audio_url"] = (
+        f"/api/podcasts/{podcast.id}/audio"
+        if podcast.status == "completed"
+        else None
+    )
+    if document_title is not None:
+        data["document_title"] = document_title
     return data
 
 
@@ -82,18 +92,39 @@ def create_podcast(
 
 @router.get("", response_model=None)
 def list_podcasts(
-    document_id: int,
+    document_id: Optional[int] = None,
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
-    """List a user's podcasts for a document, newest first."""
-    if not get_document_for_user(db, user.id, document_id):
-        raise HTTPException(status_code=404, detail="Document not found")
-    podcasts = db.query(Podcast).filter(
-        Podcast.document_id == document_id,
-        Podcast.user_id == user.id,
-    ).order_by(Podcast.created_at.desc()).all()
-    return [_serialize(p) for p in podcasts]
+    """List a user's podcasts for a document or across all accessible documents, newest first."""
+    if document_id is not None:
+        get_document_for_user(db, user.id, document_id)
+
+    query = (
+        db.query(Podcast, Document, LibraryEntry)
+        .join(Document, Podcast.document_id == Document.id)
+        .join(
+            LibraryEntry,
+            (LibraryEntry.document_id == Document.id)
+            & (LibraryEntry.user_id == user.id),
+        )
+        .filter(Podcast.user_id == user.id)
+    )
+
+    if document_id is not None:
+        query = query.filter(Podcast.document_id == document_id)
+
+    rows = query.order_by(Podcast.created_at.desc()).all()
+
+    return [
+        _serialize(
+            podcast,
+            document_title=visible_document_title(doc, entry)
+            if document_id is None
+            else None,
+        )
+        for podcast, doc, entry in rows
+    ]
 
 
 @router.get("/{podcast_id}", response_model=None)

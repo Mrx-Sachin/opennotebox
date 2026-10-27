@@ -81,7 +81,7 @@ export default function ReaderPage() {
   const viewport = useViewport()
 
   useKeyboardShortcuts()
-  useReadingProgress(selectedDocId)
+  useReadingProgress()
 
   // Only PdfViewer performs a restore, so for every other format nothing
   // would ever unblock progress saving. Their reader has no page-level scroll
@@ -324,9 +324,9 @@ export default function ReaderPage() {
               )}
               <div className="min-h-0 min-w-0 flex-1">
                 {selectedDoc.format === "pdf" ? (
-                  <PdfViewer docId={selectedDoc.id} />
+                  <PdfViewer key={selectedDoc.id} docId={selectedDoc.id} />
                 ) : (
-                  <TextViewer
+                  <TextViewer key={selectedDoc.id}
                     docId={selectedDoc.id}
                     processingStatus={selectedDoc.processing_status}
                   />

@@ -123,3 +123,25 @@
 - The user requested starting the application for manual testing. Rebuild the preview backend from `refactor/deepen-domain-boundaries` and recreate only its API, default worker, and TTS worker. Explicitly select the `deepread-preview` Compose project and its private environment file so the repository's original project settings cannot redirect these operations.
 - Keep the existing preview frontend, gateway, model bridge, PostgreSQL, Redis, and shared TTS engine running. The frontend source and schema have not changed in this branch.
 - Both port 3013 and the original port 3003 return healthy. The preview API's deployed chat, chapter, and asset service checksums match this branch, and its login page loads in the collaborative browser. Use `http://localhost:3013/dashboard` with the existing preview account credentials for manual testing.
+
+## 2026-10-09: per-book reading position and podcast gallery
+
+- The user confirmed that each book must reopen at its own last viewed page after switching books or refreshing. UI reproduction on preview port 3013 showed page 2 resetting to page 1 when switching books before the progress debounce elapsed.
+- Capture outgoing progress synchronously from reader-store transitions, update account-scoped document caches immediately, and flush captured progress on navigation and page hide. Keep normal saves debounced and serialize same-document requests. Use authenticated fetch keepalive for progress writes.
+- Remount viewers per document and prevent PDF viewport observation from overwriting progress before restoration completes. Mark restoration complete only after the delayed scroll actually runs.
+- Initial implementation passes frontend TypeScript and ESLint checks. Browser regression coverage and independent Gemini verification remain required before declaring this fix complete.
+- The user also confirmed a main-gallery section showing podcasts across all books, with in-place playback and source-book links. Reuse existing playback and access-control boundaries rather than introduce another audio engine. Delegate implementation and UI verification to Gemini 3.8 Flash in isolated worktrees, separately from reader verification.
+
+## 2026-10-09: integrated Gemini delegation replaces Astra
+
+- The user explicitly requested stopping the two Astra-managed workers and uninstalling the shared Astra skill and manager, while preserving their worktrees and reports. Stop those worker process groups and their supervising tmux sessions before removing the skill. Preserve all task artifacts in local state.
+- Integrated Gemini 3.8 Flash agents are now exposed by the harness. Restart reader regression work and podcast implementation through those tools with disjoint file ownership. Assign UI testing to Gemini as requested. Do not use Astra for new work.
+- Both integrated agents work on the existing branch. Share one development server on port 3114 rather than running competing Next servers against the same build directory. Preserve the original and preview deployments until combined validation is complete.
+- On resuming implementation, the unchanged backend baseline passes all 359 tests in 95.85 seconds and full Ruff checks. The sole SQLite expression-index reflection warning is unchanged. The preview services remain running; these baseline checks do not validate the pending podcast feature or reader browser regressions.
+
+## 2026-10-09: podcast listing and durable pending progress
+
+- Extend the existing podcast listing with optional document scope. All-book listing joins the requesting user's podcasts to their current library memberships and resolves source names through visible_document_title. Preserve the document-specific response fields and access checks. Do not expose another member's filename or podcasts, issue per-book requests, or add an audio engine or schema migration.
+- Seven new hermetic podcast tests pass, covering original document-specific behavior, authentication, missing documents, empty and ordered all-book listings, safe title precedence, ownership isolation, and membership revocation. The preview backend image builds successfully; it is not yet deployed.
+- Keep pending reader progress in account-scoped local storage until its exact revision saves successfully. Apply unsaved progress before viewer restoration and retain ordered network writes. Bypassing the queue on page hide can allow an older request to overwrite the latest page, so do not use that shortcut. Local storage failures remain non-blocking, and queued writes must verify that their original account is still active.
+- A temporary Node harness running the actual progress hook and reader store passes outgoing capture, pending restoration, optimistic cache updates, request ordering, revision-specific clearing, and account-switch isolation. This is a state-machine check, not a browser test; Gemini browser regression checks remain required.
