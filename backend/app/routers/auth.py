@@ -92,11 +92,17 @@ def _client_ip(request: Request) -> str:
 # /register calls on an empty instance can't both observe an empty table and
 # both mint an admin. Released automatically when the transaction commits.
 _BOOTSTRAP_LOCK_KEY = 0x0E5B7F01
+_ADMIN_MUTATION_LOCK_KEY = 0x0E5B7F02
 
 
 def _acquire_bootstrap_lock(db: Session) -> None:
     if db.get_bind().dialect.name == "postgresql":
         db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _BOOTSTRAP_LOCK_KEY})
+
+
+def _acquire_admin_mutation_lock(db: Session) -> None:
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _ADMIN_MUTATION_LOCK_KEY})
 
 
 @router.post("/register", response_model=UserResponse)
@@ -315,9 +321,20 @@ def update_user(
     db: Session = Depends(get_db),
 ):
     """Update user (admin only - can promote/demote)."""
-    target = db.query(User).filter(User.id == user_id).with_for_update().first()
+    if update.is_admin is False:
+        _acquire_admin_mutation_lock(db)
+        db.query(User.id).filter(User.is_admin.is_(True)).order_by(User.id).with_for_update().all()
+
+    target = db.query(User).filter(User.id == user_id).populate_existing().with_for_update().first()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    if update.is_admin is False and target.is_admin:
+        active_admin_count = db.query(func.count(User.id)).filter(User.is_admin.is_(True)).scalar()
+        if active_admin_count <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot demote the last remaining administrator",
+            )
     if update.is_admin is not None:
         target.is_admin = update.is_admin
     db.commit()
@@ -332,9 +349,19 @@ def delete_user(
     db: Session = Depends(get_db),
 ):
     """Delete a user and their personal data while retaining library assets."""
-    target = db.query(User).filter(User.id == user_id).with_for_update().first()
+    _acquire_admin_mutation_lock(db)
+    db.query(User.id).filter(User.is_admin.is_(True)).order_by(User.id).with_for_update().all()
+
+    target = db.query(User).filter(User.id == user_id).populate_existing().with_for_update().first()
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    if target.is_admin:
+        active_admin_count = db.query(func.count(User.id)).filter(User.is_admin.is_(True)).scalar()
+        if active_admin_count <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete the last remaining administrator",
+            )
 
     asset_ids = {
         doc_id

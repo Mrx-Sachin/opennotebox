@@ -54,8 +54,16 @@ dev = [
 ]
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.uv]
+constraint-dependencies = [
+    "langgraph-sdk>=0.4.4,<0.5",
+    "httpx2>=2.12.0,<3",
+    "urllib3>=2.8.0,<3",
+    "Mako>=1.4.2,<2",
+]
 
 # Without this, setuptools' flat-layout autodiscovery finds both `app/` and
 # `alembic/` at the top level, decides the layout is ambiguous, and refuses to

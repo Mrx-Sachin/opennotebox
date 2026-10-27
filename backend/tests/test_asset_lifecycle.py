@@ -9,6 +9,7 @@ from app.models import (
     Document,
     EmbeddingBackfill,
     Flashcard,
+    KgExtractionState,
     LibraryEntry,
     Note,
     Podcast,
@@ -189,3 +190,60 @@ def test_retire_snapshots_active_summary_before_removing_its_marker(
     assert db.query(LibraryEntry).filter_by(document_id=document_id).count() == 0
     assert db.get(Document, document_id) is not None
     assert document_path.exists()
+
+
+def test_retire_queued_embedding_job_defers_collection(db, test_user, test_document):
+    document_path = Path(test_document.file_path)
+    backfill_job = EmbeddingBackfill(document_id=test_document.id, status="queued")
+    db.add(backfill_job)
+    db.commit()
+
+    with patch("app.tasks.asset_tasks.collect_unreferenced_asset.apply_async") as enqueue_mock:
+        retire_document_membership(db, user_id=test_user.id, doc_id=test_document.id)
+        enqueue_mock.assert_called_once_with(args=[test_document.id], countdown=300)
+
+    assert db.get(Document, test_document.id) is not None
+    assert document_path.exists()
+    assert db.query(LibraryEntry).filter(LibraryEntry.document_id == test_document.id).count() == 0
+
+
+def test_retire_pending_kg_extraction_defers_collection(db, test_user, test_document):
+    document_path = Path(test_document.file_path)
+    extraction_job = KgExtractionState(document_id=test_document.id, status="pending")
+    db.add(extraction_job)
+    db.commit()
+
+    with patch("app.tasks.asset_tasks.collect_unreferenced_asset.apply_async") as enqueue_mock:
+        retire_document_membership(db, user_id=test_user.id, doc_id=test_document.id)
+        enqueue_mock.assert_called_once_with(args=[test_document.id], countdown=300)
+
+    assert db.get(Document, test_document.id) is not None
+    assert document_path.exists()
+    assert db.query(LibraryEntry).filter(LibraryEntry.document_id == test_document.id).count() == 0
+
+
+def test_retire_extracting_kg_defers_collection(db, test_user, test_document):
+    document_path = Path(test_document.file_path)
+    extraction_job = KgExtractionState(document_id=test_document.id, status="extracting")
+    db.add(extraction_job)
+    db.commit()
+
+    with patch("app.tasks.asset_tasks.collect_unreferenced_asset.apply_async") as enqueue_mock:
+        retire_document_membership(db, user_id=test_user.id, doc_id=test_document.id)
+        enqueue_mock.assert_called_once_with(args=[test_document.id], countdown=300)
+
+    assert db.get(Document, test_document.id) is not None
+    assert document_path.exists()
+    assert db.query(LibraryEntry).filter(LibraryEntry.document_id == test_document.id).count() == 0
+
+
+def test_collector_retry_budget_exceeds_configured_job_limits():
+    from app.tasks.embedding_tasks import _EMBED_TIME_LIMIT
+    from app.tasks.kg_tasks import KG_TIME_LIMIT
+    from app.tasks.summary_tasks import PAGE_SUMMARY_TIME_LIMIT
+
+    retry_interval_seconds = 180
+    total_retry_budget = collect_unreferenced_asset.max_retries * retry_interval_seconds
+    assert total_retry_budget > PAGE_SUMMARY_TIME_LIMIT
+    assert total_retry_budget > KG_TIME_LIMIT
+    assert total_retry_budget > _EMBED_TIME_LIMIT

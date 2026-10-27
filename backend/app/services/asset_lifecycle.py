@@ -27,11 +27,13 @@ def asset_has_active_jobs(db: Session, doc: Document) -> bool:
     if doc.processing_status not in {"completed", "extracted", "failed"}:
         return True
     if db.query(EmbeddingBackfill.id).filter(
-        EmbeddingBackfill.document_id == doc.id, EmbeddingBackfill.status == "running"
+        EmbeddingBackfill.document_id == doc.id,
+        EmbeddingBackfill.status.in_(["queued", "running"]),
     ).first():
         return True
     if db.query(KgExtractionState.id).filter(
-        KgExtractionState.document_id == doc.id, KgExtractionState.status == "extracting"
+        KgExtractionState.document_id == doc.id,
+        KgExtractionState.status.in_(["pending", "extracting"]),
     ).first():
         return True
     return db.query(Summary.id).filter(

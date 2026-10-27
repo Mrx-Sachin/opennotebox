@@ -377,6 +377,8 @@ export interface Podcast {
     scratchpad?: string | null
   } | null
   created_at: string
+  audio_url?: string | null
+  document_title?: string | null
 }
 
 export type PodcastLength = "short" | "medium" | "long" | "deep_dive"
@@ -396,8 +398,10 @@ export const createPodcast = (
     })
     .then((r) => r.data)
 
-export const getPodcasts = (documentId: number) =>
-  api.get<Podcast[]>(`/api/podcasts?document_id=${documentId}`).then((r) => r.data)
+export const getPodcasts = (documentId?: number) => {
+  const url = documentId !== undefined ? `/api/podcasts?document_id=${documentId}` : "/api/podcasts"
+  return api.get<Podcast[]>(url).then((r) => r.data)
+}
 
 export const getPodcast = (id: number) =>
   api.get<Podcast>(`/api/podcasts/${id}`).then((r) => r.data)

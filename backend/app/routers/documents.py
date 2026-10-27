@@ -378,6 +378,15 @@ async def upload_document(
             detail=f"File too large (max {settings.upload_max_size_mb} MB)",
         )
 
+    with open(file_path, "rb") as header_stream:
+        file_header = header_stream.read(16)
+    if not _looks_like_format(file_header, fmt):
+        os.unlink(file_path)
+        raise HTTPException(
+            status_code=400,
+            detail=f"File content does not match declared {fmt} format",
+        )
+
     doc, created = await asyncio.to_thread(
         _save_uploaded_asset, db, user, file.filename, fmt, file_path, file_size,
         notebook_id, layout_mode if fmt == "pdf" else "single_column",
@@ -581,14 +590,20 @@ def _validate_download_url(url: str) -> dict[str, tuple[str, ...]]:
     pins: dict[str, tuple[str, ...]] = {}
     key = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
     for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+        raw_ip = ipaddress.ip_address(info[4][0])
+        effective_ip = getattr(raw_ip, "ipv4_mapped", None) or raw_ip
+        if (
+            effective_ip.is_link_local
+            or effective_ip.is_multicast
+            or effective_ip.is_reserved
+            or effective_ip.is_unspecified
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="This host points at a blocked internal address range",
             )
         if not settings.download_allow_private_hosts and (
-            ip.is_private or ip.is_loopback
+            not effective_ip.is_global or effective_ip.is_private or effective_ip.is_loopback
         ):
             raise HTTPException(
                 status_code=400,
@@ -596,7 +611,7 @@ def _validate_download_url(url: str) -> dict[str, tuple[str, ...]]:
                 "is blocked for URL uploads. Set DOWNLOAD_ALLOW_PRIVATE_HOSTS=true "
                 "if you upload from a server on your own network.",
             )
-        pins.setdefault(key, []).append(str(ip))
+        pins.setdefault(key, []).append(str(raw_ip))
     return {key: tuple(pins[key])}
 
 
@@ -646,10 +661,13 @@ async def upload_from_url(
             current = url
             for _ in range(10):  # hard cap on hop count
                 with client.stream("GET", current, headers=req_headers, timeout=60) as resp:
-                    if resp.is_redirect and resp.next_request is not None:
-                        target = str(resp.next_request.url)
-                        pins.update(_validate_download_url(target))
-                        current = target
+                    if resp.is_redirect:
+                        location_header = resp.headers.get("location")
+                        if not location_header:
+                            raise HTTPException(status_code=400, detail="Redirect missing location header")
+                        redirect_target = str(httpx.URL(current).join(location_header))
+                        pins.update(_validate_download_url(redirect_target))
+                        current = redirect_target
                         continue
                     resp.raise_for_status()
                     declared = resp.headers.get("content-length", "")

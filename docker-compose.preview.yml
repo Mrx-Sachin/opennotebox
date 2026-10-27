@@ -74,6 +74,11 @@ services:
     command: celery -A app.celery_app worker -l info -c 2 -Q tts
     depends_on: [api]
 
+  beat:
+    <<: *backend
+    command: celery -A app.celery_app beat -l info
+    depends_on: [api]
+
   frontend:
     image: deepread-preview-frontend:local
     build:
@@ -84,9 +89,10 @@ services:
     restart: unless-stopped
 
   gateway:
-    image: traefik:v3.0
+    image: ${TRAEFIK_IMAGE:-traefik:v3.7.14}
     command:
       - --entrypoints.weblocal.address=:8080
+      - --entrypoints.weblocal.http.aliasheadersstrategy=delete
       - --providers.file.filename=/etc/traefik/routes.yml
     ports:
       - 127.0.0.1:${PREVIEW_PORT:-3013}:8080

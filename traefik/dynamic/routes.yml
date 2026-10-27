@@ -6,6 +6,14 @@
 # exist) and what removes cross-origin requests entirely rather than
 # permitting them after the fact.
 http:
+  middlewares:
+    security-headers:
+      headers:
+        customResponseHeaders:
+          X-Frame-Options: "DENY"
+          X-Content-Type-Options: "nosniff"
+          Referrer-Policy: "strict-origin-when-cross-origin"
+          Permissions-Policy: "camera=(), microphone=(), geolocation=()"
   routers:
     # Priority beats the frontend catch-all below, which would otherwise also
     # match /api. Traefik picks the longest rule when priorities are equal,
@@ -14,6 +22,7 @@ http:
       rule: "PathPrefix(`/api`) || PathPrefix(`/ws`) || Path(`/health`)"
       priority: 100
       entryPoints: [websecure]
+      middlewares: [security-headers]
       service: api
       tls: {}
 
@@ -21,6 +30,7 @@ http:
       rule: "PathPrefix(`/`)"
       priority: 1
       entryPoints: [websecure]
+      middlewares: [security-headers]
       service: frontend
       tls: {}
 
@@ -34,12 +44,14 @@ http:
       rule: "PathPrefix(`/api`) || PathPrefix(`/ws`) || Path(`/health`)"
       priority: 100
       entryPoints: [weblocal]
+      middlewares: [security-headers]
       service: api
 
     frontend-local:
       rule: "PathPrefix(`/`)"
       priority: 1
       entryPoints: [weblocal]
+      middlewares: [security-headers]
       service: frontend
 
   services:

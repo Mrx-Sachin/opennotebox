@@ -11,6 +11,7 @@ COPY --from=uv /uv /uvx /bin/
 COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv export --frozen --no-dev --no-emit-project --output-file /tmp/requirements.txt \
     && uv pip install --system --no-cache --requirement /tmp/requirements.txt \
+    && uv pip install --system --no-cache 'setuptools==83.0.0' \
     && rm /tmp/requirements.txt
 
 COPY backend/app/ ./app/

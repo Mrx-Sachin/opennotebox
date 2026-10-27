@@ -10,6 +10,8 @@
 entryPoints:
   websecure:
     address: ":443"
+    http:
+      aliasHeadersStrategy: delete
   # Plain HTTP for this machine only. Published as 127.0.0.1:3003, so it is
   # unreachable from the network and no plaintext ever leaves the host. It
   # exists because http://localhost IS a secure context by definition, so the
@@ -18,6 +20,12 @@ entryPoints:
   # API call 404s against Next.js. A half-working origin is worse than none.
   weblocal:
     address: ":8080"
+    http:
+      aliasHeadersStrategy: delete
+    forwardedHeaders:
+      trustedIPs:
+        - "127.0.0.1/32"
+        - "::1/128"
 
 providers:
   # File-only, no Docker provider. The routing here is two fixed backends

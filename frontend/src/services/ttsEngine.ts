@@ -786,13 +786,16 @@ class TtsEngine {
     this.page = null
     this.pageAudio = null
     this.chunkStarts = []
-    this.set({ status: "preparing", docId: null, page: null, sentenceIndex: 0, sentenceCount: 0 })
+    this.set({ status: "preparing", docId: null, page: null, sentenceIndex: 0, sentenceCount: 0, currentTime: 0, duration: 0 })
 
     try {
       const blobUrl = await fetchAudioBlobUrl(url)
+      if (token !== this.playToken) {
+        URL.revokeObjectURL(blobUrl)
+        return
+      }
       if (this.summaryBlobUrl) URL.revokeObjectURL(this.summaryBlobUrl)
       this.summaryBlobUrl = blobUrl
-      if (token !== this.playToken) return
       audio.src = blobUrl
       audio.playbackRate = useReader.getState().tts.speed
       audio.muted = useReader.getState().tts.muted
@@ -860,10 +863,13 @@ class TtsEngine {
       if (token !== this.playToken) return
 
       const blobUrl = await fetchAudioBlobUrl(resolved.url)
+      if (token !== this.playToken) {
+        URL.revokeObjectURL(blobUrl)
+        return
+      }
       if (this.summaryBlobUrl) URL.revokeObjectURL(this.summaryBlobUrl)
       this.summaryBlobUrl = blobUrl
       audio.src = blobUrl
-      if (token !== this.playToken) return
       audio.playbackRate = useReader.getState().tts.speed
       audio.muted = useReader.getState().tts.muted
       await new Promise<void>((resolve, reject) => {

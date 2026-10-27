@@ -1,14 +1,24 @@
 http:
+  middlewares:
+    security-headers:
+      headers:
+        customResponseHeaders:
+          X-Frame-Options: "DENY"
+          X-Content-Type-Options: "nosniff"
+          Referrer-Policy: "strict-origin-when-cross-origin"
+          Permissions-Policy: "camera=(), microphone=(), geolocation=()"
   routers:
     api:
       rule: 'PathPrefix(`/api`) || PathPrefix(`/ws`) || Path(`/health`)'
       priority: 100
       entryPoints: [weblocal]
+      middlewares: [security-headers]
       service: api
     frontend:
       rule: 'PathPrefix(`/`)'
       priority: 1
       entryPoints: [weblocal]
+      middlewares: [security-headers]
       service: frontend
   services:
     api:

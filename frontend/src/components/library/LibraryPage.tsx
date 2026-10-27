@@ -4,7 +4,8 @@ import { Suspense, useEffect, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { BookOpen, ChevronLeft, ChevronRight, Clock3, FileText, FolderOpen, Library, Loader2, Plus, Search, AlertCircle, LayoutGrid, List, X, UsersRound } from "lucide-react"
+import { BookOpen, ChevronLeft, ChevronRight, Clock3, FileText, FolderOpen, Headphones, Library, Loader2, Plus, Search, AlertCircle, LayoutGrid, List, X, UsersRound } from "lucide-react"
+import PodcastGallery from "./PodcastGallery"
 import TopBar from "@/components/layout/TopBar"
 import UploadModal from "@/components/layout/UploadModal"
 import DocumentCard from "./DocumentCard"
@@ -37,7 +38,9 @@ function LibraryContent() {
   const unfiled = searchParams.get("unfiled") === "true"
   const moveToParam = searchParams.get("move_to")
   const moveToId = moveToParam ? Number(moveToParam) : null
-  const home = !notebookParam && !unfiled && searchParams.get("view") !== "documents"
+  const viewParam = searchParams.get("view")
+  const isPodcastsView = viewParam === "podcasts"
+  const home = !notebookParam && !unfiled && viewParam !== "documents" && viewParam !== "podcasts"
   const [sourceNotebook, setSourceNotebook] = useState("")
   const picking = Boolean(moveToId)
   const filterNotebookId = picking ? Number(sourceNotebook) || null : notebookId
@@ -138,8 +141,8 @@ function LibraryContent() {
       <div className="library-layout">
         <aside className="library-navigation" aria-label="Library shelves">
           <p className="library-nav-label">Your library</p>
-          <nav><Link href="/dashboard" className={`library-nav-item ${home ? "is-active" : ""}`}><FolderOpen size={17} /><span>Notebooks</span></Link><Link href="/dashboard/shared" className="library-nav-item"><UsersRound size={17} /><span>Shared library</span></Link><Link href="/dashboard?unfiled=true" className={`library-nav-item ${unfiled ? "is-active" : ""}`}><FileText size={17} /><span>Unfiled</span></Link>{SHELVES.map(({ id, label, icon: Icon }) => (
-            <button key={id} type="button" className={`library-nav-item ${!home && !unfiled && !notebookId && shelf === id ? "is-active" : ""}`} onClick={() => changeShelf(id)} aria-pressed={!home && !unfiled && !notebookId && shelf === id}>
+          <nav><Link href="/dashboard" className={`library-nav-item ${home ? "is-active" : ""}`}><FolderOpen size={17} /><span>Notebooks</span></Link><Link href="/dashboard/shared" className="library-nav-item"><UsersRound size={17} /><span>Shared library</span></Link><Link href="/dashboard?view=podcasts" className={`library-nav-item ${isPodcastsView ? "is-active" : ""}`}><Headphones size={17} /><span>Podcasts</span></Link><Link href="/dashboard?unfiled=true" className={`library-nav-item ${unfiled ? "is-active" : ""}`}><FileText size={17} /><span>Unfiled</span></Link>{SHELVES.map(({ id, label, icon: Icon }) => (
+            <button key={id} type="button" className={`library-nav-item ${!home && !unfiled && !notebookId && !isPodcastsView && shelf === id ? "is-active" : ""}`} onClick={() => changeShelf(id)} aria-pressed={!home && !unfiled && !notebookId && !isPodcastsView && shelf === id}>
               <Icon size={17} strokeWidth={1.7} aria-hidden="true" /><span>{label}</span>
               {counts[id] != null && <span className="library-nav-count">{counts[id]}</span>}
             </button>
@@ -148,8 +151,8 @@ function LibraryContent() {
         </aside>
         <main className="library-main" id="library-main">
           <div className="library-page-heading">
-            <div>{!home && <Link href="/dashboard" className="notebook-breadcrumb">Your notebooks</Link>}<h1>{notebook?.name || (unfiled ? "Unfiled" : "Your library")}</h1><p>{notebook?.description || (home ? "A notebook for every topic. Keep related documents together." : unfiled ? "Choose documents and move them into a notebook." : "Pick up where you left off, or find your next read.")}</p></div>
-            <div className="library-heading-actions">{home ? <button type="button" className="library-add-button" onClick={() => setEditingNotebook(null)}><Plus size={18} />New notebook</button> : notebook && <button type="button" className="library-secondary-button" onClick={() => setEditingNotebook(notebook)}>Edit notebook</button>}<button type="button" className={home ? "library-secondary-button" : "library-add-button"} onClick={openUpload}><Plus size={18} />Add documents</button></div>
+            <div>{!home && <Link href="/dashboard" className="notebook-breadcrumb">Your notebooks</Link>}<h1>{notebook?.name || (unfiled ? "Unfiled" : isPodcastsView ? "Podcasts" : "Your library")}</h1><p>{notebook?.description || (isPodcastsView ? "Generated audio discussions across all your documents." : home ? "A notebook for every topic. Keep related documents together." : unfiled ? "Choose documents and move them into a notebook." : "Pick up where you left off, or find your next read.")}</p></div>
+            {!isPodcastsView && <div className="library-heading-actions">{home ? <button type="button" className="library-add-button" onClick={() => setEditingNotebook(null)}><Plus size={18} />New notebook</button> : notebook && <button type="button" className="library-secondary-button" onClick={() => setEditingNotebook(notebook)}>Edit notebook</button>}<button type="button" className={home ? "library-secondary-button" : "library-add-button"} onClick={openUpload}><Plus size={18} />Add documents</button></div>}
           </div>
           {home && <NotebookShelf notebooks={notebooks} unfiledCount={data ? Math.max(0, data.library_total - notebooks.reduce((sum, item) => sum + item.document_count, 0)) : null} loading={notebooksQuery.isPending} error={notebooksQuery.isError} onCreate={() => setEditingNotebook(null)} onEdit={setEditingNotebook} onRetry={() => void notebooksQuery.refetch()} />}
           {home && isError && <div className="notebook-load-error" role="alert">Document counts could not be loaded.<button type="button" onClick={() => void refetch()}>Try again</button></div>}
@@ -159,7 +162,8 @@ function LibraryContent() {
               <div className="library-recent-grid">{data?.recent.map((document) => <DocumentCard key={document.id} document={document} compact />)}</div>
             </section>
           )}
-          {!home && <section aria-labelledby="documents-heading" className="library-shelf">
+          {!picking && (home || isPodcastsView) && <PodcastGallery />}
+          {!home && !isPodcastsView && <section aria-labelledby="documents-heading" className="library-shelf">
             <div className="library-section-heading"><h2 id="documents-heading">{SHELVES.find((item) => item.id === shelf)?.label}</h2>{notebook && <div className="notebook-add-sources"><button type="button" onClick={openExisting}>Add existing documents</button><Link href={`/dashboard/shared?notebook=${notebook.id}`}>Browse shared library</Link></div>}<span className="library-result-count" aria-live="polite">{data ? `${data.total} ${data.total === 1 ? "document" : "documents"}` : "Loading library"}</span></div>
             {moveToNotebook && <div className="notebook-choose-banner"><p>Select documents to add to <strong>{moveToNotebook.name}</strong>. Documents will move out of their current notebook.</p><Link href={`/dashboard?notebook=${moveToNotebook.id}`}>Cancel</Link></div>}
             {(selected.length > 0 || moveToNotebook) && <div className="notebook-selection-bar"><span>{selected.length} selected</span><button type="button" disabled={isPlaceholderData} onClick={() => setSelected((previous) => Array.from(new Set([...previous, ...(data?.documents || []).filter((document) => !picking || document.notebook_id !== moveToId).map((document) => document.id)])).slice(0, 200))}>Select this page</button><button type="button" onClick={() => setSelected([])} disabled={!selected.length}>Clear selection</button><button type="button" className="library-add-button" disabled={!selected.length || moving} onClick={() => moveToNotebook ? void addToNotebook() : setMoveOpen(true)}>{moving ? "Moving…" : moveToNotebook ? `Add to ${moveToNotebook.name}` : "Move to notebook"}</button></div>}

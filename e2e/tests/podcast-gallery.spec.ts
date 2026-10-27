@@ -1,0 +1,426 @@
+import { expect, test, type Page } from "@playwright/test"
+
+function createSilentWav(seconds = 10): Buffer {
+  const sampleRate = 8000
+  const dataSize = sampleRate * seconds * 2
+  const buffer = Buffer.alloc(44 + dataSize)
+  buffer.write("RIFF", 0)
+  buffer.writeUInt32LE(36 + dataSize, 4)
+  buffer.write("WAVE", 8)
+  buffer.write("fmt ", 12)
+  buffer.writeUInt32LE(16, 16)
+  buffer.writeUInt16LE(1, 20)
+  buffer.writeUInt16LE(1, 22)
+  buffer.writeUInt32LE(sampleRate, 24)
+  buffer.writeUInt32LE(sampleRate * 2, 28)
+  buffer.writeUInt16LE(2, 32)
+  buffer.writeUInt16LE(16, 34)
+  buffer.write("data", 36)
+  buffer.writeUInt32LE(dataSize, 40)
+  return buffer
+}
+
+const SILENT_WAV_BUFFER = createSilentWav(10)
+
+interface MockOptions {
+  empty?: boolean
+  error?: boolean
+  audioError?: boolean
+  delayAudio101?: Promise<void>
+}
+
+async function setupMockPodcasts(page: Page, options: MockOptions = {}) {
+  const podcasts = [
+    {
+      id: 101,
+      user_id: 1,
+      document_id: 1,
+      scope: "full",
+      section_title: null,
+      length: "medium",
+      status: "completed",
+      error: null,
+      duration: 360.0,
+      transcript: {
+        title: "Deep Dive into Sample Document",
+        lines: [
+          { speaker: "Host A", text: "Welcome to today's discussion." },
+          { speaker: "Host B", text: "Thanks, excited to be here." },
+        ],
+      },
+      created_at: "2026-10-09T03:00:00Z",
+      audio_url: "/api/podcasts/101/audio",
+      document_title: "e2e-sample.pdf",
+    },
+    {
+      id: 102,
+      user_id: 1,
+      document_id: 2,
+      scope: "section",
+      section_title: "Chapter 2: Methods",
+      length: "short",
+      status: "completed",
+      error: null,
+      duration: 180.0,
+      transcript: {
+        title: "Research Methods Overview",
+        lines: [],
+      },
+      created_at: "2026-10-09T03:30:00Z",
+      audio_url: "/api/podcasts/102/audio",
+      document_title: "Research Methods.epub",
+    },
+    {
+      id: 103,
+      user_id: 1,
+      document_id: 1,
+      scope: "full",
+      section_title: null,
+      length: "long",
+      status: "generating",
+      error: null,
+      duration: null,
+      transcript: null,
+      created_at: "2026-10-09T04:00:00Z",
+      audio_url: null,
+      document_title: "e2e-sample.pdf",
+    },
+    {
+      id: 104,
+      user_id: 1,
+      document_id: 2,
+      scope: "section",
+      section_title: "Chapter 3: Results",
+      length: "medium",
+      status: "failed",
+      error: "Synthesis timeout",
+      duration: null,
+      transcript: null,
+      created_at: "2026-10-09T04:15:00Z",
+      audio_url: null,
+      document_title: "Research Methods.epub",
+    },
+  ]
+
+  await page.addInitScript(() => localStorage.setItem("token", "podcast-test-token"))
+
+  await page.route("**/api/**", async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+
+    if (url.pathname === "/api/auth/me") {
+      return route.fulfill({
+        json: { id: 1, username: "podcast.tester", is_admin: false, created_at: "2026-10-01T00:00:00Z" },
+      })
+    }
+
+    if (url.pathname === "/api/notebooks") {
+      return route.fulfill({ json: [] })
+    }
+
+    if (url.pathname === "/api/documents/library") {
+      return route.fulfill({
+        json: {
+          documents: [
+            {
+              id: 1,
+              user_id: 1,
+              notebook_id: null,
+              title: "e2e-sample.pdf",
+              format: "pdf",
+              file_size: 1024,
+              num_pages: 2,
+              processing_status: "completed",
+              created_at: "2026-10-01T00:00:00Z",
+              last_read_page: 1,
+              last_read_at: "2026-10-08T00:00:00Z",
+              last_read_position: null,
+            },
+            {
+              id: 2,
+              user_id: 1,
+              notebook_id: null,
+              title: "Research Methods.epub",
+              format: "epub",
+              file_size: 2048,
+              num_pages: 50,
+              processing_status: "completed",
+              created_at: "2026-10-02T00:00:00Z",
+              last_read_page: null,
+              last_read_at: null,
+              last_read_position: null,
+            },
+          ],
+          total: 2,
+          library_total: 2,
+          reading_count: 1,
+          processing_count: 0,
+          failed_count: 0,
+          formats: { pdf: 1, epub: 1 },
+          recent: [],
+        },
+      })
+    }
+
+    if (url.pathname === "/api/podcasts") {
+      if (options.error) {
+        return route.fulfill({ status: 500, json: { detail: "Internal Server Error" } })
+      }
+      if (options.empty) {
+        return route.fulfill({ json: [] })
+      }
+      return route.fulfill({ json: podcasts })
+    }
+
+    if (url.pathname === "/api/podcasts/101/audio") {
+      if (options.delayAudio101) {
+        await options.delayAudio101
+      }
+      if (options.audioError) {
+        return route.fulfill({ status: 404, json: { detail: "Audio not found" } })
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "audio/wav",
+        body: SILENT_WAV_BUFFER,
+      })
+    }
+
+    if (url.pathname === "/api/podcasts/102/audio") {
+      return route.fulfill({
+        status: 200,
+        contentType: "audio/wav",
+        body: SILENT_WAV_BUFFER,
+      })
+    }
+
+    if (url.pathname === "/api/documents/1/file") {
+      return route.fulfill({
+        path: "fixtures/e2e-sample.pdf",
+        contentType: "application/pdf",
+      })
+    }
+
+    if (url.pathname === "/api/documents/1") {
+      return route.fulfill({
+        json: {
+          id: 1,
+          user_id: 1,
+          notebook_id: null,
+          title: "e2e-sample.pdf",
+          format: "pdf",
+          file_size: 1024,
+          num_pages: 2,
+          processing_status: "completed",
+          created_at: "2026-10-01T00:00:00Z",
+          last_read_page: 1,
+          last_read_at: null,
+          last_read_position: null,
+        },
+      })
+    }
+
+    if (url.pathname === "/api/settings") {
+      return route.fulfill({
+        json: {
+          llm: { active: "omniroute", backends: [] },
+          tts: { default_voice: "test" },
+          export: { enabled: false },
+        },
+      })
+    }
+
+    if (url.pathname.startsWith("/api/documents/")) {
+      return route.fulfill({ json: [] })
+    }
+
+    return route.fulfill({ json: [] })
+  })
+}
+
+test("podcast gallery lists all-book podcasts with titles, durations, and book links", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await expect(page.getByRole("heading", { name: "Podcasts", exact: true })).toBeVisible()
+  await expect(page.getByText("Deep Dive into Sample Document")).toBeVisible()
+  await expect(page.getByText("Research Methods Overview")).toBeVisible()
+
+  const sampleBookLink = page.getByTestId("podcast-card-101").getByRole("link", { name: "Open source book e2e-sample.pdf" })
+  await expect(sampleBookLink).toBeVisible()
+  await expect(sampleBookLink).toHaveAttribute("href", "/dashboard/read/1")
+
+  const methodsBookLink = page.getByTestId("podcast-card-102").getByRole("link", { name: "Open source book Research Methods.epub" })
+  await expect(methodsBookLink).toBeVisible()
+  await expect(methodsBookLink).toHaveAttribute("href", "/dashboard/read/2")
+})
+
+test("generating and failed podcasts display non-playable status badges", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  const generatingCard = page.getByTestId("podcast-card-103")
+  await expect(generatingCard).toBeVisible()
+  await expect(generatingCard.getByText("Generating")).toBeVisible()
+  await expect(page.getByTestId("podcast-play-103")).toHaveCount(0)
+
+  const failedCard = page.getByTestId("podcast-card-104")
+  await expect(failedCard).toBeVisible()
+  await expect(failedCard.getByText("Failed")).toBeVisible()
+  await expect(page.getByTestId("podcast-play-104")).toHaveCount(0)
+})
+
+test("podcast gallery renders empty state when no podcasts exist", async ({ page }) => {
+  await setupMockPodcasts(page, { empty: true })
+  await page.goto("/dashboard")
+
+  await expect(page.getByTestId("podcast-empty-state")).toBeVisible()
+  await expect(page.getByText("No podcasts generated yet")).toBeVisible()
+})
+
+test("podcast gallery renders error state with retry on failure", async ({ page }) => {
+  await setupMockPodcasts(page, { error: true })
+  await page.goto("/dashboard")
+
+  await expect(page.locator(".podcast-empty-state[role='alert']")).toBeVisible()
+  await expect(page.getByText("Podcasts could not be loaded")).toBeVisible()
+  await expect(page.getByRole("button", { name: "Try again" })).toBeVisible()
+})
+
+test("podcast in-place playback reveals bottom player with functional audio controls", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  const playButton = page.getByTestId("podcast-play-101")
+  await expect(playButton).toBeVisible()
+  await playButton.click()
+
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Deep Dive into Sample Document")).toBeVisible()
+
+  const pauseButton = bottomPlayer.getByRole("button", { name: "Pause" })
+  await expect(pauseButton).toBeVisible()
+
+  await expect(bottomPlayer.getByText("0:10")).toBeVisible()
+
+  await pauseButton.click()
+  const resumeButton = bottomPlayer.getByRole("button", { name: "Play", exact: true })
+  await expect(resumeButton).toBeVisible()
+
+  await resumeButton.click()
+  await expect(bottomPlayer.getByRole("button", { name: "Pause" })).toBeVisible()
+
+  const forwardButton = bottomPlayer.getByRole("button", { name: "Fast forward 15 seconds" })
+  await expect(forwardButton).toBeVisible()
+  await forwardButton.click()
+
+  const speedButton = bottomPlayer.getByRole("button", { name: /Playback speed/ })
+  await expect(speedButton).toBeVisible()
+  await speedButton.click()
+  await expect(bottomPlayer.getByText("1.25x")).toBeVisible()
+
+  const seekSlider = bottomPlayer.getByRole("slider", { name: "Seek audio" })
+  await expect(seekSlider).toBeVisible()
+  await seekSlider.fill("5")
+})
+
+test("rapid podcast switching regression: delayed audio A does not revoke faster audio B", async ({ page }) => {
+  let releaseAudioA: (() => void) | null = null
+  const audioAHold = new Promise<void>((resolve) => {
+    releaseAudioA = resolve
+  })
+
+  await setupMockPodcasts(page, {
+    delayAudio101: audioAHold,
+  })
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-play-101").click()
+  await page.getByTestId("podcast-play-102").click()
+
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Research Methods Overview")).toBeVisible()
+  await expect(bottomPlayer.getByRole("button", { name: "Pause" })).toBeVisible()
+
+  if (releaseAudioA) {
+    (releaseAudioA as () => void)()
+  }
+
+  await page.waitForTimeout(500)
+  await expect(bottomPlayer.getByText("Research Methods Overview")).toBeVisible()
+  await expect(bottomPlayer.getByRole("button", { name: "Pause" })).toBeVisible()
+})
+
+test("navigating away to documents view unmounts gallery and cleans up playback", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-play-101").click()
+  await expect(page.getByTestId("bottom-player")).toBeVisible()
+
+  const allDocumentsButton = page.locator(".library-navigation").getByRole("button", { name: /All documents/ })
+  await allDocumentsButton.click()
+
+  await expect(page.getByTestId("bottom-player")).toHaveCount(0)
+})
+
+test("playback failure displays visible error alert", async ({ page }) => {
+  await setupMockPodcasts(page, { audioError: true })
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-play-101").click()
+  const errorAlert = page.locator(".podcast-playback-error[role='alert']")
+  await expect(errorAlert).toBeVisible()
+  await expect(errorAlert).toContainText("Unable to play podcast")
+})
+
+test("podcast navigation link in sidebar opens dedicated podcasts view", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  const sidebarPodcastLink = page.locator(".library-navigation").getByRole("link", { name: "Podcasts" })
+  await expect(sidebarPodcastLink).toBeVisible()
+  await sidebarPodcastLink.click()
+
+  await expect(page).toHaveURL(/\/dashboard\?view=podcasts/)
+  await expect(sidebarPodcastLink).toHaveClass(/is-active/)
+
+  const allDocumentsButton = page.locator(".library-navigation").getByRole("button", { name: /All documents/ })
+  await expect(allDocumentsButton).not.toHaveClass(/is-active/)
+  await expect(allDocumentsButton).toHaveAttribute("aria-pressed", "false")
+})
+
+test("source book link navigates to reader page without document errors", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  const sampleBookLink = page.getByTestId("podcast-card-101").getByRole("link", { name: "Open source book e2e-sample.pdf" })
+  await sampleBookLink.click()
+
+  await expect(page).toHaveURL(/\/dashboard\/read\/1$/)
+  await expect(page.getByText("This document is unavailable")).toHaveCount(0)
+  await expect(page.locator("#pdf-page-container-1 canvas").first()).toBeVisible()
+})
+
+test("podcast gallery layout is responsive on phone with no horizontal overflow", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.setViewportSize({ width: 375, height: 667 })
+  await page.goto("/dashboard")
+
+  await expect(page.getByRole("heading", { name: "Podcasts", exact: true })).toBeVisible()
+  await expect(page.getByTestId("podcast-card-101")).toBeVisible()
+
+  await page.getByTestId("podcast-play-101").click()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+
+  const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth)
+  const clientWidth = await page.evaluate(() => document.documentElement.clientWidth)
+  expect(scrollWidth).toBeLessThanOrEqual(clientWidth)
+
+  const playerScrollWidth = await bottomPlayer.evaluate((element) => element.scrollWidth)
+  const windowWidth = await page.evaluate(() => window.innerWidth)
+  expect(playerScrollWidth).toBeLessThanOrEqual(windowWidth)
+})

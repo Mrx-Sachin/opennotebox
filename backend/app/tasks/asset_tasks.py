@@ -5,7 +5,7 @@ from app.models import Document, LibraryEntry
 from app.services.asset_lifecycle import delete_unreferenced_asset, remove_asset_files
 
 
-@celery_app.task(bind=True, max_retries=20, soft_time_limit=30, time_limit=45)
+@celery_app.task(bind=True, max_retries=80, soft_time_limit=30, time_limit=45)
 def collect_unreferenced_asset(self, doc_id: int):
     with SessionLocal() as db:
         doc = db.query(Document).filter(Document.id == doc_id).with_for_update().first()

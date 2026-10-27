@@ -22,7 +22,7 @@ services:
   # root instead of widening CORS to paper over it, and what makes the app a
   # secure context so browser APIs restricted to HTTPS actually exist.
   traefik:
-    image: traefik:v3.0
+    image: ${TRAEFIK_IMAGE:-traefik:v3.7.14}
     ports:
       # Explicitly IPv4. An unqualified "443:443" makes Docker listen on both
       # stacks, and a host with an ISP-assigned global IPv6 address is then

@@ -30,6 +30,34 @@ from app.routers import shared_library
 from app.services.http_metrics import MetricsMiddleware
 from app.services.db_monitor import db_pool_monitor
 from app.services.system_monitor import run_system_monitor, update_system_stats
+from app.services.upload_guard import UploadGuardMiddleware
+
+
+class SecurityHeadersMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                response_headers = list(message.get("headers", []))
+                header_names = {existing_name.lower() for existing_name, _ in response_headers}
+                if b"x-content-type-options" not in header_names:
+                    response_headers.append((b"x-content-type-options", b"nosniff"))
+                if b"x-frame-options" not in header_names:
+                    response_headers.append((b"x-frame-options", b"DENY"))
+                if b"referrer-policy" not in header_names:
+                    response_headers.append((b"referrer-policy", b"strict-origin-when-cross-origin"))
+                if b"permissions-policy" not in header_names:
+                    response_headers.append((b"permissions-policy", b"camera=(), microphone=(), geolocation=()"))
+                message["headers"] = response_headers
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 @asynccontextmanager
@@ -90,6 +118,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(UploadGuardMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS must be added before metrics middleware so CORS preflight responses
 # are not recorded as normal requests.
