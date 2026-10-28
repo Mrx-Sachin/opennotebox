@@ -157,7 +157,7 @@ export default function NowReadingModal({ onClose }: NowReadingModalProps) {
         <header className="now-reading-header">
           <div className="now-reading-top-bar">
             <div className="now-reading-badge">
-              <BookOpen size={14} className="text-indigo-400" />
+              <BookOpen size={14} className="text-purple-400" />
               <span>Narration</span>
             </div>
 
@@ -219,7 +219,7 @@ export default function NowReadingModal({ onClose }: NowReadingModalProps) {
             <div className="now-reading-empty-sentences">
               {isPreparing ? (
                 <div className="now-reading-status-card">
-                  <Loader2 size={20} className="animate-spin text-indigo-400" />
+                  <Loader2 size={20} className="animate-spin text-purple-400" />
                   <p className="now-reading-status-title">Preparing audio for page {currentPage}</p>
                   <p className="now-reading-status-sub">Synthesizing natural voice narration...</p>
                 </div>

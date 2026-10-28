@@ -266,15 +266,13 @@ test.describe("Continuous Source Book Narration", () => {
       })
     }).toBe(true)
 
+    await page.getByRole("link", { name: "Library home" }).click()
+    await expect(page).toHaveURL(/\/dashboard$/)
+
     const bottomBar = page.getByTestId("book-bottom-bar")
     await expect(bottomBar).toBeVisible()
     await expect(page.getByTestId("book-bottom-title")).toHaveText("QA Notebook Guide.pdf")
     await expect(page.getByTestId("book-bottom-page")).toHaveText("Page 1 of 5")
-
-    await page.getByRole("link", { name: "Library home" }).click()
-    await expect(page).toHaveURL(/\/dashboard$/)
-
-    await expect(bottomBar).toBeVisible()
     await expect(page.getByTestId("book-bottom-title")).toHaveText("QA Notebook Guide.pdf")
 
     const audioOnLibrary = await page.evaluate(() => {
@@ -325,9 +323,6 @@ test.describe("Continuous Source Book Narration", () => {
 
     await page.getByRole("button", { name: "Play (Space)", exact: true }).click()
     await expect.poll(() => harness.streamRequests.length).toBeGreaterThan(0)
-
-    const bottomBar = page.getByTestId("book-bottom-bar")
-    await expect(bottomBar).toBeVisible()
 
     await page.getByRole("button", { name: /QA Research Notes/ }).click()
     await expect(page).toHaveURL(/\/dashboard\/read\/61/)
@@ -425,9 +420,10 @@ test.describe("Continuous Source Book Narration", () => {
     await page.getByRole("button", { name: "Play (Space)", exact: true }).click()
     await expect.poll(() => harness.streamRequests.length).toBeGreaterThan(0)
 
+    await page.getByRole("link", { name: "Library home" }).click()
+    await expect(page).toHaveURL(/\/dashboard$/)
     const bottomBar = page.getByTestId("book-bottom-bar")
     await expect(bottomBar).toBeVisible()
-
     await page.getByTestId("book-bottom-expand-btn").click()
     const modal = page.getByTestId("now-reading-modal")
     await expect(modal).toBeVisible()
@@ -497,14 +493,11 @@ test.describe("Continuous Source Book Narration", () => {
     await expect.poll(() => harness.streamRequests.length).toBeGreaterThan(0)
     const session1 = harness.streamRequests[0].sessionId
 
-    const bottomBar = page.getByTestId("book-bottom-bar")
-    await expect(bottomBar).toBeVisible()
-
     await page.getByRole("link", { name: "Library home" }).click()
     await expect(page).toHaveURL(/\/dashboard$/)
 
     await page.getByTestId("book-bottom-stop-btn").click()
-    await expect(bottomBar).toHaveCount(0)
+    await expect(page.getByTestId("book-bottom-bar")).toHaveCount(0)
 
     await expect.poll(() =>
       harness.releaseEvents.some((ev) => ev.allSession === true)
@@ -522,7 +515,7 @@ test.describe("Continuous Source Book Narration", () => {
         win.ttsEngine.skipPage(1)
       }
     })
-    await expect(bottomBar).toHaveCount(0)
+    await expect(page.getByTestId("book-bottom-bar")).toHaveCount(0)
 
     await page.getByRole("link", { name: "Open Unfiled documents" }).click()
     await expect(page).toHaveURL(/\/dashboard\?unfiled=true/)
@@ -533,7 +526,8 @@ test.describe("Continuous Source Book Narration", () => {
 
     await page.getByRole("button", { name: "Play (Space)", exact: true }).click()
     await expect.poll(() => harness.streamRequests.length).toBeGreaterThan(1)
-    await expect(bottomBar).toBeVisible()
+    await page.getByRole("link", { name: "Library home" }).click()
+    await expect(page.getByTestId("book-bottom-bar")).toBeVisible()
     await expect(page.getByTestId("book-bottom-title")).toHaveText("QA Research Notes.pdf")
   })
 })

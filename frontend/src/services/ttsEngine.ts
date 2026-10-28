@@ -618,10 +618,11 @@ class TtsEngine {
         : 1
     const provisionalTitle = `Document ${docId}`
 
+    const isSamePage = currentState.activeReading?.docId === docId && currentState.tts.docId === docId && currentState.tts.page === pageNum
     useReader.setState((state) => ({
       activePodcast: null,
       expandedPodcast: null,
-      narrationSentences: [],
+      narrationSentences: isSamePage && state.narrationSentences.length > 0 ? state.narrationSentences : [],
       activeReading: preserveFollow && state.activeReading?.docId === docId
         ? state.activeReading
         : {

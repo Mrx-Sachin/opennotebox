@@ -20,11 +20,13 @@ export default function BookBottomBar() {
   const activeReading = useReader((state) => state.activeReading)
   const expandedReading = useReader((state) => state.expandedReading)
   const setExpandedReading = useReader((state) => state.setExpandedReading)
+  const selectedDocId = useReader((state) => state.selectedDocId)
   const activePodcast = useReader((state) => state.activePodcast)
   const tts = useReader((state) => state.tts)
   const playerRef = useRef<HTMLDivElement>(null)
 
-  const visible = activeReading != null && tts.status !== "idle" && activePodcast == null
+  const isInsideSourceDoc = selectedDocId != null && activeReading != null && selectedDocId === activeReading.docId
+  const visible = activeReading != null && tts.status !== "idle" && activePodcast == null && !isInsideSourceDoc
 
   useEffect(() => {
     const player = playerRef.current
@@ -44,7 +46,7 @@ export default function BookBottomBar() {
     }
   }, [visible])
 
-  if (!activeReading || tts.status === "idle" || activePodcast != null) {
+  if (!activeReading || tts.status === "idle" || activePodcast != null || isInsideSourceDoc) {
     return expandedReading ? (
       <NowReadingModal onClose={() => setExpandedReading(false)} />
     ) : null

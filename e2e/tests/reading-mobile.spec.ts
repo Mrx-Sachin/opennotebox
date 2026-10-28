@@ -253,9 +253,6 @@ test.describe("Mobile reading experience", () => {
 
     await expect.poll(() => harness.streamRequests.length).toBeGreaterThan(0)
 
-    const bottomBar = page.getByTestId("book-bottom-bar")
-    await expect(bottomBar).toBeVisible()
-
     const backLink = page.getByRole("link", { name: "Back to library" })
     if (await backLink.isVisible()) {
       await backLink.click()
@@ -264,6 +261,7 @@ test.describe("Mobile reading experience", () => {
     }
     await page.waitForURL(/\/dashboard(?:\?.*)?$/)
     await page.addStyleTag({ content: "nextjs-portal { display: none !important; pointer-events: none !important; }" })
+    const bottomBar = page.getByTestId("book-bottom-bar")
     await expect(bottomBar).toBeVisible()
 
     await page.screenshot({ path: "/tmp/phone-reading-bottom-player.png" })
@@ -331,3 +329,43 @@ test.describe("Mobile reading experience", () => {
     expect(returnAudioState).toBe(true)
   })
 })
+
+  test("clicking another line seeks in-place without triggering empty state refresh", async ({ page }) => {
+    const harness = await setupMobileHarness(page)
+
+    await page.goto("/dashboard/read/60")
+    await expect(page.locator("#pdf-page-container-1 canvas").first()).toBeVisible({ timeout: 20000 })
+    await page.addStyleTag({ content: "nextjs-portal { display: none !important; pointer-events: none !important; }" })
+
+    const playBtn = page.getByRole("button", { name: "Play (Space)", exact: true })
+    await expect(playBtn).toBeVisible()
+    await playBtn.click()
+
+    await expect.poll(() => harness.streamRequests.length).toBeGreaterThan(0)
+
+    const backLink = page.getByRole("link", { name: "Back to library" })
+    if (await backLink.isVisible()) {
+      await backLink.click()
+    } else {
+      await page.locator('header a[href^="/dashboard"]').first().click()
+    }
+    await page.waitForURL(/\/dashboard(?:\?.*)?$/)
+    const bottomBar = page.getByTestId("book-bottom-bar")
+    await expect(bottomBar).toBeVisible()
+    await page.getByTestId("book-bottom-title").click()
+    const modal = page.getByTestId("now-reading-modal")
+    await expect(modal).toBeVisible()
+
+    const firstSentence = page.getByTestId("sentence-item-0")
+    const secondSentence = page.getByTestId("sentence-item-1")
+    await expect(firstSentence).toBeVisible()
+    await expect(secondSentence).toBeVisible()
+
+    // Click line 2
+    await secondSentence.click()
+
+    // Sentences must NOT unmount or show empty state preparing card
+    await expect(page.locator(".now-reading-empty-sentences")).toHaveCount(0)
+    await expect(secondSentence).toBeVisible()
+    await expect(secondSentence).toHaveAttribute("data-active", "true")
+  })
