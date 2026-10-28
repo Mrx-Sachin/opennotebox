@@ -32,7 +32,7 @@ status() {
   docker compose "${COMPOSE_FILES[@]}" ps
   echo ""
   echo "=== Cloudflare Tunnel Status ==="
-  systemctl --user status cloudflared-deepread.service --no-pager || true
+  systemctl --user status cloudflared-opennotebox.service --no-pager || true
 }
 
 logs() {

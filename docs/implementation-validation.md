@@ -79,7 +79,7 @@ The final backend suite passed 325 tests with one Alembic regression test
 skipped in the shared local interpreter. Thirteen mocked desktop/phone
 browser tests and the opt-in live notebook check passed. Production frontend
 and Docker builds passed, and the preview health endpoint is healthy after
-deployment. The live check reuses `deepread.qa`, previews without leaving the
+deployment. The live check reuses `opennotebox.qa`, previews without leaving the
 picker, moves two sources from A to B, refreshes the reader, verifies the
 sidebar excludes the source notebook's remaining book, and returns to B.
 
@@ -101,7 +101,7 @@ test warning is SQLAlchemy skipping reflection of the SQLite expression index
 The final backend and frontend Docker images built successfully. Twelve
 mocked desktop/phone library and notebook browser tests passed. Live notebook
 filing and shared publication, catalog search, authenticated PDF preview, and
-unsharing passed with the persistent `deepread.qa` account. Its fixture was
+unsharing passed with the persistent `opennotebox.qa` account. Its fixture was
 left unpublished after the check.
 
 The disposable PostgreSQL validation upgraded, downgraded, and upgraded the
@@ -109,7 +109,7 @@ shared-library schema while preserving personal notebook and progress state.
 Twelve concurrent add requests created exactly one membership. The clone was
 dropped afterward. A mode-600 database backup was made before the preview
 migration at
-`/home/mrx/.local/state/deepread/preview/testing/database-pre-deploy-20261008.dump`.
+`/home/mrx/.local/state/opennotebox/preview/testing/database-pre-deploy-20261008.dump`.
 
 The preview uses host bridge port 8767 for OmniRoute because the API container
 could not reach the previous endpoint. From the API container, `/v1/models`

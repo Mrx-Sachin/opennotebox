@@ -36,8 +36,8 @@
 
 ## 2026-10-05: separate running preview
 
-- The user requested a different port. Run the new application at localhost:3013 using the `deepread-preview` Compose project. Keep the original localhost:3003 installation running.
-- Clone accounts, documents, and artifacts into an independent PostgreSQL/pgvector database and private host storage under `/home/mrx/.local/state/deepread/preview`. Apply the schema migration only to this clone. Use a distinct JWT secret and Redis instance.
+- The user requested a different port. Run the new application at localhost:3013 using the `opennotebox-preview` Compose project. Keep the original localhost:3003 installation running.
+- Clone accounts, documents, and artifacts into an independent PostgreSQL/pgvector database and private host storage under `/home/mrx/.local/state/opennotebox/preview`. Apply the schema migration only to this clone. Use a distinct JWT secret and Redis instance.
 - Start an independent streaming OmniRoute bridge on port 8767, inside the host firewall's existing Docker-accessible bridge-port range. Reuse the existing TTS service through a dedicated shared Docker network so a second GPU model is not loaded.
 - Install locked backend dependencies into the container system interpreter using frozen export and uv pip. Do not create a new Python virtual environment.
 
@@ -120,7 +120,7 @@
 
 ## 2026-10-09: architecture branch preview startup
 
-- The user requested starting the application for manual testing. Rebuild the preview backend from `refactor/deepen-domain-boundaries` and recreate only its API, default worker, and TTS worker. Explicitly select the `deepread-preview` Compose project and its private environment file so the repository's original project settings cannot redirect these operations.
+- The user requested starting the application for manual testing. Rebuild the preview backend from `refactor/deepen-domain-boundaries` and recreate only its API, default worker, and TTS worker. Explicitly select the `opennotebox-preview` Compose project and its private environment file so the repository's original project settings cannot redirect these operations.
 - Keep the existing preview frontend, gateway, model bridge, PostgreSQL, Redis, and shared TTS engine running. The frontend source and schema have not changed in this branch.
 - Both port 3013 and the original port 3003 return healthy. The preview API's deployed chat, chapter, and asset service checksums match this branch, and its login page loads in the collaborative browser. Use `http://localhost:3013/dashboard` with the existing preview account credentials for manual testing.
 
@@ -151,7 +151,7 @@
 - Both integrated Gemini 3.8 Flash agents completed implementation and UI verification. The reader suite passes seven regressions, including rapid book switching, same-book clicks, confirmed saves with cached sidebar metadata, refresh while an older save is in flight, deliberate page-one navigation, failed saves, and account isolation.
 - The podcast suite passes eleven regressions covering listing and status badges, empty/error states, actual WAV playback and controls, delayed-response switching, navigation cleanup, failure notices, source-book navigation, and 375px layouts. Five existing library checks and twelve notebook/shared-library desktop and phone checks also pass. These comprise 35 distinct browser tests across the combined and related suites.
 - Full backend validation passes 366 tests in 96.48 seconds with the unchanged SQLite expression-index reflection warning. Ruff, TypeScript, whitespace checks, and frontend lint pass. Correct the new playback-cleanup ref warning found during the first production build; the final frontend Docker build completes without that warning.
-- Recreate only the preview API and frontend through the explicitly selected deepread-preview Compose project. Both preview port 3013 and original port 3003 remain healthy. The deployed podcast router checksum matches the source; authenticated all-book listing returns an empty list for the QA account, and document-specific response fields remain unchanged.
+- Recreate only the preview API and frontend through the explicitly selected opennotebox-preview Compose project. Both preview port 3013 and original port 3003 remain healthy. The deployed podcast router checksum matches the source; authenticated all-book listing returns an empty list for the QA account, and document-specific response fields remain unchanged.
 - Gemini verifies the built application through the native browser on port 3013. The reader retains page two after rapid book switching, same-book selection, and reload, with a rendered page-two canvas and no application console errors. The podcast section, dedicated navigation, desktop layout, and 375px empty-state layout are verified live. Because the QA account has no generated podcasts, actual playback is proven by the hermetic WAV browser tests rather than live generated audio. Do not generate podcasts, call application model providers, or fabricate database episodes just for this smoke test.
 - Keep the preview at http://localhost:3013/dashboard running for the user. Retire the temporary port-3114 development server and close the completed agents. Preserve the discontinued Astra task artifacts and worktrees outside the repository.
 
@@ -198,3 +198,20 @@
 - Store source metadata and the existing parsed narration sentences for a dashboard-level bottom player and a text-focused Now reading view. Reuse extracted text without additional OCR or generation. Closing this view leaves playback running; Open in book explicitly selects the currently narrated source page.
 - Last viewed page remains a viewing preference. Background narration must not overwrite another book's page or saved progress. Automatic PDF following and sentence highlighting apply only when the displayed document matches the narration source. Selecting PDF text alone does not stop playback.
 - Integrated Gemini 3.8 Flash workers own source-bound playback, the reading UI, and browser reproduction/regressions with disjoint files. Preserve the current release worktree and production data, validate the compiled frontend, and deploy only the frontend with its previous image retained for rollback.
+
+## 2026-10-28: Fix Claude Code 400 "tool use concurrency issues" on skill invocation
+
+- Symptom: Claude Code session `0e137835-3d8a-43bb-b267-e432155a9791` failed with `API Error: 400 due to tool use concurrency issues. Run /rewind to recover the conversation.` whenever invoking `Skill(artifact-design)` or other tools where skill instructions or user text follow the tool result.
+- Root Cause:
+  1. In Claude Code, executing a skill generates a user turn with both `tool_result` ("Launching skill: artifact-design") and injected `text` ("## Page contract...").
+  2. The local model-router (:20130) forwards Anthropic Messages requests to OmniRoute (:20128).
+  3. When OmniRoute translated the request via `open-sse/translator/request/openai-to-gemini/helpers.ts`, `mergeConsecutiveSameRoleContents` invoked `moveFunctionResponsesLast([...last.parts, ...entry.parts])`.
+  4. `moveFunctionResponsesLast` erroneously partitioned the parts and placed `others` (text) before `responses` (`functionResponse`), resulting in `[text, functionResponse]`.
+  5. When Google Cloud Code / Antigravity forwarded this Gemini `contents` representation to Vertex AI Claude Opus, Vertex AI received the `text` block before the `tool_result` block.
+  6. Anthropic Vertex AI strictly requires each `tool_use` to be followed immediately by its corresponding `tool_result` before any user text; otherwise it rejects with HTTP 400 `messages.<idx>: tool_use ids were found without tool_result blocks immediately after: <id>`.
+  7. Claude Code caught this specific 400 message in `AXt(e)` and displayed the synthetic error message: `API Error: 400 due to tool use concurrency issues. Run /rewind to recover the conversation.`
+- Fix:
+  - In `open-sse/translator/request/openai-to-gemini/helpers.ts` (and corresponding runtime chunks in `/home/mrx/.nvm/versions/node/v22.23.1/lib/node_modules/omniroute/dist/.build/next/server/chunks/`), updated `moveFunctionResponsesLast` to place `responses` first: `return [...responses, ...others]`.
+  - Restarted `omniroute.service` via systemd.
+  - Verified with live E2E test cases on both Vertex Claude Opus and Gemini Flash: both succeed with HTTP 200 and valid tool call generation.
+  - Replayed the exact 231-message request payload that previously failed with 400; verified it now completes with HTTP 200.

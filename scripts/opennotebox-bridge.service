@@ -5,8 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/mrx/local/github/deepread
-ExecStart=/usr/bin/python3 /home/mrx/local/github/deepread/tools/omniroute_bridge.py
+WorkingDirectory=/home/mrx/local/github/opennotebox
+ExecStart=/usr/bin/python3 /home/mrx/local/github/opennotebox/tools/omniroute_bridge.py
 Restart=always
 RestartSec=3
 KillMode=mixed

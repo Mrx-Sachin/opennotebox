@@ -6,11 +6,11 @@ import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-STATE = Path.home() / ".local/state/deepread/preview"
+STATE = Path.home() / ".local/state/opennotebox/preview"
 ACCOUNT = STATE / "testing/account.json"
 ACCOUNT.parent.mkdir(parents=True, exist_ok=True)
 if not ACCOUNT.exists():
-    ACCOUNT.write_text(json.dumps({"username": "deepread.qa", "password": secrets.token_urlsafe(32)}))
+    ACCOUNT.write_text(json.dumps({"username": "opennotebox.qa", "password": secrets.token_urlsafe(32)}))
     ACCOUNT.chmod(0o600)
 account = json.loads(ACCOUNT.read_text())
 for name in ["guide", "research", "control"]:

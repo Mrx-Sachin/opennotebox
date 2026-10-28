@@ -7,7 +7,7 @@ http://localhost:3003.
 The preview uses its own database, Redis, JWT secret, cloned documents, and
 streaming OmniRoute bridge. Changes made in the preview do not sync back to
 the original installation. Accounts and files were copied on 2026-10-05. TTS
-reuses the existing engine through the `deepread-preview-tts` Docker network.
+reuses the existing engine through the `opennotebox-preview-tts` Docker network.
 The team Shared library is enabled here. The API reaches the Gemini model
 through the host bridge on port 8767.
 
@@ -15,24 +15,24 @@ Run these from the repository directory:
 
 ```sh
 # Start or restart the existing preview.
-docker compose --env-file /home/mrx/.local/state/deepread/preview/preview.env \
+docker compose --env-file /home/mrx/.local/state/opennotebox/preview/preview.env \
   -f docker-compose.preview.yml up -d --no-build
 
 # Stop the preview, keeping its database and documents.
-docker compose --env-file /home/mrx/.local/state/deepread/preview/preview.env \
+docker compose --env-file /home/mrx/.local/state/opennotebox/preview/preview.env \
   -f docker-compose.preview.yml stop
 ```
 
 Private preview configuration and copied files are stored under
-`/home/mrx/.local/state/deepread/preview`. PostgreSQL and Redis use separate
-`deepread-preview` Docker volumes. The preview gateway publishes only port
+`/home/mrx/.local/state/opennotebox/preview`. PostgreSQL and Redis use separate
+`opennotebox-preview` Docker volumes. The preview gateway publishes only port
 3013 on loopback; use an SSH tunnel for access from another computer.
 
 If the original TTS container is recreated, reconnect it to the shared
 network so preview narration can reach it:
 
 ```sh
-docker network connect --alias tts deepread-preview-tts "$(docker compose ps -q tts)"
+docker network connect --alias tts opennotebox-preview-tts "$(docker compose ps -q tts)"
 ```
 
 ## Notebook homepage
@@ -53,8 +53,8 @@ annotations, chat and reading progress remain personal.
 
 ## Reusable browser QA
 
-The private `deepread.qa` account is reused for live checks. Its credentials
-stay in `~/.local/state/deepread/preview/testing/account.json` with mode 600.
+The private `opennotebox.qa` account is reused for live checks. Its credentials
+stay in `~/.local/state/opennotebox/preview/testing/account.json` with mode 600.
 Prepare the same account and small PDF fixtures, then run the opt-in check:
 
 ```sh

@@ -18,7 +18,7 @@ from redis.exceptions import RedisError
 from app.config import settings
 
 _ACQUIRE_SCRIPT = """
--- deepread:llm-admission:acquire
+-- opennotebox:llm-admission:acquire
 local clock = redis.call('TIME')
 local now = (tonumber(clock[1]) * 1000) + math.floor(tonumber(clock[2]) / 1000)
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now)
@@ -37,7 +37,7 @@ redis.call('PEXPIRE', KEYS[2], tonumber(ARGV[2]) * 2)
 return 1
 """
 _RENEW_SCRIPT = """
--- deepread:llm-admission:renew
+-- opennotebox:llm-admission:renew
 local clock = redis.call('TIME')
 local expires = (tonumber(clock[1]) * 1000)
   + math.floor(tonumber(clock[2]) / 1000)
@@ -53,7 +53,7 @@ redis.call('PEXPIRE', KEYS[2], tonumber(ARGV[2]) * 2)
 return 1
 """
 _RELEASE_SCRIPT = """
--- deepread:llm-admission:release
+-- opennotebox:llm-admission:release
 redis.call('ZREM', KEYS[1], ARGV[1])
 redis.call('ZREM', KEYS[2], ARGV[1])
 return 1

@@ -4,8 +4,8 @@ import subprocess
 
 
 REPO = Path(__file__).resolve().parent.parent
-STATE = Path.home() / ".local/state/deepread/preview"
-DATABASE = "deepread_shared_migration_check"
+STATE = Path.home() / ".local/state/opennotebox/preview"
+DATABASE = "opennotebox_shared_migration_check"
 COMPOSE = [
     "docker", "compose", "--env-file", str(STATE / "preview.env"),
     "-f", "docker-compose.preview.yml",
@@ -15,7 +15,7 @@ COMPOSE = [
 def postgres_sql(sql):
     subprocess.run(
         COMPOSE + ["exec", "-T", "postgres", "psql", "-v", "ON_ERROR_STOP=1",
-                   "-U", "deepread_preview", "-d", "postgres", "-c", sql],
+                   "-U", "opennotebox_preview", "-d", "postgres", "-c", sql],
         cwd=REPO, check=True,
     )
 
@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-url = make_url(os.environ["DATABASE_URL"]).set(database="deepread_shared_migration_check")
+url = make_url(os.environ["DATABASE_URL"]).set(database="opennotebox_shared_migration_check")
 os.environ["DATABASE_URL"] = url.render_as_string(hide_password=False)
 engine = create_engine(url)
 with engine.connect() as connection:
@@ -83,7 +83,7 @@ try:
     with (STATE / "testing/database-before-shared-library.dump").open("rb") as backup:
         subprocess.run(
             COMPOSE + ["exec", "-T", "postgres", "pg_restore", "-U",
-                       "deepread_preview", "-d", DATABASE, "--no-owner", "--exit-on-error"],
+                       "opennotebox_preview", "-d", DATABASE, "--no-owner", "--exit-on-error"],
             cwd=REPO, stdin=backup, check=True,
         )
     subprocess.run(

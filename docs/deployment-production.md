@@ -17,12 +17,12 @@ PostgreSQL/pgvector images for the target architecture, then put each registry
 reference in `.env.prod` using its immutable digest form:
 
 ```dotenv
-BACKEND_IMAGE=registry.example/deepread-backend@sha256:<digest>
-FRONTEND_IMAGE=registry.example/deepread-frontend@sha256:<digest>
-TTS_IMAGE=registry.example/deepread-tts@sha256:<digest>
+BACKEND_IMAGE=registry.example/opennotebox-backend@sha256:<digest>
+FRONTEND_IMAGE=registry.example/opennotebox-frontend@sha256:<digest>
+TTS_IMAGE=registry.example/opennotebox-tts@sha256:<digest>
 TRAEFIK_IMAGE=registry.example/traefik@sha256:<digest>
 REDIS_IMAGE=registry.example/redis@sha256:<digest>
-POSTGRES_IMAGE=registry.example/deepread-postgres-pgvector16@sha256:<digest>
+POSTGRES_IMAGE=registry.example/opennotebox-postgres-pgvector16@sha256:<digest>
 ```
 
 The backend image build context is the repository root so it can bake in the

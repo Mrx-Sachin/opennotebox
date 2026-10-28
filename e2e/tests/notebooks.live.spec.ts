@@ -5,7 +5,7 @@ import { expect, test } from "@playwright/test"
 
 test("live notebook filing, preview and reader context with the reusable QA account", async ({ page, request }) => {
   test.skip(process.env.E2E_LIVE_QA !== "1", "Opt-in check for the isolated preview")
-  const accountPath = process.env.E2E_QA_ACCOUNT_FILE || join(homedir(), ".local/state/deepread/preview/testing/account.json")
+  const accountPath = process.env.E2E_QA_ACCOUNT_FILE || join(homedir(), ".local/state/opennotebox/preview/testing/account.json")
   const account = JSON.parse(readFileSync(accountPath, "utf8"))
   const login = await request.post("/api/auth/login", { data: account })
   expect(login.ok()).toBe(true)

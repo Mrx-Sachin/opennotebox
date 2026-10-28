@@ -104,7 +104,7 @@ class _FakeAdmissionRedis:
                 if expires > now
             }
 
-        if "deepread:llm-admission:acquire" in script:
+        if "opennotebox:llm-admission:acquire" in script:
             global_limit = int(args[2])
             lane_limit = int(args[3])
             if len(self._leases[keys[0]]) >= global_limit:
@@ -116,7 +116,7 @@ class _FakeAdmissionRedis:
                 self._leases[key][args[0]] = expires
             return 1
 
-        if "deepread:llm-admission:renew" in script:
+        if "opennotebox:llm-admission:renew" in script:
             token = args[0]
             if any(token not in self._leases[key] for key in keys):
                 return 0
@@ -125,7 +125,7 @@ class _FakeAdmissionRedis:
                 self._leases[key][token] = expires
             return 1
 
-        if "deepread:llm-admission:release" in script:
+        if "opennotebox:llm-admission:release" in script:
             for key in keys:
                 self._leases[key].pop(args[0], None)
             return 1

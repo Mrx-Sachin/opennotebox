@@ -60,6 +60,6 @@ This is a data-model and authorization change, not just another gallery page. Th
 
 - Backend suite: 340 passed after the optional-metadata regression was added. Ruff passed across backend app and tests. The final run is recorded in `docs/implementation-validation.md`.
 - Disposable PostgreSQL migration round trip preserved notebook and reading state. Twelve concurrent additions created one membership.
-- Live notebook and shared-library browser flows use the same `deepread.qa` account and passed on port 3013. Mocked desktop/phone library checks passed.
+- Live notebook and shared-library browser flows use the same `opennotebox.qa` account and passed on port 3013. Mocked desktop/phone library checks passed.
 - The preview OmniRoute bridge now uses port 8767, which the API container can reach. Health is healthy and model discovery reports the configured Gemini model. No model generation request or 10-20 simultaneous-chat throughput test has been run.
 - Exact-byte uploads deduplicate future copies; historical duplicates remain separate. Versioned reprocessing, semantic discovery, production deployment hardening, and measured concurrency acceptance remain future work.

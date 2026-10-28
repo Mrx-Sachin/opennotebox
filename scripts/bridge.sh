@@ -4,7 +4,7 @@ set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${DIR}/tools/omniroute_bridge.py"
-PIDFILE="/tmp/deepread-bridge.pid"
+PIDFILE="/tmp/opennotebox-bridge.pid"
 LOGFILE="${DIR}/data/bridge.log"
 PORT="${BRIDGE_PORT:-8766}"
 
@@ -39,7 +39,7 @@ is_running() {
 
 start() {
   if is_running; then
-    echo "deepread-bridge already running (pid $(cat "$PIDFILE")) on port ${PORT}"
+    echo "opennotebox-bridge already running (pid $(cat "$PIDFILE")) on port ${PORT}"
     return 0
   fi
   local p
@@ -52,12 +52,12 @@ start() {
   echo "$py_pid" >"$PIDFILE"
   for _ in $(seq 1 20); do
     if is_running && ss -ltn 2>/dev/null | grep -q ":${PORT}"; then
-      echo "deepread-bridge started (pid $(cat "$PIDFILE")) on port ${PORT}"
+      echo "opennotebox-bridge started (pid $(cat "$PIDFILE")) on port ${PORT}"
       return 0
     fi
     sleep 0.1
   done
-  echo "deepread-bridge failed to start; see $LOGFILE" >&2
+  echo "opennotebox-bridge failed to start; see $LOGFILE" >&2
   rm -f "$PIDFILE"
   return 1
 }
@@ -77,7 +77,7 @@ stop() {
     kill -9 "$p" 2>/dev/null || true
   done
   rm -f "$PIDFILE"
-  echo "deepread-bridge stopped"
+  echo "opennotebox-bridge stopped"
 }
 
 status() {

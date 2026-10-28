@@ -125,7 +125,7 @@ class Settings(BaseSettings):
     llm_background_wait_seconds: float = 120.0
     llm_admission_lease_seconds: int = 90
     llm_admission_redis_url: str = "redis://redis:6379/2"
-    llm_admission_key_prefix: str = "deepread:llm-admission"
+    llm_admission_key_prefix: str = "opennotebox:llm-admission"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

@@ -78,7 +78,7 @@ async def test_redis_leases_are_shared_renewed_and_expire(monkeypatch) -> None:
         sync_client.close()
         pytest.skip("local Redis is unavailable")
 
-    prefix = f"deepread:test-llm-admission:{uuid.uuid4().hex}"
+    prefix = f"opennotebox:test-llm-admission:{uuid.uuid4().hex}"
     monkeypatch.setattr(settings, "llm_admission_redis_url", redis_url)
     monkeypatch.setattr(settings, "llm_admission_key_prefix", prefix)
     monkeypatch.setattr(settings, "llm_max_concurrency", 24)

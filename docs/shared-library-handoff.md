@@ -4,7 +4,7 @@ Status: implementation and isolated preview deployment completed on 2026-10-08.
 
 ## Preview
 
-The notebook home, shared catalog, and reader run at http://localhost:3013. The preview uses an independent database, Redis, JWT secret, cloned files, and OmniRoute bridge. The existing `deepread.qa` account is reused for browser checks; its credentials remain outside the repository at `/home/mrx/.local/state/deepread/preview/testing/account.json`.
+The notebook home, shared catalog, and reader run at http://localhost:3013. The preview uses an independent database, Redis, JWT secret, cloned files, and OmniRoute bridge. The existing `opennotebox.qa` account is reused for browser checks; its credentials remain outside the repository at `/home/mrx/.local/state/opennotebox/preview/testing/account.json`.
 
 Uploads are private by default. An eligible uploader can publish a PDF to the signed-in team catalog. People can search by metadata and topic, preview a page, select a whole card, and add the existing asset to their own notebook. Chat, annotations, notes, and reading progress remain private to each membership. Unsharing removes catalog discovery while existing members retain access.
 
