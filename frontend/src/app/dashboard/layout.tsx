@@ -6,6 +6,7 @@ import { getMe } from "@/services/api"
 import { useAuth } from "@/stores/auth"
 import ErrorBoundary from "@/components/layout/ErrorBoundary"
 import PodcastBottomBar from "@/components/library/PodcastBottomBar"
+import BookBottomBar from "@/components/tts/BookBottomBar"
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   const router = useRouter()
@@ -35,6 +36,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
     <ErrorBoundary>
       {children}
       <PodcastBottomBar />
+      <BookBottomBar />
     </ErrorBoundary>
   )
 }

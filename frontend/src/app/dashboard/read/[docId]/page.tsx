@@ -103,7 +103,7 @@ export default function ReaderPage() {
 
   useEffect(() => {
     const state = useReader.getState()
-    if (!state.activePodcast) {
+    if (!state.activePodcast && !state.activeReading) {
       ttsEngine.stop()
     }
   }, [selectedDocId])
@@ -111,6 +111,7 @@ export default function ReaderPage() {
   const handleDelete = async (id: number) => {
     try {
       await deleteDocument(id)
+      if (useReader.getState().activeReading?.docId === id) ttsEngine.stop()
       if (id === selectedDocId) {
         useReader.getState().selectDoc(null)
         router.replace(libraryHref)

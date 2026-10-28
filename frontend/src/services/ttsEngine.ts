@@ -1,4 +1,5 @@
 import {
+  getDocument,
   getPage,
   playSummary,
   getTtsCacheStatus,
@@ -545,8 +546,9 @@ class TtsEngine {
    * reuses already-synthesized audio instead of cold-starting. */
   private spillToNextPage(docId: number, pageNum: number, chunkIdx: number, token: number) {
     if (this.spillQueued) return
-    const numPages = useReader.getState().numPages
-    if (numPages && pageNum >= numPages) return
+    const active = useReader.getState().activeReading
+    const maxPages = active?.docId === docId ? active.numPages : null
+    if (maxPages != null && pageNum >= maxPages) return
     this.spillQueued = true
     void this.loadPageSentences(docId, pageNum + 1)
       .then((next) => {
@@ -601,23 +603,70 @@ class TtsEngine {
       URL.revokeObjectURL(this.summaryBlobUrl)
       this.summaryBlobUrl = null
     }
-    // Auto-advance (preserveFollow) is a continuation of what's already
-    // playing, not a new user action. It must not re-engage follow-reading:
-    // otherwise a page jump made while audio plays is undone the instant the
-    // old page's stream rolls over to the next page. User-initiated starts
-    // (click, seek, resume) keep the default and (re)engage it.
-    if (!preserveFollow) useReader.getState().setFollowReading(true)
 
     this.startHeartbeat()
-    useReader.getState().setActivePodcast(null)
-    useReader.getState().setExpandedPodcast(null)
-    this.set({ status: "preparing", docId, page: pageNum, sentenceIndex: fromSentence })
+
+    this.docId = docId
+    this.page = pageNum
+    this.pageAudio = null
+    this.chunkStarts = []
+
+    const currentState = useReader.getState()
+    const provisionalNumPages =
+      currentState.selectedDocId === docId && currentState.numPages > 0
+        ? currentState.numPages
+        : 1
+    const provisionalTitle = `Document ${docId}`
+
+    useReader.setState((state) => ({
+      activePodcast: null,
+      expandedPodcast: null,
+      narrationSentences: [],
+      activeReading: preserveFollow && state.activeReading?.docId === docId
+        ? state.activeReading
+        : {
+            docId,
+            title: provisionalTitle,
+            numPages: provisionalNumPages,
+          },
+      tts: {
+        ...state.tts,
+        status: "preparing",
+        docId,
+        page: pageNum,
+        sentenceIndex: fromSentence,
+      },
+      ...(!preserveFollow && state.selectedDocId === docId ? { followReading: true } : {}),
+      ...(state.selectedDocId === docId && (preserveFollow ? state.followReading : true)
+        ? { currentPage: pageNum }
+        : {}),
+    }))
 
     try {
+      if (!preserveFollow) {
+        const documentData = await getDocument(docId)
+        if (token !== this.playToken) return
+
+        useReader.setState({
+          activeReading: {
+            docId,
+            title: documentData.title || `Document ${docId}`,
+            numPages: Math.max(1, documentData.num_pages || 1),
+          },
+        })
+      }
+
+      const active = useReader.getState().activeReading
+      const maxPages = active?.docId === docId ? active.numPages : 1
+      if (pageNum > maxPages) {
+        this.stop()
+        return
+      }
+
       const ps = sentences?.length
         ? {
             sentences,
-            totalChars: sentences.reduce((n, s) => n + s.text.trim().length, 0) || 1,
+            totalChars: sentences.reduce((totalChars, sentenceItem) => totalChars + sentenceItem.text.trim().length, 0) || 1,
           }
         : await this.loadPageSentences(docId, pageNum)
       if (token !== this.playToken) return
@@ -625,6 +674,10 @@ class TtsEngine {
         this.advance(docId, pageNum, token)
         return
       }
+
+      useReader.setState({
+        narrationSentences: ps.sentences.map((sentenceItem) => sentenceItem.text),
+      })
 
       const clamped = Math.max(0, Math.min(fromSentence, ps.sentences.length - 1))
       // Re-chunk starting exactly at the clicked/sought sentence - never
@@ -828,13 +881,17 @@ class TtsEngine {
    * deliberately spilled ahead into under this same token, turning every
    * page boundary back into a cold start. */
   private advance(docId: number, pageNum: number, token: number) {
-    const numPages = useReader.getState().numPages || this.page || 1
-    if (pageNum >= numPages) {
+    if (token !== this.playToken) return
+    const active = useReader.getState().activeReading
+    const maxPages = active?.docId === docId ? active.numPages : 1
+    if (pageNum >= maxPages) {
       this.stop()
       return
     }
-    if (token !== this.playToken) return
-    useReader.getState().setPage(pageNum + 1)
+    const state = useReader.getState()
+    if (state.selectedDocId === docId && state.followReading) {
+      state.setPage(pageNum + 1)
+    }
     void this.startPage(docId, pageNum + 1, 0, token, true)
   }
 
@@ -844,10 +901,13 @@ class TtsEngine {
   /** Play an already-generated audio endpoint through the bottom player. */
   async playPodcast(podcast: Podcast): Promise<void> {
     const currentExpanded = useReader.getState().expandedPodcast
-    if (currentExpanded && currentExpanded.id !== podcast.id) {
-      useReader.getState().setExpandedPodcast(podcast)
-    }
-    useReader.getState().setActivePodcast(podcast)
+    useReader.setState({
+      activeReading: null,
+      expandedReading: false,
+      narrationSentences: [],
+      activePodcast: podcast,
+      ...(currentExpanded && currentExpanded.id !== podcast.id ? { expandedPodcast: podcast } : {}),
+    })
     await this.playAudioUrl(getPodcastAudioUrl(podcast.id))
   }
 
@@ -859,12 +919,28 @@ class TtsEngine {
     this.page = null
     this.pageAudio = null
     this.chunkStarts = []
-    this.set({ status: "preparing", docId: null, page: null, sentenceIndex: 0, sentenceCount: 0, currentTime: 0, duration: 0 })
+    useReader.setState((state) => ({
+      activeReading: null,
+      expandedReading: false,
+      narrationSentences: [],
+      tts: {
+        ...state.tts,
+        status: "preparing",
+        docId: null,
+        page: null,
+        sentenceIndex: 0,
+        sentenceCount: 0,
+        currentTime: 0,
+        duration: 0,
+      },
+    }))
 
     const currentPodcast = useReader.getState().activePodcast
     if (!currentPodcast || getPodcastAudioUrl(currentPodcast.id) !== url) {
-      useReader.getState().setActivePodcast(null)
-      useReader.getState().setExpandedPodcast(null)
+      useReader.setState({
+        activePodcast: null,
+        expandedPodcast: null,
+      })
     }
 
     this.directAudioSource = { kind: "podcast", id: url }
@@ -923,9 +999,21 @@ class TtsEngine {
     this.page = null
     this.pageAudio = null
     this.chunkStarts = []
-    useReader.getState().setActivePodcast(null)
-    useReader.getState().setExpandedPodcast(null)
-    this.set({ status: "preparing", page: null, sentenceIndex: 0, sentenceCount: 0 })
+    useReader.setState((state) => ({
+      activePodcast: null,
+      expandedPodcast: null,
+      activeReading: null,
+      expandedReading: false,
+      narrationSentences: [],
+      tts: {
+        ...state.tts,
+        status: "preparing",
+        docId: null,
+        page: null,
+        sentenceIndex: 0,
+        sentenceCount: 0,
+      },
+    }))
 
     this.directAudioSource = { kind: "summary", id: summaryId }
     try {
@@ -1025,9 +1113,21 @@ class TtsEngine {
     this.stopHeartbeat()
     this.chunkStarts = []
     this.directAudioSource = null
-    useReader.getState().setActivePodcast(null)
-    useReader.getState().setExpandedPodcast(null)
-    this.set({ status: "idle", currentTime: 0, sentenceIndex: 0 })
+    this.docId = null
+    this.page = null
+    useReader.setState((state) => ({
+      activePodcast: null,
+      expandedPodcast: null,
+      activeReading: null,
+      expandedReading: false,
+      narrationSentences: [],
+      tts: {
+        ...state.tts,
+        status: "idle",
+        currentTime: 0,
+        sentenceIndex: 0,
+      },
+    }))
     void releaseReadingAudio({ sessionId: this.sessionId, allSession: true }).catch(() => {})
   }
 
@@ -1052,13 +1152,31 @@ class TtsEngine {
   }
 
   skipPage(delta: number) {
-    const { tts, currentPage, selectedDocId, numPages } = useReader.getState()
-    const docId = tts.docId ?? selectedDocId
+    const state = useReader.getState()
+    const active = state.activeReading
+    const isNarrationActive =
+      active != null &&
+      (this.docId === active.docId || state.tts.docId === active.docId) &&
+      state.tts.status !== "idle"
+
+    if (isNarrationActive && active != null) {
+      const docId = active.docId
+      const base = (this.docId === docId ? this.page : null) ?? (state.tts.docId === docId ? state.tts.page : null) ?? 1
+      const target = Math.max(1, Math.min(base + delta, active.numPages))
+      if (target === base && delta !== 0) return
+      if (state.selectedDocId === docId && state.followReading) {
+        state.setPage(target)
+      }
+      this.readPage(docId, target, 0)
+      return
+    }
+
+    const docId = state.selectedDocId
     if (docId == null) return
-    const base = tts.page ?? currentPage
-    const target = Math.max(1, Math.min(base + delta, numPages || base + delta))
-    if (target === base && delta !== 0 && tts.status !== "idle") return
-    useReader.getState().setPage(target)
+    const base = state.currentPage || 1
+    const target = Math.max(1, Math.min(base + delta, state.numPages || base + delta))
+    if (target === base && delta !== 0 && state.tts.status !== "idle") return
+    state.setPage(target)
     this.readPage(docId, target, 0)
   }
 

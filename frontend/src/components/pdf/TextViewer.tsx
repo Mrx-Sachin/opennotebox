@@ -255,7 +255,7 @@ export default function TextViewer({ docId, processingStatus }: TextViewerProps)
           <div className="mx-auto max-w-2xl px-8 py-10">
             {pages.map((page) => {
               const title = Array.isArray(page.headings) ? page.headings[0]?.title : undefined
-              const isActivePage = tts.status !== "idle" && tts.page === page.page_number
+              const isActivePage = tts.docId === docId && tts.status !== "idle" && tts.page === page.page_number
               const pageNotes = notes.filter((n) => {
                 const start = n.page_number
                 const end = n.end_page ?? n.page_number

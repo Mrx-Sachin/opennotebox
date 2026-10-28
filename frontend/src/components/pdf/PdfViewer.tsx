@@ -178,8 +178,8 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
   const citationToast = useReader((s) => s.citationToast)
   const clearCitationToast = useReader((s) => s.clearCitationToast)
   const pendingHighlightPage = useReader((s) => s.pendingHighlight?.page ?? null)
-  const ttsStatus = useReader((s) => s.tts.status)
-  const ttsPage = useReader((s) => s.tts.page)
+  const ttsStatus = useReader((s) => s.tts.docId === docId ? s.tts.status : "idle")
+  const ttsPage = useReader((s) => s.tts.docId === docId ? s.tts.page : null)
   const loadNotes = useNotes((s) => s.load)
 
   useEffect(() => {
@@ -221,7 +221,7 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
     if (!container) return
     const pause = () => {
       const { tts, followReading } = useReader.getState()
-      if (followReading && (tts.status === "playing" || tts.status === "preparing")) {
+      if (tts.docId === docId && followReading && (tts.status === "playing" || tts.status === "preparing")) {
         setFollowReading(false)
       }
     }
@@ -231,7 +231,7 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
       container.removeEventListener("wheel", pause)
       container.removeEventListener("touchmove", pause)
     }
-  }, [setFollowReading])
+  }, [docId, setFollowReading])
 
   const returnToReading = useCallback(() => {
     setFollowReading(true)
@@ -1356,7 +1356,6 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
           clearTimeout(ttsClickTimer.current)
           ttsClickTimer.current = null
         }
-        ttsEngine.stop()
         openBarFromSelection(e.clientX, e.clientY)
       }
       return
@@ -1417,7 +1416,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
         s.classList.remove("tts-sentence-active", "tts-sentence-preparing")
       )
 
-    const isThisPage = tts.page === pageNum
+    const isThisPage = tts.docId === docId && tts.page === pageNum
     if (!isThisPage || tts.status === "idle") {
       clear()
       return
@@ -1447,7 +1446,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
       cancelled = true
     }
     // followReading in deps so re-enabling follow immediately re-centers
-  }, [tts.page, tts.sentenceIndex, tts.status, pageNum, docId, textReady, followReading])
+  }, [tts.docId, tts.page, tts.sentenceIndex, tts.status, pageNum, docId, textReady, followReading])
 
   // Flash-highlight a citation excerpt once this page's text layer is ready.
   //

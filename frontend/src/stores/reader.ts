@@ -1,6 +1,12 @@
 import type { Podcast } from "@/services/api"
 import { create } from "zustand"
 
+export interface ActiveReading {
+  docId: number
+  title: string
+  numPages: number
+}
+
 export type TtsStatus = "idle" | "preparing" | "playing" | "paused"
 
 interface TtsState {
@@ -54,6 +60,12 @@ interface ReaderState {
   expandedPodcast: Podcast | null
   setActivePodcast: (podcast: Podcast | null) => void
   setExpandedPodcast: (podcast: Podcast | null) => void
+  activeReading: ActiveReading | null
+  expandedReading: boolean
+  narrationSentences: string[]
+  setActiveReading: (reading: ActiveReading | null) => void
+  setExpandedReading: (expanded: boolean) => void
+  setNarrationSentences: (sentences: string[]) => void
 
   selectDoc: (docId: number | null, numPages?: number, startPage?: number) => void
   markProgressRestored: (docId: number) => void
@@ -150,6 +162,12 @@ export const useReader = create<ReaderState>((set) => ({
   expandedPodcast: null,
   setActivePodcast: (podcast) => set({ activePodcast: podcast }),
   setExpandedPodcast: (podcast) => set({ expandedPodcast: podcast }),
+  activeReading: null,
+  expandedReading: false,
+  narrationSentences: [],
+  setActiveReading: (reading) => set({ activeReading: reading }),
+  setExpandedReading: (expanded) => set({ expandedReading: expanded }),
+  setNarrationSentences: (sentences) => set({ narrationSentences: sentences }),
 
   // startPage is the document's stored reading position. Defaulting to 1
   // rather than treating "no progress" as page 1 keeps "never opened" and
