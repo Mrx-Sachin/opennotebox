@@ -1,3 +1,4 @@
+import { ttsEngine } from "@/services/ttsEngine"
 import { create } from "zustand"
 import { User } from "@/services/types"
 
@@ -14,6 +15,15 @@ interface AuthState {
 
 export const useAuth = create<AuthState>((set) => ({
   user: null,
-  setUser: (user) => set({ user }),
-  clear: () => set({ user: null }),
+  setUser: (user) => {
+    const currentUser = useAuth.getState().user
+    if (currentUser && (!user || currentUser.id !== user.id)) {
+      ttsEngine.stop()
+    }
+    set({ user })
+  },
+  clear: () => {
+    ttsEngine.stop()
+    set({ user: null })
+  },
 }))

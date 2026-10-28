@@ -8,6 +8,8 @@ import {
   releaseReadingAudio,
   beaconReleaseReadingAudio,
   heartbeatReadingAudio,
+  Podcast,
+  getPodcastAudioUrl,
 } from "./api"
 import { splitSentences, sentenceStartTimes, sentenceIndexAt, Sentence } from "@/lib/sentences"
 import { filterNarratable, dehyphenateForSpeech } from "@/lib/narrationFilter"
@@ -594,6 +596,11 @@ class TtsEngine {
   ): Promise<void> {
     const audio = this.ensureAudio()
     audio.pause()
+    this.directAudioSource = null
+    if (this.summaryBlobUrl) {
+      URL.revokeObjectURL(this.summaryBlobUrl)
+      this.summaryBlobUrl = null
+    }
     // Auto-advance (preserveFollow) is a continuation of what's already
     // playing, not a new user action. It must not re-engage follow-reading:
     // otherwise a page jump made while audio plays is undone the instant the
@@ -602,6 +609,8 @@ class TtsEngine {
     if (!preserveFollow) useReader.getState().setFollowReading(true)
 
     this.startHeartbeat()
+    useReader.getState().setActivePodcast(null)
+    useReader.getState().setExpandedPodcast(null)
     this.set({ status: "preparing", docId, page: pageNum, sentenceIndex: fromSentence })
 
     try {
@@ -833,6 +842,15 @@ class TtsEngine {
   // Direct audio playback (podcasts, summaries): one file, seekable
 
   /** Play an already-generated audio endpoint through the bottom player. */
+  async playPodcast(podcast: Podcast): Promise<void> {
+    const currentExpanded = useReader.getState().expandedPodcast
+    if (currentExpanded && currentExpanded.id !== podcast.id) {
+      useReader.getState().setExpandedPodcast(podcast)
+    }
+    useReader.getState().setActivePodcast(podcast)
+    await this.playAudioUrl(getPodcastAudioUrl(podcast.id))
+  }
+
   async playAudioUrl(url: string): Promise<void> {
     const token = this.bumpGeneration()
     const audio = this.ensureAudio()
@@ -842,6 +860,12 @@ class TtsEngine {
     this.pageAudio = null
     this.chunkStarts = []
     this.set({ status: "preparing", docId: null, page: null, sentenceIndex: 0, sentenceCount: 0, currentTime: 0, duration: 0 })
+
+    const currentPodcast = useReader.getState().activePodcast
+    if (!currentPodcast || getPodcastAudioUrl(currentPodcast.id) !== url) {
+      useReader.getState().setActivePodcast(null)
+      useReader.getState().setExpandedPodcast(null)
+    }
 
     this.directAudioSource = { kind: "podcast", id: url }
     try {
@@ -861,11 +885,13 @@ class TtsEngine {
       })
       if (token !== this.playToken) return
       await audio.play()
+      if (token !== this.playToken) return
       this.set({ status: "playing", duration: audio.duration, currentTime: 0 })
-    } catch (err) {
+    } catch (error) {
       if (token === this.playToken) {
-        console.error("TTS audio playback failed:", err)
-        this.set({ status: "idle" })
+        console.error("TTS audio playback failed:", error)
+        this.stop()
+        throw error
       }
     }
   }
@@ -897,6 +923,8 @@ class TtsEngine {
     this.page = null
     this.pageAudio = null
     this.chunkStarts = []
+    useReader.getState().setActivePodcast(null)
+    useReader.getState().setExpandedPodcast(null)
     this.set({ status: "preparing", page: null, sentenceIndex: 0, sentenceCount: 0 })
 
     this.directAudioSource = { kind: "summary", id: summaryId }
@@ -971,9 +999,9 @@ class TtsEngine {
       this.set({ status: "playing" })
     } else if (status === "idle" && this.directAudioSource) {
       if (this.directAudioSource.kind === "podcast") {
-        void this.playAudioUrl(String(this.directAudioSource.id))
+        void this.playAudioUrl(String(this.directAudioSource.id)).catch(() => {})
       } else {
-        void this.playSummaryAudio(Number(this.directAudioSource.id))
+        void this.playSummaryAudio(Number(this.directAudioSource.id)).catch(() => {})
       }
     }
   }
@@ -996,6 +1024,9 @@ class TtsEngine {
     this.pageAudio = null
     this.stopHeartbeat()
     this.chunkStarts = []
+    this.directAudioSource = null
+    useReader.getState().setActivePodcast(null)
+    useReader.getState().setExpandedPodcast(null)
     this.set({ status: "idle", currentTime: 0, sentenceIndex: 0 })
     void releaseReadingAudio({ sessionId: this.sessionId, allSession: true }).catch(() => {})
   }

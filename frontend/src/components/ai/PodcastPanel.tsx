@@ -7,7 +7,6 @@ import {
   createPodcast,
   getPodcasts,
   deletePodcast,
-  getPodcastAudioUrl,
   getSummaries,
 } from "@/services/api"
 import { useReader } from "@/stores/reader"
@@ -40,17 +39,12 @@ export default function PodcastPanel({ docId, docTitle }: PodcastPanelProps) {
   const [sectionTitle, setSectionTitle] = useState("")
   const [length, setLength] = useState<PodcastLength>("medium")
   const [creating, setCreating] = useState(false)
-  const [playingId, setPlayingId] = useState<number | null>(null)
   const [loadingId, setLoadingId] = useState<number | null>(null)
-  const ttsStatus = useReader((s) => s.tts.status)
-  const ttsPage = useReader((s) => s.tts.page)
+  const activePodcast = useReader((state) => state.activePodcast)
+  const playingId = activePodcast?.id ?? null
+  const ttsStatus = useReader((state) => state.tts.status)
 
   const refresh = () => getPodcasts(docId).then(setPodcasts).catch(() => {})
-
-  // Engine stopped or switched to page reading: nothing is playing here
-  useEffect(() => {
-    if (ttsStatus === "idle" || ttsPage != null) setPlayingId(null)
-  }, [ttsStatus, ttsPage])
 
   useEffect(() => {
     refresh()
@@ -91,9 +85,7 @@ export default function PodcastPanel({ docId, docTitle }: PodcastPanelProps) {
     }
     setLoadingId(p.id)
     try {
-      // Plays through the bottom bar: seek, 15s skips and speed all work there
-      await ttsEngine.playAudioUrl(getPodcastAudioUrl(p.id))
-      setPlayingId(p.id)
+      await ttsEngine.playPodcast(p)
     } catch (err) {
       console.error("Failed to play podcast:", err)
     } finally {
@@ -104,7 +96,6 @@ export default function PodcastPanel({ docId, docTitle }: PodcastPanelProps) {
   const handleDelete = async (id: number) => {
     if (playingId === id) {
       ttsEngine.stop()
-      setPlayingId(null)
     }
     try {
       await deletePodcast(id)

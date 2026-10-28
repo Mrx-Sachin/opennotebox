@@ -1,3 +1,4 @@
+import type { Podcast } from "@/services/api"
 import { create } from "zustand"
 
 export type TtsStatus = "idle" | "preparing" | "playing" | "paused"
@@ -49,6 +50,10 @@ interface ReaderState {
   /** Which side of the reader the AI Assistant (chat/podcast/flashcards) panel docks to. */
   chatSide: "left" | "right"
   tts: TtsState
+  activePodcast: Podcast | null
+  expandedPodcast: Podcast | null
+  setActivePodcast: (podcast: Podcast | null) => void
+  setExpandedPodcast: (podcast: Podcast | null) => void
 
   selectDoc: (docId: number | null, numPages?: number, startPage?: number) => void
   markProgressRestored: (docId: number) => void
@@ -141,6 +146,10 @@ export const useReader = create<ReaderState>((set) => ({
     speed: 1,
     muted: false,
   },
+  activePodcast: null,
+  expandedPodcast: null,
+  setActivePodcast: (podcast) => set({ activePodcast: podcast }),
+  setExpandedPodcast: (podcast) => set({ expandedPodcast: podcast }),
 
   // startPage is the document's stored reading position. Defaulting to 1
   // rather than treating "no progress" as page 1 keeps "never opened" and

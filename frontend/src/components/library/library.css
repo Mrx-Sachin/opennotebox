@@ -1,6 +1,7 @@
 .library-shell {
   --library-muted: #a0a2b5;
   min-height: 100vh;
+  padding-bottom: var(--podcast-player-height, 0px);
   background: #10111a;
   color: #eff0f6;
 }

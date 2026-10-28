@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { AlertCircle, BookOpen, Check, ChevronLeft, ChevronRight, FileText, FolderOpen, Loader2, Search, Sparkles, UsersRound, X } from "lucide-react"
+import { AlertCircle, BookOpen, Check, ChevronLeft, ChevronRight, FileText, FolderOpen, Headphones, Loader2, Search, Sparkles, UsersRound, X } from "lucide-react"
 import TopBar from "@/components/layout/TopBar"
 import { useAuth } from "@/stores/auth"
 import { getNotebooks } from "@/services/notebookApi"
@@ -118,6 +118,7 @@ function SharedLibraryContent() {
           <nav>
             <Link href="/dashboard" className="library-nav-item"><FolderOpen size={17} /><span>Notebooks</span></Link>
             <Link href="/dashboard/shared" aria-current="page" className="library-nav-item is-active"><UsersRound size={17} /><span>Shared library</span></Link>
+            <Link href="/dashboard?view=podcasts" className="library-nav-item"><Headphones size={17} /><span>Podcasts</span></Link>
             <Link href="/dashboard?unfiled=true" className="library-nav-item"><FileText size={17} /><span>Unfiled</span></Link>
           </nav>
           <div className="library-storage-note shared-library-note"><BookOpen size={19} strokeWidth={1.5} /><p>Good papers travel.<br />Your notes stay yours.</p></div>

@@ -221,3 +221,29 @@ async def test_deleting_uploader_keeps_shared_document_and_other_membership(
     assert db.query(Note).filter_by(user_id=test_user.id).count() == 0
     assert db.query(Note).filter_by(user_id=second_user.id).count() == 1
     assert db.query(Summary).filter_by(user_id=test_user.id).count() == 0
+
+
+def test_export_user_data_handles_unscoped_conversations(db, test_user, monkeypatch, tmp_path):
+    conversation = Conversation(
+        user_id=test_user.id,
+        document_ids=None,
+        title="Unscoped general conversation",
+    )
+    db.add(conversation)
+    db.commit()
+    message = Message(
+        conversation_id=conversation.id,
+        role="user",
+        content="Hello without documents",
+    )
+    db.add(message)
+    db.commit()
+
+    monkeypatch.setattr("app.services.export_service.settings.export_dir", str(tmp_path))
+    export_result = export_user_data(db, test_user)
+    assert export_result["conversations_exported"] == 1
+
+    unfiled_chat_dir = tmp_path / test_user.username / "_unfiled" / "chat"
+    chat_files = list(unfiled_chat_dir.glob("*.md"))
+    assert len(chat_files) == 1
+    assert "Hello without documents" in chat_files[0].read_text()

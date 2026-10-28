@@ -19,6 +19,7 @@ export function useKeyboardShortcuts() {
         return
       }
       const state = useReader.getState()
+      if (state.expandedPodcast != null) return
 
       if (e.ctrlKey || e.metaKey) {
         switch (e.key.toLowerCase()) {

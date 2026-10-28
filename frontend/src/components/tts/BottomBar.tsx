@@ -106,7 +106,8 @@ export default function BottomBar() {
     }
   }, [renamingId])
 
-  if (docId == null) return null
+  const activePodcast = useReader((state) => state.activePodcast)
+  if (docId == null || activePodcast != null) return null
 
   // Podcast/summary playback: the bar becomes a plain audio player with
   // time-based seeking instead of page navigation.

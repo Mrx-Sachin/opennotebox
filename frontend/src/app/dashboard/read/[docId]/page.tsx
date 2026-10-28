@@ -101,9 +101,11 @@ export default function ReaderPage() {
     ])
   }, [queryClient])
 
-  // Stop audio when switching documents
   useEffect(() => {
-    ttsEngine.stop()
+    const state = useReader.getState()
+    if (!state.activePodcast) {
+      ttsEngine.stop()
+    }
   }, [selectedDocId])
 
   const handleDelete = async (id: number) => {
@@ -200,7 +202,7 @@ export default function ReaderPage() {
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-void text-cream">
+    <div className="flex h-screen flex-col overflow-hidden bg-void text-cream" style={{ paddingBottom: "var(--podcast-player-height, 0px)" }}>
       {!focusMode && <TopBar libraryHref={libraryHref} libraryLabel={notebookId ? "Notebook" : "Unfiled"} />}
       {focusMode && (
         <button
@@ -364,9 +366,6 @@ export default function ReaderPage() {
       </div>
 
       <BottomBar />
-      {/* Phone-only panel switcher. It lives at the bottom because that is the
-          part of a phone screen a thumb reaches; the same controls sit in the
-          top bar on a desktop, where a pointer makes reach irrelevant. */}
       {!focusMode && viewport === "phone" && (
         <nav className="shrink-0 border-t border-surface bg-panel pb-[env(safe-area-inset-bottom)]">
           <PanelToggles size="lg" />

@@ -77,7 +77,9 @@ function LibraryContent() {
   useEffect(() => {
     useReader.getState().selectDoc(null)
     useReader.setState({ focusMode: false })
-    ttsEngine.stop()
+    if (!useReader.getState().activePodcast) {
+      ttsEngine.stop()
+    }
   }, [])
 
   useEffect(() => {

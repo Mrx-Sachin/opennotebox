@@ -38,3 +38,13 @@ services:
       - ${RELEASE_CONFIG_DIR:?Set the release Traefik configuration directory}/traefik.yml:/etc/traefik/traefik.yml:ro
       - ${RELEASE_CONFIG_DIR:?}/dynamic:/etc/traefik/dynamic:ro
       - ${EXISTING_CERTS_DIR:?Set the existing certificates directory}:/etc/traefik/certs:ro
+
+  omniroute-bridge:
+    image: ${BACKEND_IMAGE:?Set the validated backend image}
+    entrypoint: [python, /opt/omniroute_bridge.py]
+    command: []
+    network_mode: host
+    environment:
+      BRIDGE_HOST: 0.0.0.0
+      BRIDGE_PORT: "8766"
+      BRIDGE_ALLOWED_CIDRS: "127.0.0.0/8,172.16.0.0/12,10.0.0.0/8"

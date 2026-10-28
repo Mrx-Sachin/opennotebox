@@ -12,23 +12,17 @@ import {
   Maximize2,
   Pause,
   Play,
-  RotateCcw,
-  RotateCw,
   Trash2,
-  Volume2,
-  VolumeX,
   X,
 } from "lucide-react"
 import {
   Podcast,
   getPodcasts,
   deletePodcast,
-  getPodcastAudioUrl,
 } from "@/services/api"
 import { useAuth } from "@/stores/auth"
 import { useReader } from "@/stores/reader"
 import { ttsEngine } from "@/services/ttsEngine"
-import PodcastPlayerModal from "./PodcastPlayerModal"
 
 function formatTime(seconds?: number | null): string {
   if (!seconds || !Number.isFinite(seconds) || seconds < 0) return "0:00"
@@ -41,8 +35,9 @@ export default function PodcastGallery() {
   const queryClient = useQueryClient()
   const user = useAuth((state) => state.user)
   const tts = useReader((state) => state.tts)
-  const [activePodcastId, setActivePodcastId] = useState<number | null>(null)
-  const [expandedPodcastId, setExpandedPodcastId] = useState<number | null>(null)
+  const globalActivePodcast = useReader((state) => state.activePodcast)
+  const setGlobalExpandedPodcast = useReader((state) => state.setExpandedPodcast)
+  const activePodcastId = globalActivePodcast?.id ?? null
   const [loadingId, setLoadingId] = useState<number | null>(null)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
   const [podcastToDelete, setPodcastToDelete] = useState<Podcast | null>(null)
@@ -50,7 +45,6 @@ export default function PodcastGallery() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const playbackTokenRef = useRef(0)
   const isMountedRef = useRef(true)
-  const activePodcastIdRef = useRef<number | null>(null)
   const loadingIdRef = useRef<number | null>(null)
 
   const { data: podcasts, isPending, isError, refetch } = useQuery({
@@ -69,26 +63,12 @@ export default function PodcastGallery() {
     return () => {
       isMountedRef.current = false
       playbackToken.current++
-      ttsEngine.stop()
     }
   }, [])
 
   useEffect(() => {
-    activePodcastIdRef.current = activePodcastId
-  }, [activePodcastId])
-
-  useEffect(() => {
     loadingIdRef.current = loadingId
   }, [loadingId])
-
-  useEffect(() => {
-    if (tts.status === "idle" || tts.page != null) {
-      setActivePodcastId(null)
-    }
-  }, [tts.status, tts.page])
-
-  const activePodcast = podcasts?.find((item) => item.id === activePodcastId)
-  const expandedPodcast = podcasts?.find((item) => item.id === expandedPodcastId)
 
   const handleConfirmDelete = async () => {
     if (!podcastToDelete) return
@@ -116,22 +96,24 @@ export default function PodcastGallery() {
         currentAuthenticatedUser?.id != null &&
         currentAuthenticatedUser.id === targetUserId
 
+      if (isMatchingAccount) {
+        const currentActivePodcast = useReader.getState().activePodcast
+        if (currentActivePodcast?.id === targetPodcast.id) {
+          playbackTokenRef.current++
+          ttsEngine.stop()
+        }
+        const currentExpandedPodcast = useReader.getState().expandedPodcast
+        if (currentExpandedPodcast?.id === targetPodcast.id) {
+          useReader.getState().setExpandedPodcast(null)
+        }
+      }
+
       if (!isMatchingAccount || !isMountedRef.current) {
         return
       }
 
-      if (
-        activePodcastIdRef.current === targetPodcast.id ||
-        loadingIdRef.current === targetPodcast.id
-      ) {
-        playbackTokenRef.current++
-        ttsEngine.stop()
-        setActivePodcastId(null)
+      if (loadingIdRef.current === targetPodcast.id) {
         setLoadingId(null)
-      }
-
-      if (expandedPodcastId === targetPodcast.id) {
-        setExpandedPodcastId(null)
       }
 
       if (targetDocumentId != null) {
@@ -183,25 +165,22 @@ export default function PodcastGallery() {
 
     playbackTokenRef.current++
     const currentToken = playbackTokenRef.current
-    setActivePodcastId(podcast.id)
     setLoadingId(podcast.id)
     setPlaybackError(null)
 
     try {
-      await ttsEngine.playAudioUrl(getPodcastAudioUrl(podcast.id))
+      await ttsEngine.playPodcast(podcast)
       if (!isMountedRef.current || playbackTokenRef.current !== currentToken) {
         return
       }
       const latestState = useReader.getState().tts
       if (latestState.status === "idle") {
-        setActivePodcastId(null)
         setPlaybackError(
           `Unable to play podcast "${podcast.transcript?.title || podcast.document_title || "Audio"}". Please try again.`
         )
       }
     } catch {
       if (isMountedRef.current && playbackTokenRef.current === currentToken) {
-        setActivePodcastId(null)
         setPlaybackError(
           `Unable to play podcast "${podcast.transcript?.title || podcast.document_title || "Audio"}". Please try again.`
         )
@@ -213,8 +192,6 @@ export default function PodcastGallery() {
     }
   }
 
-  const isPreparing = tts.status === "preparing"
-  const effectiveDuration = (activePodcast && (tts.duration || activePodcast.duration)) || 0
 
   return (
     <section
@@ -310,8 +287,7 @@ export default function PodcastGallery() {
                         data-testid={`podcast-expand-${podcast.id}`}
                         className="podcast-card-action-btn"
                         onClick={() => {
-                          setActivePodcastId(podcast.id)
-                          setExpandedPodcastId(podcast.id)
+                          setGlobalExpandedPodcast(podcast)
                           if (activePodcastId !== podcast.id) {
                             void handlePlayToggle(podcast)
                           }
@@ -386,156 +362,6 @@ export default function PodcastGallery() {
             )
           })}
         </div>
-      )}
-
-      {activePodcast && tts.status !== "idle" && (
-        <div
-          className="podcast-bottom-player"
-          data-testid="bottom-player"
-          role="region"
-          aria-label="Audio player"
-        >
-          <div className="podcast-bottom-content">
-            <div className="podcast-bottom-info">
-              <div className="podcast-bottom-title">
-                {activePodcast.transcript?.title ||
-                  (activePodcast.scope === "section" && activePodcast.section_title
-                    ? activePodcast.section_title
-                    : activePodcast.document_title) ||
-                  `Podcast ${activePodcast.id}`}
-              </div>
-              <div className="podcast-bottom-doc">
-                {activePodcast.document_title || `Document ${activePodcast.document_id}`}
-              </div>
-            </div>
-
-            <div className="podcast-bottom-controls">
-              <button
-                type="button"
-                className="podcast-card-skip-btn"
-                disabled={isPreparing}
-                onClick={() => ttsEngine.skipSeconds(-15)}
-                aria-label="Rewind 15 seconds"
-                title="Rewind 15 seconds"
-              >
-                <RotateCcw size={16} />
-              </button>
-              <button
-                type="button"
-                className="podcast-play-btn"
-                disabled={isPreparing}
-                onClick={() => ttsEngine.toggle()}
-                aria-label={tts.status === "playing" ? "Pause" : "Play"}
-              >
-                {isPreparing ? (
-                  <Loader2 size={15} className="animate-spin" />
-                ) : tts.status === "playing" ? (
-                  <Pause size={15} />
-                ) : (
-                  <Play size={15} style={{ marginLeft: "2px" }} />
-                )}
-              </button>
-              <button
-                type="button"
-                className="podcast-card-skip-btn"
-                disabled={isPreparing}
-                onClick={() => ttsEngine.skipSeconds(15)}
-                aria-label="Fast forward 15 seconds"
-                title="Fast forward 15 seconds"
-              >
-                <RotateCw size={16} />
-              </button>
-            </div>
-
-            <div className="podcast-bottom-track">
-              <span className="podcast-time-label">{formatTime(tts.currentTime)}</span>
-              <input
-                type="range"
-                disabled={isPreparing}
-                min={0}
-                max={effectiveDuration > 0 ? effectiveDuration : 100}
-                step={0.5}
-                value={tts.currentTime || 0}
-                onChange={(event) => {
-                  const newPosition = Number(event.target.value)
-                  ttsEngine.seekTo(newPosition)
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-                    event.preventDefault()
-                    if (event.key === "ArrowLeft") ttsEngine.skipSeconds(-15)
-                    if (event.key === "ArrowRight") ttsEngine.skipSeconds(15)
-                  }
-                }}
-                className="podcast-range-slider"
-                aria-label="Seek audio"
-                aria-valuemin={0}
-                aria-valuemax={Math.round(effectiveDuration)}
-                aria-valuenow={Math.round(tts.currentTime)}
-                aria-valuetext={`${formatTime(tts.currentTime)} of ${formatTime(effectiveDuration)}`}
-              />
-              <span className="podcast-time-label">
-                {formatTime(effectiveDuration)}
-              </span>
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <button
-                type="button"
-                className="podcast-card-skip-btn"
-                onClick={() => setExpandedPodcastId(activePodcast.id)}
-                aria-label="Expand player and transcript"
-                title="Expand full player and transcript"
-                data-testid="bottom-player-expand"
-              >
-                <Maximize2 size={16} />
-              </button>
-              <button
-                type="button"
-                className="podcast-card-skip-btn"
-                disabled={isPreparing}
-                onClick={() => {
-                  const speedOptions = [0.75, 1, 1.25, 1.5, 2]
-                  const nextIndex = (speedOptions.indexOf(tts.speed) + 1) % speedOptions.length
-                  ttsEngine.setSpeed(speedOptions[nextIndex])
-                }}
-                aria-label={`Playback speed ${tts.speed}x`}
-                title="Change speed"
-              >
-                <span style={{ fontSize: "11px", fontWeight: 600 }}>{tts.speed}x</span>
-              </button>
-              <button
-                type="button"
-                className="podcast-card-skip-btn"
-                onClick={() => ttsEngine.toggleMute()}
-                aria-label={tts.muted ? "Unmute audio" : "Mute audio"}
-                title={tts.muted ? "Unmute" : "Mute"}
-              >
-                {tts.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-              </button>
-              <button
-                type="button"
-                className="podcast-card-skip-btn"
-                onClick={() => {
-                  ttsEngine.stop()
-                  setActivePodcastId(null)
-                  setExpandedPodcastId(null)
-                }}
-                aria-label="Stop audio"
-                title="Stop"
-              >
-                <X size={16} />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {expandedPodcast && (
-        <PodcastPlayerModal
-          podcast={expandedPodcast}
-          onClose={() => setExpandedPodcastId(null)}
-        />
       )}
 
       <Dialog.Root

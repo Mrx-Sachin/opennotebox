@@ -150,7 +150,8 @@ def _export_chat(
         filename = f"{created}-{conv.id}.md"
         content = _conversation_markdown(conv, messages)
         for doc in target_docs:
-            doc_dir = _document_dir(user, doc, document_titles.get(doc.id))
+            doc_title = document_titles.get(doc.id) if doc else None
+            doc_dir = _document_dir(user, doc, doc_title)
             try:
                 _write_text(os.path.join(doc_dir, "chat", filename), content)
                 count += 1

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import {
   Activity,
@@ -37,13 +37,16 @@ function formatTime(seconds?: number | null): string {
 
 export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerModalProps) {
   const tts = useReader((state) => state.tts)
+  const activePodcast = useReader((state) => state.activePodcast)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [viewMode, setViewMode] = useState<"both" | "visualizer" | "transcript">("both")
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const isPreparing = tts.status === "preparing"
-  const isPlaying = tts.status === "playing"
-  const effectiveDuration = (tts.duration || podcast.duration) || 0
+  const isCurrentActive = activePodcast?.id === podcast.id
+  const isPreparing = isCurrentActive && tts.status === "preparing"
+  const isPlaying = isCurrentActive && tts.status === "playing"
+  const currentTime = isCurrentActive ? tts.currentTime : 0
+  const effectiveDuration = (isCurrentActive && tts.duration) || podcast.duration || 0
 
   const displayTitle =
     podcast.transcript?.title ||
@@ -54,9 +57,21 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
 
   const transcriptLines = podcast.transcript?.lines || []
 
+  const togglePlayback = useCallback(() => {
+    if (isCurrentActive) {
+      ttsEngine.toggle()
+    } else {
+      void ttsEngine.playPodcast(podcast).catch(() => {})
+    }
+  }, [isCurrentActive, podcast])
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (["Escape", " ", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+        event.stopImmediatePropagation()
+      }
       if (event.key === "Escape") {
+        event.preventDefault()
         if (isFullscreen) {
           setIsFullscreen(false)
         } else {
@@ -64,25 +79,25 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
         }
       } else if (event.key === " ") {
         event.preventDefault()
-        ttsEngine.toggle()
-      } else if (event.key === "ArrowLeft") {
+        togglePlayback()
+      } else if (event.key === "ArrowLeft" && isCurrentActive) {
         event.preventDefault()
         ttsEngine.skipSeconds(-15)
-      } else if (event.key === "ArrowRight") {
+      } else if (event.key === "ArrowRight" && isCurrentActive) {
         event.preventDefault()
         ttsEngine.skipSeconds(15)
       }
     }
-    window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [isFullscreen, onClose])
+    window.addEventListener("keydown", handleKeyDown, true)
+    return () => window.removeEventListener("keydown", handleKeyDown, true)
+  }, [isFullscreen, onClose, isCurrentActive, togglePlayback])
 
   const toggleFullscreen = () => {
     setIsFullscreen((prev) => !prev)
   }
 
   const handleLineClick = (index: number) => {
-    if (transcriptLines.length > 0 && effectiveDuration > 0) {
+    if (isCurrentActive && transcriptLines.length > 0 && effectiveDuration > 0) {
       const estimatedFraction = index / transcriptLines.length
       ttsEngine.seekTo(estimatedFraction * effectiveDuration)
     }
@@ -111,6 +126,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
             <Link
               href={`/dashboard/read/${podcast.document_id}`}
               className="podcast-modal-book-link"
+              onClick={onClose}
               title="Open source book in reader"
               data-testid="podcast-modal-book-link"
             >
@@ -292,14 +308,14 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
         <footer className="podcast-modal-footer">
           {/* Progress Slider */}
           <div className="podcast-modal-track-row">
-            <span className="podcast-modal-time">{formatTime(tts.currentTime)}</span>
+            <span className="podcast-modal-time">{formatTime(currentTime)}</span>
             <input
               type="range"
-              disabled={isPreparing}
+              disabled={isPreparing || !isCurrentActive}
               min={0}
               max={effectiveDuration > 0 ? effectiveDuration : 100}
               step={0.5}
-              value={tts.currentTime || 0}
+              value={currentTime || 0}
               onChange={(event) => {
                 const newPosition = Number(event.target.value)
                 ttsEngine.seekTo(newPosition)
@@ -308,8 +324,8 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
               aria-label="Seek podcast audio"
               aria-valuemin={0}
               aria-valuemax={Math.round(effectiveDuration)}
-              aria-valuenow={Math.round(tts.currentTime)}
-              aria-valuetext={`${formatTime(tts.currentTime)} of ${formatTime(effectiveDuration)}`}
+              aria-valuenow={Math.round(currentTime)}
+              aria-valuetext={`${formatTime(currentTime)} of ${formatTime(effectiveDuration)}`}
             />
             <span className="podcast-modal-time">{formatTime(effectiveDuration)}</span>
           </div>
@@ -319,6 +335,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
               <Link
                 href={`/dashboard/read/${podcast.document_id}`}
                 className="podcast-modal-jump-btn"
+                onClick={onClose}
                 title="Jump directly to source document reader"
               >
                 <BookOpen size={15} />
@@ -330,7 +347,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
               <button
                 type="button"
                 className="podcast-card-skip-btn"
-                disabled={isPreparing}
+                disabled={isPreparing || !isCurrentActive}
                 onClick={() => ttsEngine.skipSeconds(-15)}
                 aria-label="Rewind 15 seconds"
                 title="Rewind 15 seconds"
@@ -342,7 +359,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                 type="button"
                 className="podcast-modal-play-btn"
                 disabled={isPreparing}
-                onClick={() => ttsEngine.toggle()}
+                onClick={togglePlayback}
                 aria-label={isPlaying ? "Pause" : "Play"}
                 data-testid="podcast-modal-play-btn"
               >
@@ -358,7 +375,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
               <button
                 type="button"
                 className="podcast-card-skip-btn"
-                disabled={isPreparing}
+                disabled={isPreparing || !isCurrentActive}
                 onClick={() => ttsEngine.skipSeconds(15)}
                 aria-label="Fast forward 15 seconds"
                 title="Fast forward 15 seconds"

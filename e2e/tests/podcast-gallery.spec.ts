@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test"
 
-function createSilentWav(seconds = 10): Buffer {
+function createSilentWav(seconds = 60): Buffer {
   const sampleRate = 8000
   const dataSize = sampleRate * seconds * 2
   const buffer = Buffer.alloc(44 + dataSize)
@@ -20,7 +20,7 @@ function createSilentWav(seconds = 10): Buffer {
   return buffer
 }
 
-const SILENT_WAV_BUFFER = createSilentWav(10)
+const SILENT_WAV_BUFFER = createSilentWav(60)
 
 interface MockOptions {
   empty?: boolean
@@ -106,7 +106,16 @@ async function setupMockPodcasts(page: Page, options: MockOptions = {}) {
 
   let currentPodcasts = [...podcasts]
 
-  await page.addInitScript(() => localStorage.setItem("token", "podcast-test-token"))
+  await page.addInitScript(() => {
+    localStorage.setItem("token", "podcast-test-token")
+    const nativeAudio = window.Audio
+    ;(window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement = undefined
+    window.Audio = function (audioSource?: string) {
+      const audioElement = new nativeAudio(audioSource)
+      ;(window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement = audioElement
+      return audioElement
+    } as unknown as typeof Audio
+  })
 
   await page.route("**/api/**", async (route) => {
     const request = route.request()
@@ -247,6 +256,51 @@ async function setupMockPodcasts(page: Page, options: MockOptions = {}) {
       })
     }
 
+    if (url.pathname === "/api/shared-library") {
+      return route.fulfill({
+        json: {
+          documents: [
+            {
+              id: 99,
+              title: "Shared Research Note",
+              document_type: "Notes",
+              num_pages: 5,
+              author: "Research Team",
+              description: "Collaborative research notes",
+              topics: ["General"],
+              reason: "Team discussion",
+              shared_at: "2026-10-09T00:00:00Z",
+              added: false,
+            },
+          ],
+          total: 1,
+          topics: ["General"],
+          document_types: ["Notes"],
+        },
+      })
+    }
+
+    if (url.pathname === "/api/documents") {
+      return route.fulfill({
+        json: [
+          {
+            id: 1,
+            user_id: 1,
+            notebook_id: null,
+            title: "e2e-sample.pdf",
+            format: "pdf",
+            file_size: 1024,
+            num_pages: 2,
+            processing_status: "completed",
+            created_at: "2026-10-01T00:00:00Z",
+            last_read_page: 1,
+            last_read_at: null,
+            last_read_position: null,
+          },
+        ],
+      })
+    }
+
     if (url.pathname.startsWith("/api/documents/")) {
       return route.fulfill({ json: [] })
     }
@@ -319,7 +373,7 @@ test("podcast in-place playback reveals bottom player with functional audio cont
   const pauseButton = bottomPlayer.getByRole("button", { name: "Pause" })
   await expect(pauseButton).toBeVisible()
 
-  await expect(bottomPlayer.getByText("0:10")).toBeVisible()
+  await expect(bottomPlayer.getByText("1:00")).toBeVisible()
 
   await pauseButton.click()
   const resumeButton = bottomPlayer.getByRole("button", { name: "Play", exact: true })
@@ -370,17 +424,20 @@ test("rapid podcast switching regression: delayed audio A does not revoke faster
   await expect(bottomPlayer.getByRole("button", { name: "Pause" })).toBeVisible()
 })
 
-test("navigating away to documents view unmounts gallery and cleans up playback", async ({ page }) => {
+test("navigating away to documents view maintains persistent playback in bottom player", async ({ page }) => {
   await setupMockPodcasts(page)
   await page.goto("/dashboard")
 
   await page.getByTestId("podcast-play-101").click()
-  await expect(page.getByTestId("bottom-player")).toBeVisible()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
 
   const allDocumentsButton = page.locator(".library-navigation").getByRole("button", { name: /All documents/ })
   await allDocumentsButton.click()
 
-  await expect(page.getByTestId("bottom-player")).toHaveCount(0)
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Deep Dive into Sample Document")).toBeVisible()
+  await expect(page.getByTestId("bottom-player")).toHaveCount(1)
 })
 
 test("playback failure displays visible error alert", async ({ page }) => {
@@ -737,4 +794,350 @@ test("podcast card direct book page link navigates to reader", async ({ page }) 
 
   const bookLink = page.getByTestId("podcast-book-link-101")
   await expect(bookLink).toHaveAttribute("href", "/dashboard/read/1")
+})
+
+test("podcast playback persists across dashboard, reader, shared library, and podcasts navigation", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-play-101").click()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Deep Dive into Sample Document")).toBeVisible()
+  await expect(page.getByTestId("bottom-player")).toHaveCount(1)
+
+  const initialAudio = await page.evaluate(() => {
+    const audio = (window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement
+    return {
+      src: audio?.src ?? "",
+      paused: audio?.paused ?? true,
+      currentTime: audio?.currentTime ?? 0,
+    }
+  })
+  expect(initialAudio.src).toBeTruthy()
+  expect(initialAudio.paused).toBe(false)
+
+  const readerLink = page.getByTestId("podcast-book-link-101")
+  await readerLink.click()
+  await expect(page).toHaveURL(/\/dashboard\/read\/1$/)
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Deep Dive into Sample Document")).toBeVisible()
+  await expect(page.getByTestId("bottom-player")).toHaveCount(1)
+
+  const readerAudio = await page.evaluate(() => {
+    const audio = (window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement
+    return {
+      src: audio?.src ?? "",
+      paused: audio?.paused ?? true,
+      currentTime: audio?.currentTime ?? 0,
+    }
+  })
+  expect(readerAudio.src).toBe(initialAudio.src)
+  expect(readerAudio.paused).toBe(false)
+  expect(readerAudio.currentTime).toBeGreaterThanOrEqual(initialAudio.currentTime)
+
+  const sharedSidebarLink = page.locator('aside a[href="/dashboard/shared"]')
+  await expect(sharedSidebarLink).toBeVisible()
+  await sharedSidebarLink.click()
+  await expect(page).toHaveURL(/\/dashboard\/shared$/)
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Deep Dive into Sample Document")).toBeVisible()
+  await expect(page.getByTestId("bottom-player")).toHaveCount(1)
+
+  const sharedAudio = await page.evaluate(() => {
+    const audio = (window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement
+    return {
+      src: audio?.src ?? "",
+      paused: audio?.paused ?? true,
+    }
+  })
+  expect(sharedAudio.src).toBe(initialAudio.src)
+  expect(sharedAudio.paused).toBe(false)
+
+  const sharedPodcastsLink = page.locator('.library-navigation a[href="/dashboard?view=podcasts"]')
+  await expect(sharedPodcastsLink).toBeVisible()
+  await sharedPodcastsLink.click()
+  await expect(page).toHaveURL(/\/dashboard\?view=podcasts/)
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Deep Dive into Sample Document")).toBeVisible()
+  await expect(page.getByTestId("bottom-player")).toHaveCount(1)
+
+  const podcastsAudio = await page.evaluate(() => {
+    const audio = (window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement
+    return {
+      src: audio?.src ?? "",
+      paused: audio?.paused ?? true,
+    }
+  })
+  expect(podcastsAudio.src).toBe(initialAudio.src)
+  expect(podcastsAudio.paused).toBe(false)
+})
+
+test("paused podcast audio remains paused across navigation", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-play-101").click()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+
+  const pauseButton = bottomPlayer.getByRole("button", { name: "Pause" })
+  await expect(pauseButton).toBeVisible()
+  await pauseButton.click()
+
+  const resumeButton = bottomPlayer.getByRole("button", { name: "Play", exact: true })
+  await expect(resumeButton).toBeVisible()
+
+  const pausedAudio = await page.evaluate(() => {
+    const audio = (window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement
+    return {
+      paused: audio?.paused ?? false,
+    }
+  })
+  expect(pausedAudio.paused).toBe(true)
+
+  const sharedNavLink = page.locator('.library-navigation a[href="/dashboard/shared"]')
+  await sharedNavLink.click()
+  await expect(page).toHaveURL(/\/dashboard\/shared$/)
+
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByRole("button", { name: "Play", exact: true })).toBeVisible()
+
+  const stillPausedAudio = await page.evaluate(() => {
+    const audio = (window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement
+    return {
+      paused: audio?.paused ?? false,
+    }
+  })
+  expect(stillPausedAudio.paused).toBe(true)
+})
+
+test("in-flight audio fetch continues to playback when navigating during load", async ({ page }) => {
+  let releaseDelayedAudio: (() => void) | null = null
+  const delayPromise = new Promise<void>((resolve) => {
+    releaseDelayedAudio = resolve
+  })
+
+  await setupMockPodcasts(page, { delayAudio101: delayPromise })
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-play-101").click()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+
+  const sharedNavLink = page.locator('.library-navigation a[href="/dashboard/shared"]')
+  await sharedNavLink.click()
+  await expect(page).toHaveURL(/\/dashboard\/shared$/)
+  await expect(bottomPlayer).toBeVisible()
+
+  if (releaseDelayedAudio) {
+    (releaseDelayedAudio as () => void)()
+  }
+
+  await expect(bottomPlayer.getByRole("button", { name: "Pause" })).toBeVisible({ timeout: 10000 })
+  const playingState = await page.evaluate(() => {
+    const audio = (window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement
+    return {
+      paused: audio?.paused ?? true,
+    }
+  })
+  expect(playingState.paused).toBe(false)
+})
+
+test("other podcast takeover replaces track and explicit stop clears bottom player", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-play-101").click()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Deep Dive into Sample Document")).toBeVisible()
+
+  await page.getByTestId("podcast-play-102").click()
+  await expect(bottomPlayer.getByText("Research Methods Overview")).toBeVisible()
+
+  const stopButton = bottomPlayer.getByRole("button", { name: "Stop audio" })
+  await expect(stopButton).toBeVisible()
+  await stopButton.click()
+
+  await expect(bottomPlayer).toHaveCount(0)
+})
+
+test("reading audio takeover revokes podcast bottom player and metadata", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-play-101").click()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+
+  const readerLink = page.getByTestId("podcast-book-link-101")
+  await readerLink.click()
+  await expect(page).toHaveURL(/\/dashboard\/read\/1$/)
+  await expect(bottomPlayer).toBeVisible()
+
+  await expect(page.locator("#pdf-page-container-1 canvas").first()).toBeVisible({ timeout: 15000 })
+
+  await page.evaluate(() => {
+    const win = window as unknown as { ttsEngine?: { readPage: (docId: number, page: number, sentence: number) => void } }
+    if (win.ttsEngine) {
+      win.ttsEngine.readPage(1, 1, 0)
+    }
+  })
+
+  await expect(bottomPlayer.getByText("Deep Dive into Sample Document")).toHaveCount(0)
+})
+
+test("signing out immediately stops podcast audio and removes bottom player", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-play-101").click()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+
+  const signOutButton = page.getByRole("button", { name: /Sign out/i })
+  await expect(signOutButton).toBeVisible()
+  await signOutButton.click()
+
+  await expect(page).toHaveURL(/\/login/)
+  await expect(bottomPlayer).toHaveCount(0)
+})
+
+test("full screen studio mode leaves without pausing when navigating to reader", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-expand-101").click()
+  const playerModal = page.getByTestId("podcast-player-modal")
+  await expect(playerModal).toBeVisible()
+
+  const fullscreenToggle = page.getByTestId("podcast-fullscreen-toggle")
+  await fullscreenToggle.click()
+  await expect(playerModal).toHaveClass(/is-fullscreen-mode/)
+
+  const modalBookLink = page.getByTestId("podcast-modal-book-link")
+  await expect(modalBookLink).toBeVisible()
+  await modalBookLink.click()
+
+  await expect(page).toHaveURL(/\/dashboard\/read\/1$/)
+  await expect(playerModal).toHaveCount(0)
+
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByText("Deep Dive into Sample Document")).toBeVisible()
+
+  const isAudioPlaying = await page.evaluate(() => {
+    const audio = (window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement
+    return Boolean(audio && !audio.paused)
+  })
+  expect(isAudioPlaying).toBe(true)
+})
+
+test("phone viewport persistent bar and reader panel toggles do not overlap", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 })
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await expect(page.getByTestId("podcast-play-101")).toBeVisible({ timeout: 15000 })
+  await page.getByTestId("podcast-play-101").click()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+
+  const bookLink = page.getByTestId("podcast-book-link-101")
+  await bookLink.click()
+  await expect(page).toHaveURL(/\/dashboard\/read\/1$/)
+
+  await expect(bottomPlayer).toBeVisible()
+
+  const playerBox = await bottomPlayer.boundingBox()
+  const libraryButton = page.locator('nav button[aria-label="Library"]')
+  await expect(libraryButton).toBeVisible()
+  const buttonBox = await libraryButton.boundingBox()
+
+  expect(playerBox).not.toBeNull()
+  expect(buttonBox).not.toBeNull()
+  if (playerBox && buttonBox) {
+    const verticalOverlap = Math.max(
+      0,
+      Math.min(playerBox.y + playerBox.height, buttonBox.y + buttonBox.height) -
+        Math.max(playerBox.y, buttonBox.y)
+    )
+    expect(verticalOverlap).toBe(0)
+  }
+
+  await libraryButton.click()
+  const readerPodcastShortcut = page.locator('aside a[href="/dashboard?view=podcasts"]')
+  await expect(readerPodcastShortcut).toBeVisible()
+
+  const sharedSidebarLink = page.locator('aside a[href="/dashboard/shared"]')
+  await expect(sharedSidebarLink).toBeVisible()
+  await sharedSidebarLink.click()
+  await expect(page).toHaveURL(/\/dashboard\/shared$/)
+  await expect(bottomPlayer).toBeVisible()
+
+  const sharedPaperCard = page.locator(".shared-document-card").first()
+  await expect(sharedPaperCard).toBeVisible()
+  const actionButton = sharedPaperCard.locator(".shared-document-actions button").first()
+  await expect(actionButton).toBeVisible()
+  await actionButton.scrollIntoViewIfNeeded()
+
+  const actionButtonBox = await actionButton.boundingBox()
+  const sharedPlayerBox = await bottomPlayer.boundingBox()
+  if (actionButtonBox && sharedPlayerBox) {
+    const isObscured =
+      actionButtonBox.y + actionButtonBox.height > sharedPlayerBox.y &&
+      actionButtonBox.y < sharedPlayerBox.y + sharedPlayerBox.height
+    expect(isObscured).toBe(false)
+  }
+})
+
+
+test("reader keyboard shortcuts yield to expanded podcast modal for space and escape", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await expect(page.getByTestId("podcast-play-101")).toBeVisible({ timeout: 15000 })
+  await page.getByTestId("podcast-play-101").click()
+  const bottomPlayer = page.getByTestId("bottom-player")
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByRole("button", { name: "Pause" })).toBeVisible({ timeout: 10000 })
+
+  const readerLink = page.getByTestId("podcast-book-link-101")
+  await readerLink.click()
+  await expect(page).toHaveURL(/\/dashboard\/read\/1$/)
+  await expect(bottomPlayer).toBeVisible()
+  await expect(bottomPlayer.getByRole("button", { name: "Pause" })).toBeVisible({ timeout: 10000 })
+
+  await page.getByTestId("bottom-player-expand").click()
+  const playerModal = page.getByTestId("podcast-player-modal")
+  await expect(playerModal).toBeVisible()
+  await expect(playerModal.getByRole("button", { name: "Pause" })).toBeVisible({ timeout: 10000 })
+
+  await page.keyboard.press("Space")
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const audio = (window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement
+      return audio?.paused ?? false
+    })
+  }).toBe(true)
+
+  await page.keyboard.press("Space")
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const audio = (window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement
+      return audio?.paused ?? true
+    })
+  }).toBe(false)
+
+  await page.keyboard.press("Escape")
+  await expect(playerModal).toHaveCount(0)
+  await expect(bottomPlayer).toBeVisible()
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const audio = (window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement
+      return audio?.paused ?? true
+    })
+  }).toBe(false)
 })

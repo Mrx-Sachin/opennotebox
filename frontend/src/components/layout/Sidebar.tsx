@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useEffect, useMemo, useRef, useState } from "react"
-import { Plus, FileText, ChevronsRight, X, UsersRound } from "lucide-react"
+import { Plus, FileText, ChevronsRight, X, UsersRound, Headphones } from "lucide-react"
 import { useReader } from "@/stores/reader"
 import { Document, User } from "@/services/api"
 import Link from "next/link"
@@ -196,6 +196,15 @@ export default function Sidebar({ documents, loading, onDelete, user }: SidebarP
         >
           <UsersRound className="h-4 w-4 shrink-0" aria-hidden="true" />
           {!sidebarCollapsed && <span>Shared library</span>}
+        </Link>
+        <Link
+          href="/dashboard?view=podcasts"
+          title="Podcasts"
+          aria-label="Podcasts"
+          className={`mt-2 flex items-center justify-center gap-2 rounded-lg border border-surface py-2 text-xs text-cream-dim transition-colors hover:bg-surface hover:text-cream focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo ${sidebarCollapsed ? "w-10 px-0" : "w-full px-3"}`}
+        >
+          <Headphones className="h-4 w-4 shrink-0" aria-hidden="true" />
+          {!sidebarCollapsed && <span>Podcasts</span>}
         </Link>
       </div>
 
