@@ -1,8 +1,0 @@
-Software Engineering Best Practices
-
-1. Keep it simple. Avoid over-engineering.
-2. Write clean, readable code with descriptive naming.
-3. Test your code. Automated tests act as executable documentation.
-4. Review others' code and welcome reviews of your own.
-5. Refactor mercilessly to keep the design clean as requirements evolve.
-6. Documentation should explain 'why', not 'what'.
