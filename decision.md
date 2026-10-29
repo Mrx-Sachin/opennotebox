@@ -216,6 +216,83 @@
   - Verified with live E2E test cases on both Vertex Claude Opus and Gemini Flash: both succeed with HTTP 200 and valid tool call generation.
   - Replayed the exact 231-message request payload that previously failed with 400; verified it now completes with HTTP 200.
 
+## 2026-10-29: structure-aware retrieval filtering and table preservation
+
+- Context: Retrieval indexing rejected valid financial and machine-learning benchmark tables because _is_junk applied a blunt heuristic: `digits / len > 0.15`. Real financial tables were retained in extracted text but created zero search chunks.
+- Decision:
+  1. Replaced the naive 15% digit density check with structure-aware table detection (`_is_table`), exempting all Markdown pipe tables from junk filtering.
+  2. Maintained strict filtering for genuine Table of Contents dot leaders (`_DOT_LEADERS_RE`), running headers (`_RUNNING_HEADER_RE`), and back-of-the-book index comma-number page sequences (`_is_index_content`).
+  3. Filtered digit noise only when a chunk contains no natural language prose words (`_is_digit_noise`), preserving dense financial and technical sentences containing percentages, currencies, dates, and metrics.
+- Verification: 44 unit and integration tests passed in `test_retrieval_numeric_tables.py` and `test_retrieval.py`. Full backend test suite passed with 470 tests, 0 failures, and 0 warnings as errors.
+
+## 2026-10-29: in-memory piper voice pool and release alias cleanup
+
+- Context: Prior TTS synthesis invoked the `piper` CLI executable in a subprocess for every sentence, creating disk tempfiles and paying process startup and model parsing overhead (~1.5s per sentence). Under multi-user concurrency, 3-5 users experienced severe queuing latency (P50 climbing to 7.9s).
+- Decision:
+  1. Created persistent in-memory `PiperVoice` cache (`tts/piper_pool.py`) that loads models into memory once and synthesizes audio via in-memory PCM buffers directly into standard WAV format.
+  2. Integrated in-memory synthesis into `tts/main.py` using `run_in_threadpool`, keeping graceful fallback to CLI if an unrecognized model or error occurs.
+  3. Added `release_all` field alias to `ReleaseAudioRequest` in `backend/app/routers/tts.py` to ensure all API and client callers trigger immediate audio cleanup reliably.
+- Verification:
+  - Benchmark comparison across 1, 3, and 5 concurrent users:
+    - 1 User: P50 latency reduced from 1628.4ms to 429.3ms (3.79x speedup). Total time: 1.63s -> 0.43s.
+    - 3 Users: P50 latency reduced from 4691.3ms to 949.0ms (4.94x speedup). Total time: 4.70s -> 1.37s.
+    - 5 Users: P50 latency reduced from 7992.6ms to 1365.5ms (5.85x speedup). Total time: 8.01s -> 2.22s.
+  - Lifecycle tests: 13 passed, 0 failures in `test_reading_audio_lifecycle.py`.
+
+
+## 2026-10-29 - Audit evidence and release gates
+
+Audit scope includes both isolated citation and voice worktrees. Preserve parser
+work on main/3013 and production on 3003. The original narration plan remains at
+`/home/mrx/local/github/meta_deepread/.agents/plans/2026-10-29-narration/plan.md`.
+Prior completion claims exceeded evidence: one demo account with concurrent
+sessions cannot demonstrate independent users, sustained playback or memory
+recovery. Reopen these release gates in TODO.md and replace the proof report
+with evidence-backed audit results. Keep historical measurements for traceability,
+but do not claim a verified speedup from one run per side. Real disposable Redis
+claim/release verification passes 14 tests without touching application Redis.
+
+
+## 2026-10-29 - Isolate the voice model bridge
+
+The voice preview reused host port 8767, already owned by the citation model
+bridge. Its bridge continuously restarted with Address already in use while
+voice API requests silently reached the other stack's bridge. Assign the voice
+bridge port 8768 in its development override and update all four backend service
+default VLLM endpoints to match. Production 3003, parser 3013 and citation 3020
+remain untouched. The new bridge returns real JSON from /v1/models and has zero
+restarts. User-configured external model endpoints remain user settings.
+
+
+## 2026-10-29 - Audit fixes and verified boundaries
+
+Package the imported Piper module with main.py. Keep the synthesis lock rather
+than infer thread safety from successful concurrent examples. Cancel queued work
+and check disconnection between sentence chunks; timeout the HTTP wait at 120
+seconds. Active in-process ONNX inference cannot be forcibly interrupted. Delete
+the blocking CLI fallback rather than hide persistent engine errors behind a
+second synthesis attempt. Preserve the previous 0.1-second inter-sentence pause.
+
+Preserve Unicode numeric prose and colon/equal-sign metric rows during indexing,
+while retaining explicit navigation/noise filters. Retrieval tests pass 50 cases.
+The corrected voice backend suite passes 479 tests with one unrelated localhost
+Redis integration skipped. Live one-account 1/3/5-session bursts produce valid
+non-silent WAVs and clean up; actual cache rows and files are absent afterward.
+These checks establish neither independent-account sustained capacity nor memory
+recovery. Keep those release gates open. Project verification skill lives under
+.cursor/skills/verify-deepread and records exactly this scope.
+
+
+## 2026-10-29 - Verify the running frontend build
+
+Citation preview mounts compiled .next/standalone and .next/static output and
+runs node server.js. Source edits alone are not live. The initial cross-document
+regression rerun exercised a stale build, so source-level lifecycle hypotheses
+were not established by that rerun. Require a recorded build, scoped frontend
+restart and matching live BUILD_ID before interpreting browser results. Add this
+constraint to the verification feature map; avoid speculative guards based on
+old bundles.
+
 ## 2026-10-29: citation evidence and graph provenance
 
 - Citation navigation must identify the supporting passage, not an arbitrary prefix of a retrieved chunk. Keep document, page, and source identity attached to evidence through generation, persistence, transport, and highlighting.

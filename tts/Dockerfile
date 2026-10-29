@@ -100,7 +100,7 @@ RUN wget -q -O /models/en_US-ryan-medium.onnx \
 
 # Copy application code last so model download layers stay cached when
 # main.py changes (models take the bulk of build time on a fresh image).
-COPY main.py .
+COPY main.py piper_pool.py ./
 
 EXPOSE 5111
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5111"]

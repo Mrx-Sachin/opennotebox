@@ -2,6 +2,7 @@
 
 Proxies to a locally running Piper TTS instance or runs Piper directly.
 """
+from piper_pool import ClientGoneError, synthesize_piper_in_memory
 import asyncio
 
 from fastapi import FastAPI, HTTPException, Request
@@ -11,7 +12,6 @@ import gc
 import re
 import subprocess
 import os
-import tempfile
 import threading
 import time
 from typing import Optional
@@ -838,10 +838,6 @@ def _synthesize_chunk_with_bisection(
         return np.concatenate([s1, s2]), sr
 
 
-class ClientGoneError(Exception):
-    """The caller disconnected before synthesis finished - see /tts."""
-
-
 def synthesize_kokoro(
     text: str, voice_id: str, speed: float, cancelled: Optional[threading.Event] = None
 ) -> bytes:
@@ -1013,48 +1009,53 @@ async def synthesize(request: TTSTextRequest, http_request: Request):
     try:
         model_path = resolve_model_path(request.voice)
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
+        cancelled = threading.Event()
 
-        cmd = [
-            "piper",
-            "--model", model_path,
-            "--output_file", tmp_path,
-            "--sentence_silence", "0.1",
-        ]
+        async def _watch_disconnect():
+            try:
+                while not cancelled.is_set():
+                    if await http_request.is_disconnected():
+                        cancelled.set()
+                        return
+                    await asyncio.sleep(0.3)
+            except asyncio.CancelledError:
+                pass
 
-        if abs(request.speed - 1.0) > 0.01:
-            # Piper's CLI has no "--speed" flag (confirmed: passing it exits
-            # 0 but silently produces truncated/garbled audio instead of an
-            # error - it isn't a recognized argument in this piper-tts
-            # version, see `piper --help`). Speed is controlled via
-            # "--length-scale", phoneme duration scaling, so it's the
-            # inverse of speed: 2x speed = 0.5 length-scale.
-            length_scale = 1.0 / max(request.speed, 0.1)
-            cmd.extend(["--length-scale", str(length_scale)])
+        watcher = asyncio.create_task(_watch_disconnect())
+        try:
+            try:
+                audio_data = await asyncio.wait_for(
+                    run_in_threadpool(
+                        synthesize_piper_in_memory,
+                        text,
+                        model_path,
+                        request.speed,
+                        0.1,
+                        cancelled,
+                    ),
+                    timeout=120.0,
+                )
+            except (ClientGoneError, asyncio.CancelledError):
+                if cancelled.is_set():
+                    raise ClientGoneError()
+                raise
+            except asyncio.TimeoutError:
+                raise HTTPException(status_code=504, detail="Piper synthesis timed out")
 
-        proc = subprocess.run(
-            cmd,
-            input=text,
-            text=True,
-            capture_output=True,
-            timeout=120,
-        )
+            from fastapi.responses import Response
+            return Response(
+                content=audio_data,
+                media_type="audio/wav",
+            )
+        except ClientGoneError:
+            print("Piper synthesis abandoned: client disconnected")
+            raise HTTPException(status_code=499, detail="Client disconnected")
+        finally:
+            cancelled.set()
+            watcher.cancel()
 
-        if proc.returncode != 0:
-            raise RuntimeError(f"Piper failed: {proc.stderr}")
-
-        with open(tmp_path, "rb") as f:
-            audio_data = f.read()
-
-        os.unlink(tmp_path)
-
-        from fastapi.responses import Response
-        return Response(
-            content=audio_data,
-            media_type="audio/wav",
-        )
-
+    except HTTPException:
+        raise
     except FileNotFoundError:
         raise HTTPException(
             status_code=503,
