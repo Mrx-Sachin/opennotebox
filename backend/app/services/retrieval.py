@@ -111,16 +111,137 @@ def _split_page(content: str) -> List[str]:
     return chunks
 
 
-def _is_junk(text: str) -> bool:
-    """Skip TOC/index-style chunks: they match almost any keyword query and
-    crowd out real prose."""
-    if re.search(r"\.{5,}", text):  # TOC dot leaders
+_RUNNING_HEADER_RE = re.compile(
+    r"^(?:#+\s*)?(?:\d+\s+)?(?:Index|Contents|Table\s+of\s+Contents)(?:\s+\d+)?$",
+    re.IGNORECASE,
+)
+_DOT_LEADERS_RE = re.compile(r"\.{4,}")
+_INDEX_MULTI_SEQ_RE = re.compile(
+    r",\s*\d+(?:\s*[-–]\s*\d+)?(?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?)+\s*$"
+)
+_INDEX_SINGLE_SEQ_RE = re.compile(
+    r",\s*\d+(?:\s*[-–]\s*\d+)?\s*$"
+)
+_COMMON_VERBS = frozenset(
+    "is are was were be been being have has had having do does did done "
+    "can could shall should will would may might must "
+    "show shows showed shown showing include includes included including "
+    "increase increases increased increasing decrease decreases decreased decreasing "
+    "grow grows grew grown growing drop drops dropped dropping "
+    "rise rises rose risen rising fall falls fell fallen falling "
+    "reach reaches reached reaching gain gains gained gaining "
+    "report reports reported reporting represent represents represented representing "
+    "indicate indicates indicated indicating describe describes described describing "
+    "provide provides provided providing contain contains contained containing "
+    "yield yields yielded yielding find finds found finding "
+    "observe observes observed observing occur occurs occurred occurring "
+    "result results resulted resulting appear appears appeared appearing "
+    "become becomes became becoming compare compares compared comparing".split()
+)
+
+
+def _is_table(text: str) -> bool:
+    """Determine whether text contains structured tabular content.
+
+    Structured tables (such as Markdown tables with | cell delimiters)
+    must never be rejected as junk, even with high numeric density.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    has_separator = any(
+        re.match(r"^\|?(\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?$", line)
+        for line in lines
+    )
+    if has_separator:
         return True
-    first_line = text.lstrip().split("\n", 1)[0]
-    if re.match(r"^(?:\d+\s+)?(?:Index|Contents)(?:\s+\d+)?$", first_line.strip()):
-        return True  # running header of an index/contents page
-    digits = sum(c.isdigit() for c in text)
-    return digits / max(len(text), 1) > 0.15
+    table_lines = [
+        line for line in lines
+        if line.count("|") >= 2 and len(line.replace("|", "").strip()) > 0
+    ]
+    if len(lines) == 1 and lines[0].count("|") >= 2 and len(lines[0].replace("|", "").strip()) > 0:
+        return True
+    return len(table_lines) >= 2
+
+
+def _is_index_line(line: str, allow_single: bool = False) -> bool:
+    """Check if a line matches back-of-the-book index page-number sequences.
+
+    Matches lines ending with comma-separated page numbers without
+    verbs, colons, or tabular syntax.
+    """
+    line = line.strip()
+    if not line or "|" in line or ":" in line or "=" in line:
+        return False
+    if any(c in line for c in ("$", "%", "€", "£")):
+        return False
+    pattern = _INDEX_SINGLE_SEQ_RE if allow_single else _INDEX_MULTI_SEQ_RE
+    if not pattern.search(line):
+        return False
+    words = re.findall(r"\b[a-zA-Z]+\b", line.lower())
+    return not any(w in _COMMON_VERBS for w in words)
+
+
+def _is_index_content(text: str) -> bool:
+    """Determine whether text represents an index page listing."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    if len(lines) == 1:
+        nums = re.findall(r"\b\d+\b", lines[0])
+        return len(nums) >= 3 and _is_index_line(lines[0], allow_single=False)
+    index_lines = [line for line in lines if _is_index_line(line, allow_single=True)]
+    return len(index_lines) >= 2 and len(index_lines) / len(lines) >= 0.5
+
+
+def _is_digit_noise(text: str) -> bool:
+    """Check if text is purely digit noise without natural language prose.
+
+    Uses Unicode-aware isalpha checks to avoid dropping non-ASCII prose
+    (such as Chinese or multilingual numeric reporting).
+    """
+    alpha_count = sum(c.isalpha() for c in text)
+    digit_count = sum(c.isdigit() for c in text)
+    if digit_count > 0 and alpha_count == 0:
+        return True
+    if digit_count >= 8 and alpha_count <= 1:
+        return True
+    return False
+
+
+def _is_junk(text: str) -> bool:
+    """Skip TOC, index-style chunks, and pure digit noise.
+
+    Preserves structured tables and technical or financial prose containing
+    dates, measurements, currency, percentages, or statistics while filtering
+    dot leaders, running headers, index listings, and non-prose digit noise.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return True
+
+    # 1. TOC dot leaders are always navigational junk.
+    if _DOT_LEADERS_RE.search(stripped):
+        return True
+
+    # 2. Running headers for Table of Contents or Index indicate navigational junk.
+    first_line = stripped.split("\n", 1)[0].strip()
+    if _RUNNING_HEADER_RE.match(first_line):
+        return True
+
+    # 3. Structured tabular content (Markdown tables) should never be rejected.
+    if _is_table(stripped):
+        return False
+
+    # 4. Back-of-the-book index listings (lists of entries with page numbers).
+    if _is_index_content(stripped):
+        return True
+
+    # 5. Non-prose digit noise (sequences of digits without words).
+    if _is_digit_noise(stripped):
+        return True
+
+    return False
 
 
 def delete_document_chunks(db: Session, doc_id: int) -> int:

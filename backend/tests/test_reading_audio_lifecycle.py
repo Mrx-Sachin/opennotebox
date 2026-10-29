@@ -486,6 +486,39 @@ async def test_http_stream_and_release_lifecycle(
         assert db.query(TTSCache).filter_by(id=cache_id).first() is None
 
 
+@pytest.mark.asyncio
+async def test_release_endpoint_accepts_release_all_alias(
+    fake_redis_fixture, isolated_audio_dir, client, db: Session, test_user: User, auth_header: dict
+):
+    cache_dir, _ = isolated_audio_dir
+    unique_suffix = uuid.uuid4().hex
+    audio_path = cache_dir / f"alias_{unique_suffix}.wav"
+    audio_path.write_bytes(b"test audio content for release_all alias")
+    unique_cache_id = int(uuid.uuid4().int % 10000000 + 10000)
+    session_id = f"release-alias-session-{unique_suffix}"
+
+    headers = auth_header
+
+    cache_row = create_dummy_cache_row(
+        db, test_user.id, f"hash_{unique_suffix}", str(audio_path), cache_id=unique_cache_id
+    )
+    claim_session_chunk(test_user.id, session_id, cache_row.id)
+    assert is_chunk_claimed_by_session(session_id, cache_row.id) is True
+
+    # Use release_all: true instead of all_session: true
+    resp = await client.post(
+        "/api/tts/release",
+        json={"session_id": session_id, "release_all": True},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+    assert resp.json()["deleted_count"] == 1
+    assert not os.path.exists(str(audio_path))
+    assert db.query(TTSCache).filter_by(id=cache_row.id).first() is None
+    assert is_chunk_claimed_by_session(session_id, cache_row.id) is False
+
+
 @pytest.mark.redis_integration
 def test_real_disposable_redis_claim_and_release(isolated_audio_dir, db: Session, test_user: User):
     disposable_url = os.environ.get("DISPOSABLE_REDIS_URL")

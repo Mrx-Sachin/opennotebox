@@ -235,6 +235,7 @@ class ReleaseAudioRequest(BaseModel):
     session_id: Optional[str] = Field(None, min_length=1, max_length=128)
     cache_ids: Optional[list[int]] = Field(None, max_length=256)
     all_session: Optional[bool] = False
+    release_all: Optional[bool] = False
 
     @field_validator("cache_ids")
     @classmethod
@@ -615,7 +616,7 @@ def release_reading_audio(
             user_id=user.id,
             session_id=body.session_id,
             cache_ids=body.cache_ids,
-            release_all_session=bool(body.all_session),
+            release_all_session=bool(body.all_session or body.release_all),
         )
     except PermissionError:
         raise HTTPException(status_code=403, detail="Session does not belong to authenticated user")
