@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Message } from "@/services/types"
+import { useRouter } from "next/navigation"
+import { Citation, Message } from "@/services/types"
 import {
   createConversation,
   getMessages,
@@ -29,12 +30,19 @@ interface ChatPanelProps {
 
 
 export default function ChatPanel({ docId }: ChatPanelProps) {
+  const router = useRouter()
   const [conversationId, setConversationId] = useState<number | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
   const [citationMsg, setCitationMsg] = useState<Message | null>(null)
   const jumpToCitation = useReader((s) => s.jumpToCitation)
+  const handleJump = (citation: Citation) => {
+    if (citation.doc_id != null && citation.doc_id !== docId) {
+      router.push(`/dashboard/read/${citation.doc_id}`)
+    }
+    jumpToCitation(citation)
+  }
   const listRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
   // Which document the panel is currently showing. Read inside async send
@@ -382,7 +390,7 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
                     <MessageBody
                       content={msg.content}
                       citations={msg.citations}
-                      onJump={(c) => jumpToCitation(c.page, c.excerpt)}
+                      onJump={handleJump}
                     />
                   ) : (
                     <p className="whitespace-pre-wrap">{msg.content}</p>
@@ -634,7 +642,7 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
         <CitationPopup
           citations={citationMsg.citations || []}
           onClose={() => setCitationMsg(null)}
-          onJump={(citation) => jumpToCitation(citation.page, citation.excerpt)}
+          onJump={handleJump}
         />
       )}
     </div>

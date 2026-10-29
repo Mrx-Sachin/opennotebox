@@ -292,3 +292,47 @@ were not established by that rerun. Require a recorded build, scoped frontend
 restart and matching live BUILD_ID before interpreting browser results. Add this
 constraint to the verification feature map; avoid speculative guards based on
 old bundles.
+
+## 2026-10-29: citation evidence and graph provenance
+
+- Citation navigation must identify the supporting passage, not an arbitrary prefix of a retrieved chunk. Keep document, page, and source identity attached to evidence through generation, persistence, transport, and highlighting.
+- Knowledge-graph relationships may improve retrieval, but graph descriptions alone do not justify an exact PDF highlight. Resolve graph context to authorized original document evidence before offering a page highlight.
+- Preserve existing stored-message compatibility. When exact evidence cannot be resolved, navigate honestly without highlighting unrelated text.
+- Reproduce the citation-click behavior on a rendered PDF before implementation and preserve automated checks for caption/body ambiguity and same-page citations.
+
+## 2026-10-29: Citation Provenance and Exact Evidence Grounding
+
+- Context: On Whisper paper page 11 (and similar multi-element pages containing figure captions, tables, and body paragraphs), citation reference [1] for dataset scaling highlighted the Figure 8 caption instead of the supporting paragraph below Table 6.
+- Root Cause:
+  1. Retrieval chunks (up to 1600-2400 chars) were assigned a single source number [n].
+  2. Answer-generation citation extraction (`_citation_excerpt`) blindly extracted the first sentence (or prefix) of the entire chunk, independent of which specific claim was cited by the model.
+  3. PDF extraction (`pdf_parser.py`) outputs single-newline line-wrapped text without double-newline blank lines between visual rows, causing naive paragraph splitting to treat caption, table, and body as a single monolithic block.
+  4. Section summary fallbacks defaulted `page: s.page_number or 1`, falsely suggesting verbatim page 1 highlights.
+- Decision:
+  1. Passage-level source segmentation: In `citations.py`, `build_passage_sources` segments document chunks into independently numbered passages `[1], [2], ...` BEFORE prompt generation.
+  2. Sentence/passage boundary segmentation: Slices exact verbatim substrings `text[start:end]` from the chunk text without manufacturing whitespace, preserving exact substrings in single-newline wrapped parser output.
+  3. Semantic caption segregation: Captions and headers (e.g. `Figure 8.`, `Table 6.`) are segregated into their own passages and never merged with adjacent body paragraphs.
+  4. Narrow evidence contract: `Citation` retains `n`, `doc_id`, `doc_title`, `page`, `excerpt`, and adds optional `evidence: {"exact": str}`. Only verified original document passages carry `evidence`. Synthetic summaries and ungrounded graph facts omit `evidence`, and summaries preserve true page or null rather than defaulting to page 1.
+  5. Coverage preservation: Summary fallback is decided based on retrieval chunk coverage (`len(hits) < 2`), preserving broad-question summary coverage regardless of passage count after splitting.
+  6. Backward compatibility: Pydantic schemas allow `evidence` to be omitted when null via `@model_serializer(mode="wrap")`, ensuring legacy messages and tests validate and serialize cleanly.
+
+## 2026-10-29: citation verification scope clarification
+
+- The preceding entry's specific Whisper page and chunk-size descriptions are illustrative, not independently verified measurements of the user's upload. The confirmed defect is the answer-independent chunk-prefix anchor. Reproduction uses a committed PDF fixture with a caption and supporting body text, the real PDF parser, HTTP/SSE transport, persisted messages, and a rendered PDF text layer. Answer generation is controlled in regression tests; these checks do not measure model citation accuracy on arbitrary documents.
+- Exact evidence identifies original retrieved text. It does not certify that a model's claim follows from that text. Use distinct numbered passages in the generation prompt and reject missing or ambiguous full-quote matches in the viewer. Preserve meaningful numeric signs during PDF text normalization.
+- Scope this branch to citation provenance and navigation. Keep parser work in the main checkout, narration optimization, live services, and existing user data separate.
+
+
+## 2026-10-29 - Audit frontend deployment identity
+
+Preserved every original citation source change. The original PdfViewer SHA256
+is 3cea2a202e235d8e0e0316099e6de595654c61f68a1320d5900ca10eb1918fbd.
+The preview serves compiled standalone output; source edits require a fresh
+frontend build and a scoped container restart. The read-only standalone mount
+also requires public and .next/static mountpoint directories in generated output.
+After rebuilding, host/live BUILD_ID match and all six citation browser checks
+pass, including cross-document navigation. Replayed the real saved Whisper
+citation through hover/click and verified the intended page-three passage flash
+and expiration. No speculative PDF lifecycle guards were retained. Report and
+rerunnable evidence live in main workspace temp/voice-concurrency-proof.html and
+temp/audit. Visual highlighting is at PDF-span granularity, not exact characters.

@@ -1,19 +1,12 @@
 "use client"
 
 import { ExternalLink, X } from "lucide-react"
-
-interface PopupCitation {
-  doc_id: number
-  doc_title: string
-  /** Page number, or null for non-paged sources (e.g. knowledge graph). */
-  page: number | null
-  excerpt: string
-}
+import type { Citation } from "@/services/types"
 
 interface CitationPopupProps {
-  citations: PopupCitation[]
+  citations: Citation[]
   onClose: () => void
-  onJump?: (citation: PopupCitation) => void
+  onJump?: (citation: Citation) => void
 }
 
 export default function CitationPopup({ citations, onClose, onJump }: CitationPopupProps) {

@@ -12,6 +12,7 @@ import {
   normalizeWithMap,
   findRange,
   findRangeProgressive,
+  findCitationEvidenceRange,
   NormalizedText,
 } from "@/lib/textAlign"
 import { copyText } from "@/lib/clipboard"
@@ -177,7 +178,7 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
   const setFollowReading = useReader((s) => s.setFollowReading)
   const citationToast = useReader((s) => s.citationToast)
   const clearCitationToast = useReader((s) => s.clearCitationToast)
-  const pendingHighlightPage = useReader((s) => s.pendingHighlight?.page ?? null)
+  const pendingHighlightPage = useReader((s) => s.pendingHighlight?.docId === docId ? s.pendingHighlight.page : null)
   const ttsStatus = useReader((s) => s.tts.docId === docId ? s.tts.status : "idle")
   const ttsPage = useReader((s) => s.tts.docId === docId ? s.tts.page : null)
   const loadNotes = useNotes((s) => s.load)
@@ -472,7 +473,8 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
     if (!pdfDoc || !pageBase) return
     if (restoredForDoc.current === docId && progressRestoredFor === docId) return
     if (useReader.getState().selectedDocId !== docId) return
-    const target = useReader.getState().currentPage
+    const pending = useReader.getState().pendingHighlight
+    const target = pending?.docId === docId ? pending.page : useReader.getState().currentPage
     if (target <= 1) {
       restoredForDoc.current = docId
       useReader.getState().markProgressRestored(docId)
@@ -857,6 +859,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
   const spanDataRef = useRef<{
     spans: HTMLElement[]
     ranges: [number, number][]
+    rawText: string
     normLayer: NormalizedText
   } | null>(null)
   // Pending "end of flash" timeout - see the citation-flash effect below.
@@ -868,7 +871,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
   const pendingHighlight = useReader((s) => s.pendingHighlight)
   const clearPendingHighlight = useReader((s) => s.clearPendingHighlight)
   const failPendingHighlight = useReader((s) => s.failPendingHighlight)
-  const isPendingTarget = pendingHighlight?.page === pageNum
+  const isPendingTarget = pendingHighlight?.docId === docId && pendingHighlight?.page === pageNum
 
   useEffect(() => {
     let active = true
@@ -990,6 +993,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
         spanDataRef.current = {
           spans,
           ranges,
+          rawText: layerText,
           normLayer: normalizeWithMap(layerText),
         }
       }
@@ -1468,7 +1472,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
   // therefore isPendingTarget) set until the flash's own timeout elapses
   // means this page can never be torn down mid-animation.
   useEffect(() => {
-    if (!pendingHighlight || pendingHighlight.page !== pageNum) return
+    if (!pendingHighlight || pendingHighlight.docId !== docId || pendingHighlight.page !== pageNum) return
     if (!textReady) return
     const data = spanDataRef.current
     if (!data) return
@@ -1480,22 +1484,30 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
       flashTimeoutRef.current = null
     }
 
-    const range = findRangeProgressive(data.normLayer, pendingHighlight.excerpt)
-    if (!range) {
-      failPendingHighlight(
-        `Jumped to page ${pageNum} - passage not found`
-      )
+    const exactEvidence = pendingHighlight.evidence?.exact?.trim()
+    if (!exactEvidence) {
+      // Legacy citation or absent evidence: land on page without highlighting wrong passage.
+      clearPendingHighlight()
       return
     }
 
+    const match = findCitationEvidenceRange(data.rawText, exactEvidence)
+    if (match.status === "ambiguous") {
+      failPendingHighlight(`Jumped to page ${pageNum} - passage ambiguous`)
+      return
+    }
+    if (match.status === "not_found") {
+      failPendingHighlight(`Jumped to page ${pageNum} - passage not found`)
+      return
+    }
+
+    // Retire any earlier active citation flash on this page before painting the new citation
+    data.spans.forEach((s) => s.classList.remove("citation-flash"))
+
     const marked: HTMLElement[] = []
     data.ranges.forEach(([s, e], i) => {
-      if (s < range.end && e > range.start) {
+      if (s < match.end && e > match.start) {
         const span = data.spans[i]
-        // citation-flash is a CSS animation; re-adding a class the browser
-        // already considers present does not restart it. Without the
-        // remove-reflow-readd, clicking the same citation again inside the
-        // 2.6s flash window looked like the click did nothing at all.
         span.classList.remove("citation-flash")
         void span.offsetWidth
         span.classList.add("citation-flash")
@@ -1517,6 +1529,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
     }, 2600)
   }, [
     pendingHighlight,
+    docId,
     pageNum,
     textReady,
     clearPendingHighlight,

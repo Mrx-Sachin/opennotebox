@@ -64,3 +64,58 @@ const missing = findQuoteExtent(norm, "this sentence is not on the page at all x
 assert(missing == null, "unknown quote should miss")
 
 console.log("textAlign: OK")
+
+// ---------------------------------------------------------------------------
+// Direct checks for strict citation evidence matching
+// ---------------------------------------------------------------------------
+import {
+  findCitationEvidenceRange,
+  normalizeCitationWithMap,
+  normalizeCitationNeedle,
+} from "./textAlign"
+
+// 1. Ligatures and Unicode lowercasing expansion
+const ligDoc = "An ef\uFB01cient system in \u0130stanbul."
+const normLig = normalizeCitationWithMap(ligDoc)
+assert(normLig.map.length === normLig.norm.length, "norm and map lengths stay strictly in sync")
+assert(normLig.norm.includes("efficient"), "ligature fi expands to fi")
+assert("\u0130".toLowerCase() !== "i", "standard Unicode lowercasing expands dotted I to i + combining dot")
+assert(normLig.norm.includes("\u0130".toLowerCase()), "dot-I preserves its standard lowercase form")
+
+const ligMatch = findCitationEvidenceRange(ligDoc, "efficient system in \u0130stanbul")
+assert(ligMatch.status === "matched", "ligature and dotted capital I match symmetrically")
+if (ligMatch.status === "matched") {
+  assert(ligDoc.slice(ligMatch.start, ligMatch.end) === "ef\uFB01cient system in \u0130stanbul", "slice matches original indices")
+}
+
+// 2. Letter-to-letter hyphenated line-wrap and non-character artifacts
+const wrapDoc = "All increases result in improved perfor\ufffemance across tasks with high-per-\nformance models."
+const wrapMatch = findCitationEvidenceRange(wrapDoc, "improved performance across tasks")
+assert(wrapMatch.status === "matched", "non-character and letter hyphen wrap should resolve")
+
+// 2b. PDF.js span whitespace wrap (Whisper paper case: needle with \n matches layer with space)
+const whisperLayer = "speech recogni- tion, we use an off-the-shelf architecture to avoid confound- ing our findings"
+const whisperNeedle = "speech recogni-\ntion, we use an off-the-shelf architecture to avoid confound-\ning our findings"
+const whisperMatch = findCitationEvidenceRange(whisperLayer, whisperNeedle)
+assert(whisperMatch.status === "matched", "PDF span hyphen wrap (space) must match parser needle (newline)")
+if (whisperMatch.status === "matched") {
+  assert(whisperLayer.slice(whisperMatch.start, whisperMatch.end) === whisperLayer, "matched slice covers entire span")
+}
+
+// 3. Numeric signs and ranges must be preserved (not dehyphenated or stripped)
+const numDoc = "Scores shifted by -1 points across 1-\n3 evaluation rounds."
+const numMatchMinus1 = findCitationEvidenceRange(numDoc, "shifted by -1 points")
+assert(numMatchMinus1.status === "matched", "negative sign -1 must match")
+
+const numNearMiss = findCitationEvidenceRange(numDoc, "shifted by 1 points")
+assert(numNearMiss.status === "not_found", "1 must not match -1")
+
+const numRangeMiss = findCitationEvidenceRange(numDoc, "across 13 evaluation rounds")
+assert(numRangeMiss.status === "not_found", "13 must not match 1-\\n3")
+
+// 4. Duplicate passage must fail honestly with ambiguous
+const dupDoc = "Repeated phrase here. Middle content. Repeated phrase here."
+const dupMatch = findCitationEvidenceRange(dupDoc, "Repeated phrase here.")
+assert(dupMatch.status === "ambiguous", "duplicate evidence must return ambiguous")
+
+console.log("citation evidence matching: OK")

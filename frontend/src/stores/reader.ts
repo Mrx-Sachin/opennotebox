@@ -1,4 +1,13 @@
 import type { Podcast } from "@/services/api"
+import type { Citation, CitationEvidence } from "@/services/types"
+
+export type CitationTarget = Pick<Citation, "doc_id" | "page" | "evidence">
+
+export interface PendingCitationHighlight {
+  docId: number
+  page: number
+  evidence?: CitationEvidence | null
+}
 import { create } from "zustand"
 
 export interface ActiveReading {
@@ -46,7 +55,7 @@ interface ReaderState {
       deliberate tap (or this toggle). */
   copyOnSelect: boolean
   /** Citation excerpt waiting to be flash-highlighted once its page renders. */
-  pendingHighlight: { page: number; excerpt: string } | null
+  pendingHighlight: PendingCitationHighlight | null
   /** Brief UX notice when a citation jump could not flash-highlight. */
   citationToast: string | null
   /** Document whose saved reading position has been applied (or found absent).
@@ -83,7 +92,7 @@ interface ReaderState {
   setFollowReading: (on: boolean) => void
   toggleInvertPdf: () => void
   setCopyOnSelect: (on: boolean) => void
-  jumpToCitation: (page: number | null, excerpt: string) => void
+  jumpToCitation: (citation: CitationTarget) => void
   clearPendingHighlight: () => void
   /** Drop pending highlight and show a short toast (page jump still happened). */
   failPendingHighlight: (message: string) => void
@@ -127,7 +136,7 @@ const initialCopyOnSelect = () => {
   return localStorage.getItem(COPY_ON_SELECT_KEY) === "on"
 }
 
-export const useReader = create<ReaderState>((set) => ({
+export const useReader = create<ReaderState>((set, get) => ({
   selectedDocId: null,
   currentPage: 1,
   numPages: 0,
@@ -180,12 +189,16 @@ export const useReader = create<ReaderState>((set) => ({
           ...(s.panelsExclusive ? { sidebarCollapsed: true } : {}),
         }
       }
+      const keepPending = docId != null && s.pendingHighlight?.docId === docId ? s.pendingHighlight : null
+      const pageToOpen = keepPending ? keepPending.page : startPage && startPage > 0 ? startPage : 1
       return {
         selectedDocId: docId,
-        currentPage: startPage && startPage > 0 ? startPage : 1,
+        currentPage: pageToOpen,
         progressRestoredFor: null,
         numPages,
         focusMode: false,
+        pendingHighlight: keepPending,
+        citationToast: keepPending ? s.citationToast : null,
         ...(s.panelsExclusive && docId != null ? { sidebarCollapsed: true } : {}),
       }
     }),
@@ -265,12 +278,19 @@ export const useReader = create<ReaderState>((set) => ({
     localStorage.setItem(COPY_ON_SELECT_KEY, on ? "on" : "off")
     set({ copyOnSelect: on })
   },
-  jumpToCitation: (page, excerpt) => {
-    // Non-paged sources (e.g. knowledge graph) carry no page to jump to.
-    if (page == null) return set({ pendingHighlight: null, citationToast: null })
+  jumpToCitation: (citation: CitationTarget) => {
+    if (citation.page == null) {
+      return set({ pendingHighlight: null, citationToast: null })
+    }
+    const currentDocId = get().selectedDocId
+    const isSameDoc = citation.doc_id == null || citation.doc_id === currentDocId
     set({
-      currentPage: page,
-      pendingHighlight: { page, excerpt: excerpt || "" },
+      ...(isSameDoc ? { currentPage: citation.page } : {}),
+      pendingHighlight: {
+        docId: citation.doc_id ?? currentDocId ?? 0,
+        page: citation.page,
+        evidence: citation.evidence,
+      },
       citationToast: null,
     })
   },

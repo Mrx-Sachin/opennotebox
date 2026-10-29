@@ -271,3 +271,154 @@ export function findQuoteExtent(
   if (lastHay < startHay || lastHay >= hay.length) lastHay = startHay
   return rangeFromTokens(haystack, hay[startHay], hay[lastHay])
 }
+
+// ---------------------------------------------------------------------------
+// Strict Citation Evidence Matching (separated from loose narration alignment)
+// ---------------------------------------------------------------------------
+
+const CITATION_LIGATURES: Record<string, string> = {
+  "\uFB00": "ff",
+  "\uFB01": "fi",
+  "\uFB02": "fl",
+  "\uFB03": "ffi",
+  "\uFB04": "ffl",
+  "\uFB05": "st",
+  "\uFB06": "st",
+}
+
+const CITATION_NON_CHARACTERS = new Set([
+  0xfffe, // Unicode non-character (observed in PDF text extraction)
+  0xffff,
+  0xfffd, // Unicode replacement character
+  0x200b, // Zero-width space
+  0x200c, // ZWNJ
+  0x200d, // ZWJ
+  0xfeff, // Byte order mark
+])
+
+function isLetter(ch: string): boolean {
+  return /[a-zA-Z\u00C0-\u024F\u1E00-\u1EFF]/.test(ch)
+}
+
+function normalizeCitationQuote(ch: string): string {
+  if (ch === "\u2018" || ch === "\u2019" || ch === "\u201a") return "'"
+  if (ch === "\u201c" || ch === "\u201d" || ch === "\u201e") return "\""
+  return ch
+}
+
+/**
+ * Symmetric citation text normalization with character index mapping.
+ * Handles ligatures, Unicode lowercasing expansion (e.g. Turkish \u0130),
+ * and de-hyphenates ONLY letter-to-letter line wraps (preserving numeric
+ * signs like \"-1\" and ranges like \"1-3\").
+ */
+export function normalizeCitationWithMap(original: string): NormalizedText {
+  let norm = ""
+  const map: number[] = []
+  let pendingSpace = false
+  let spaceIndex = -1
+
+  for (let i = 0; i < original.length; i++) {
+    const code = original.charCodeAt(i)
+    if (CITATION_NON_CHARACTERS.has(code)) continue
+
+    const ch = original[i]
+
+    // De-hyphenate letter-to-letter wraps:
+    // letter before hyphen, followed by whitespace (newline or space between PDF text spans), then letter.
+    if ((ch === "-" || ch === "\u00ad" || ch === "\u2010") && i > 0 && isLetter(original[i - 1])) {
+      let j = i + 1
+      while (j < original.length && /\s/.test(original[j])) {
+        j++
+      }
+      if (j > i + 1 && j < original.length && isLetter(original[j])) {
+        i = j - 1
+        continue
+      }
+    }
+
+    if (ch === "\u00ad") continue // Soft hyphen inside a word
+
+    if (/\s/.test(ch)) {
+      if (norm.length > 0 && !pendingSpace) {
+        pendingSpace = true
+        spaceIndex = i
+      }
+      continue
+    }
+
+    if (pendingSpace) {
+      norm += " "
+      map.push(spaceIndex >= 0 ? spaceIndex : i)
+      pendingSpace = false
+    }
+
+    const lig = CITATION_LIGATURES[ch]
+    if (lig) {
+      for (const c of lig) {
+        norm += c.toLowerCase()
+        map.push(i)
+      }
+      continue
+    }
+
+    const q = normalizeCitationQuote(ch)
+    const lower = q.toLowerCase()
+    for (const c of lower) {
+      norm += c
+      map.push(i)
+    }
+  }
+
+  return { norm, map }
+}
+
+/**
+ * Exact symmetric needle normalization: uses the exact same rules as the text layer.
+ */
+export function normalizeCitationNeedle(needle: string): string {
+  return normalizeCitationWithMap(needle).norm
+}
+
+export type CitationMatchResult =
+  | { status: "matched"; start: number; end: number }
+  | { status: "not_found" }
+  | { status: "ambiguous" }
+
+/**
+ * Match exact citation evidence against the PDF text layer.
+ * Requires a unique complete normalized match.
+ */
+export function findCitationEvidenceRange(
+  layerText: string,
+  exactEvidence: string
+): CitationMatchResult {
+  const cleanNeedle = exactEvidence.trim()
+  if (!cleanNeedle) return { status: "not_found" }
+
+  const haystack = normalizeCitationWithMap(layerText)
+  const needleNorm = normalizeCitationNeedle(cleanNeedle)
+  if (!needleNorm || !haystack.norm) return { status: "not_found" }
+
+  let matchCount = 0
+  let firstIdx = -1
+  let pos = 0
+  while ((pos = haystack.norm.indexOf(needleNorm, pos)) !== -1) {
+    matchCount++
+    if (matchCount === 1) {
+      firstIdx = pos
+    } else {
+      return { status: "ambiguous" }
+    }
+    pos += 1
+  }
+
+  if (matchCount === 0 || firstIdx === -1) {
+    return { status: "not_found" }
+  }
+
+  const start = haystack.map[firstIdx]
+  const endNormIdx = firstIdx + needleNorm.length - 1
+  const end = haystack.map[Math.min(endNormIdx, haystack.map.length - 1)] + 1
+  return { status: "matched", start, end }
+}
