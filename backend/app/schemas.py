@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Annotated, Dict, Optional, List
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
 
 class UserCreate(BaseModel):
@@ -261,12 +261,41 @@ class ChatScopeUpdate(BaseModel):
     page_scope: Optional[dict] = None
 
 
+class CitationEvidence(BaseModel):
+    exact: str
+    model_config = ConfigDict(extra="allow")
+
+    @field_validator("exact")
+    @classmethod
+    def validate_exact(cls, v: str) -> str:
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError("Citation evidence exact must not be empty or whitespace")
+        return v
+
+
+class Citation(BaseModel):
+    n: Optional[int] = None
+    doc_id: Optional[int] = None
+    doc_title: Optional[str] = None
+    page: Optional[int] = None
+    excerpt: str = ""
+    evidence: Optional[CitationEvidence] = None
+    model_config = ConfigDict(from_attributes=True, extra="allow")
+
+    @model_serializer(mode="wrap")
+    def serialize_citation(self, handler):
+        data = handler(self)
+        if data.get("evidence") is None:
+            data.pop("evidence", None)
+        return data
+
+
 class MessageResponse(BaseModel):
     id: int
     conversation_id: int
     role: str
     content: str
-    citations: Optional[list] = None
+    citations: Optional[List[Citation]] = None
     token_count: int = 0
     model_config = ConfigDict(from_attributes=True)
 

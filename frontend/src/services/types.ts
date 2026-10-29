@@ -85,6 +85,10 @@ export interface Summary {
   status?: "generating" | "failed" | null
 }
 
+export interface CitationEvidence {
+  exact: string
+}
+
 export interface Citation {
   n: number
   doc_id: number
@@ -92,6 +96,7 @@ export interface Citation {
   /** Page number, or null for non-paged sources (e.g. knowledge graph). */
   page: number | null
   excerpt: string
+  evidence?: CitationEvidence | null
 }
 
 export interface Message {

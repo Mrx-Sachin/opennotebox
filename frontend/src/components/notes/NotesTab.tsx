@@ -379,7 +379,13 @@ function NoteCard({
       selectDoc(note.document_id, undefined, note.page_number)
       router.push(`/dashboard/read/${note.document_id}`)
     }
-    if (note.quote) jumpToCitation(note.page_number, note.quote)
+    if (note.quote) {
+      jumpToCitation({
+        doc_id: note.document_id,
+        page: note.page_number,
+        evidence: { exact: note.quote },
+      })
+    }
     else setPage(note.page_number)
   }
 

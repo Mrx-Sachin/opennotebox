@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { visit } from "unist-util-visit"
@@ -85,8 +85,11 @@ export default function MessageBody({ content, citations, onJump }: MessageBodyP
   const [preview, setPreview] = useState<Preview | null>(null)
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const byNumber = new Map<number, Citation>()
-  for (const c of citations ?? []) byNumber.set(c.n, c)
+  const byNumber = useMemo(() => {
+    const m = new Map<number, Citation>()
+    for (const c of citations ?? []) m.set(c.n, c)
+    return m
+  }, [citations])
 
   const scheduleHide = useCallback(() => {
     if (hideTimer.current) clearTimeout(hideTimer.current)
@@ -99,54 +102,61 @@ export default function MessageBody({ content, citations, onJump }: MessageBodyP
 
   useEffect(() => () => cancelHide(), [cancelHide])
 
-  const renderChip = (numbers: number[], key: string) => (
-    <span key={key}>
-      {numbers.map((n) => {
-        const citation = byNumber.get(n)
-        if (!citation) return null
-        return (
-          <button
-            key={n}
-            onClick={() => onJump(citation)}
-            onMouseEnter={(e) => {
-              cancelHide()
-              setPreview({ citation, rect: e.currentTarget.getBoundingClientRect() })
-            }}
-            onMouseLeave={scheduleHide}
-            title={citation.page != null ? `${citation.doc_title}, page ${citation.page}` : citation.doc_title}
-            className="mx-0.5 inline-flex h-4 min-w-4 -translate-y-px items-center justify-center rounded bg-indigo/20 px-1 align-middle text-[10px] font-semibold tabular-nums text-indigo transition-colors hover:bg-indigo/40 hover:text-cream"
-          >
-            {n}
-          </button>
-        )
-      })}
-    </span>
+  const onJumpRef = useRef(onJump)
+  onJumpRef.current = onJump
+  const byNumberRef = useRef(byNumber)
+  byNumberRef.current = byNumber
+  const cancelHideRef = useRef(cancelHide)
+  cancelHideRef.current = cancelHide
+  const scheduleHideRef = useRef(scheduleHide)
+  scheduleHideRef.current = scheduleHide
+
+  const resolvable = useMemo(() => new Set(byNumber.keys()), [byNumber])
+  const remarkPlugins: PluggableList = useMemo(
+    () => (resolvable.size > 0 ? [remarkGfm, [remarkCitationMarkers, resolvable]] : [remarkGfm]),
+    [resolvable]
   )
 
-  // No resolvable citation markers: still render markdown (answers contain
-  // markdown regardless of citations), just skip the citation-marker plugin.
-  const resolvable = new Set(byNumber.keys())
-  const remarkPlugins: PluggableList =
-    resolvable.size > 0 ? [remarkGfm, [remarkCitationMarkers, resolvable]] : [remarkGfm]
+  const components = useMemo(
+    () => ({
+      p: (p: any) => <p className="whitespace-pre-wrap text-cream" {...p} />,
+      li: (p: any) => <li className="text-cream" {...p} />,
+      strong: (p: any) => <strong className="text-cream" {...p} />,
+      code: (p: any) => <code className="rounded bg-void px-1 text-[13px] text-cream" {...p} />,
+            "citation-marker": ({ numbers }: { numbers: string }) => (
+        <span>
+          {numbers
+            .split(",")
+            .map((n) => parseInt(n, 10))
+            .map((n) => {
+              const citation = byNumberRef.current.get(n)
+              if (!citation) return null
+              return (
+                <button
+                  key={n}
+                  onClick={() => { setPreview(null); onJumpRef.current(citation); }}
+                  onMouseEnter={(e) => {
+                    cancelHideRef.current()
+                    setPreview({ citation, rect: e.currentTarget.getBoundingClientRect() })
+                  }}
+                  onMouseLeave={scheduleHideRef.current}
+                  title={citation.page != null ? `${citation.doc_title}, page ${citation.page}` : citation.doc_title}
+                  className="mx-0.5 inline-flex h-4 min-w-4 -translate-y-px items-center justify-center rounded bg-indigo/20 px-1 align-middle text-[10px] font-semibold tabular-nums text-indigo transition-colors hover:bg-indigo/40 hover:text-cream"
+                >
+                  {n}
+                </button>
+              )
+            })}
+        </span>
+      ),
+    }),
+    []
+  )
 
   return (
     <>
       <div className="text-sm">
-        <ReactMarkdown
-          remarkPlugins={remarkPlugins}
-          components={{
-            p: (p) => <p className="whitespace-pre-wrap text-cream" {...p} />,
-            li: (p) => <li className="text-cream" {...p} />,
-            strong: (p) => <strong className="text-cream" {...p} />,
-            code: (p) => <code className="rounded bg-void px-1 text-[13px] text-cream" {...p} />,
-            // @ts-expect-error -- custom element emitted by remarkCitationMarkers
-            "citation-marker": ({ numbers }: { numbers: string }) =>
-              renderChip(
-                numbers.split(",").map((n) => parseInt(n, 10)),
-                numbers
-              ),
-          }}
-        >
+        <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
           {content}
         </ReactMarkdown>
       </div>
