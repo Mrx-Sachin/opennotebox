@@ -164,7 +164,11 @@ export default function SelectionBar() {
               onClick={() => {
                 openSummary()
                 focusNote(existing.id)
-                useReader.getState().jumpToCitation(existing.page_number, existing.quote || "")
+                useReader.getState().jumpToCitation({
+                  doc_id: existing.document_id ?? useReader.getState().selectedDocId ?? 0,
+                  page: existing.page_number,
+                  evidence: existing.quote ? { exact: existing.quote } : null,
+                })
                 setSelection(null)
               }}
               className="rounded-full bg-indigo/20 px-3 py-1 text-xs font-medium text-indigo hover:bg-indigo/30"

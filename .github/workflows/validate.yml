@@ -75,7 +75,7 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:3101/login > /dev/null
           cd e2e
-          E2E_BASE_URL=http://127.0.0.1:3101 npx playwright test tests/library.spec.ts tests/library.phone.spec.ts tests/chat-stream.spec.ts tests/notebooks.spec.ts tests/notebooks.phone.spec.ts tests/shared-library.spec.ts tests/shared-library.phone.spec.ts
+          E2E_BASE_URL=http://127.0.0.1:3101 npx playwright test tests/library.spec.ts tests/library.phone.spec.ts tests/chat-stream.spec.ts tests/notebooks.spec.ts tests/notebooks.phone.spec.ts tests/shared-library.spec.ts tests/shared-library.phone.spec.ts tests/citation-highlight.spec.ts
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

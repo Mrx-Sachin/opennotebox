@@ -21,6 +21,11 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from app.database import SessionLocal
 from app.models import Document, LibraryEntry, Summary
 from app.services import retrieval
+from app.services.citations import (
+    build_passage_sources,
+    format_source_line,
+    used_citations,
+)
 from app.services.json_extract import extract_json
 from app.services.metrics import get_metrics
 from app.services.llm_semaphore import (
@@ -41,7 +46,6 @@ HISTORY_TURNS = 3  # user+assistant pairs included in the answer prompt
 # short index list; rewrite returns a small JSON object; neither needs 2048.
 STRUCTURED_RETRY_MAX_TOKENS = 512
 
-CITATION_MARKER_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
 _REFERENCE_WORDS = frozenset(
     "it its this that these those they them their he him she her we us our".split()
 )
@@ -63,17 +67,6 @@ def _text_from_chunk(chunk: Any) -> str:
             if isinstance(part, dict) and part.get("type") == "text"
         )
     return ""
-
-
-def format_source_line(s: Dict[str, Any]) -> str:
-    """Render a numbered source for the prompt.
-
-    Graph sources have no page, so label them as (doc_title) instead of
-    (doc_title, p. None).
-    """
-    if s.get("page") is None:
-        return f"[{s['n']}] ({s['doc_title']})\n{s['text']}"
-    return f"[{s['n']}] ({s['doc_title']}, p. {s['page']})\n{s['text']}"
 
 
 def library_document_titles(db, doc_ids: List[int], user_id: Optional[int]) -> Dict[int, str]:
@@ -729,59 +722,32 @@ class ChatEngine:
     def _build_sources(
         self, db, doc_ids: List[int], hits: List[Dict], user_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """Number the retrieved chunks into a source list within budget.
+        """Number the retrieved chunks into a passage-level source list within budget.
 
         When retrieval comes back nearly empty (broad questions like "what is
         this book about"), section summaries are used as sources instead.
         """
         titles = library_document_titles(db, doc_ids, user_id)
-
-        sources: List[Dict[str, Any]] = []
-        used = 0
-        for h in hits:
-            if used + len(h["text"]) > SOURCE_CHAR_BUDGET:
-                continue
-            used += len(h["text"])
-            sources.append(
-                {
-                    "n": len(sources) + 1,
-                    "doc_id": h["doc_id"],
-                    "doc_title": titles.get(h["doc_id"], "Unknown"),
-                    "page": h["page"],
-                    "text": h["text"],
-                }
+        section_summaries = []
+        if len(hits) < 2 and user_id is not None:
+            section_summaries = (
+                db.query(Summary)
+                .filter(
+                    Summary.document_id.in_(doc_ids),
+                    Summary.user_id == user_id,
+                    Summary.mode == "section",
+                    Summary.content.isnot(None),
+                    Summary.content != "",
+                )
+                .limit(4)
+                .all()
             )
-
-        if len(sources) < 2:
-            section_summaries = []
-            if user_id is not None:
-                section_summaries = (
-                    db.query(Summary)
-                    .filter(
-                        Summary.document_id.in_(doc_ids),
-                        Summary.user_id == user_id,
-                        Summary.mode == "section",
-                        Summary.content.isnot(None),
-                        Summary.content != "",
-                    )
-                    .limit(4)
-                    .all()
-                )
-            for s in section_summaries:
-                text = s.content[:2000]
-                if used + len(text) > SOURCE_CHAR_BUDGET:
-                    break
-                used += len(text)
-                sources.append(
-                    {
-                        "n": len(sources) + 1,
-                        "doc_id": s.document_id,
-                        "doc_title": titles.get(s.document_id, "Unknown"),
-                        "page": s.page_number or 1,
-                        "text": text,
-                    }
-                )
-        return sources
+        return build_passage_sources(
+            hits=hits,
+            titles=titles,
+            max_budget=SOURCE_CHAR_BUDGET,
+            fallback_summaries=section_summaries,
+        )
 
     # ------------------------------------------------------------------
     # Prompting
@@ -883,7 +849,7 @@ class ChatEngine:
             "You are a precise research assistant answering questions about the "
             "user's documents using ONLY the numbered sources provided. Every "
             "factual claim must carry an inline citation like [1] or [2, 3] "
-            "referencing the source number(s) it came from. Never cite a number "
+            "referencing the particular numbered passage that directly supports that claim, never another passage from the same page or document. Never cite a number "
             "that is not in the source list, and never make claims the sources "
             "do not support. The sources may use different vocabulary than the "
             "question; connect them when the meaning matches (e.g. a passage "
@@ -915,53 +881,11 @@ class ChatEngine:
     # Citation filtering
 
     @staticmethod
-    def _citation_excerpt(text: str, max_len: int = 80) -> str:
-        """Short PDF-layer anchor for citation flash-highlight.
-
-        Full chunks (up to ~1.2k chars) almost never match PDF.js text-layer
-        extraction 1:1 (whitespace, hyphenation, encoding). A first-sentence /
-        ~40-80 char prefix matches far more reliably while still reading well
-        in the citation hover card.
-        """
-        text = (text or "").strip()
-        if not text:
-            return ""
-        # Prefer the first sentence if it lands in a useful length band.
-        m = re.search(r"[.!?][\"')\]]?(?:\s|$)", text[:160])
-        if m:
-            sentence = text[: m.end()].strip()
-            if 30 <= len(sentence) <= 120:
-                return sentence
-        if len(text) <= max_len:
-            return text
-        cut = text[:max_len]
-        sp = cut.rfind(" ")
-        if sp >= 40:
-            return cut[:sp].rstrip(" ,;:-")
-        return cut.rstrip(" ,;:-")
-
-    @staticmethod
     def _used_citations(
         content: str, sources: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """Keep only sources whose number actually appears as [n] in the answer."""
-        by_n = {s["n"]: s for s in sources}
-        cited: List[int] = []
-        for match in CITATION_MARKER_RE.finditer(content):
-            for raw in match.group(1).split(","):
-                n = int(raw.strip())
-                if n in by_n and n not in cited:
-                    cited.append(n)
-        return [
-            {
-                "n": n,
-                "doc_id": by_n[n]["doc_id"],
-                "doc_title": by_n[n]["doc_title"],
-                "page": by_n[n]["page"],
-                "excerpt": ChatEngine._citation_excerpt(by_n[n]["text"]),
-            }
-            for n in cited
-        ]
+        return used_citations(content, sources)
 
 
 chat_engine = ChatEngine()
