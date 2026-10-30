@@ -84,9 +84,10 @@ function LibraryContent() {
   }, [])
 
   useEffect(() => {
+    if (search === debouncedSearch) return
     const timer = setTimeout(() => { setDebouncedSearch(search); setPage(1) }, 250)
     return () => clearTimeout(timer)
-  }, [search])
+  }, [search, debouncedSearch])
 
   useEffect(() => {
     setSearch(""); setDebouncedSearch(""); setShelf("all"); setFormat(""); setPage(1); setSelected([]); setActionError("")
