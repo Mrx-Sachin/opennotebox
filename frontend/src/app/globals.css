@@ -28,6 +28,9 @@
     --ring: 221.2 83.2% 53.3%;
     --radius: 0.5rem;
 
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-display: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
     /* Reader theme tokens (PROJECT_DESIGN.md §11) - dark values are the default;
        a future light mode overrides these under a .light scope */
     --void: #030304;
