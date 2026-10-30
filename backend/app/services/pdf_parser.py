@@ -168,16 +168,20 @@ class PDFParserService:
                 AcceleratorDevice,
             )
             from docling.datamodel.base_models import InputFormat
+            from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
 
             pipeline_options = PdfPipelineOptions()
             pipeline_options.do_ocr = False
             pipeline_options.do_table_structure = False
             pipeline_options.accelerator_options = AcceleratorOptions(
-                num_threads=4, device=AcceleratorDevice.CPU
+                num_threads=2, device=AcceleratorDevice.CPU
             )
             converter = DocumentConverter(
                 format_options={
-                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+                    InputFormat.PDF: PdfFormatOption(
+                        backend=PyPdfiumDocumentBackend,
+                        pipeline_options=pipeline_options,
+                    )
                 }
             )
             conv_res = converter.convert(file_path)
