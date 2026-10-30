@@ -68,6 +68,8 @@ def _replace_extracted_pages(db: Session, doc_id: int, pages: list[dict]) -> Non
             headings=page.get("headings"),
             tables=page.get("tables"),
             images=page.get("images"),
+            layout_regions=page.get("layout_regions"),
+            narration_exclusions=page.get("narration_exclusions"),
         )
         for page in pages
     )
@@ -75,7 +77,7 @@ def _replace_extracted_pages(db: Session, doc_id: int, pages: list[dict]) -> Non
 
 @celery_app.task(bind=True, max_retries=3, soft_time_limit=300)
 def parse_pdf_document(self, doc_id: int) -> dict:
-    """Parse a PDF document using OpenDataLoader, store extracted text per page."""
+    """Parse a PDF document using Docling, store extracted text per page."""
     db: Session = SessionLocal()
     try:
         doc = db.query(Document).filter(Document.id == doc_id).first()

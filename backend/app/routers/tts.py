@@ -744,10 +744,14 @@ def play_page(
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
-    """Start TTS playback for a raw page's text. Page text is never
-    Markdown, so it is NOT run through strip_markdown (that would risk
-    mangling genuine content, e.g. a page discussing '#' or '*' characters)."""
+    """Start TTS playback for a raw page's text.
+
+    When semantic bounding boxes (from Docling) are present, extracts only
+    narratable regions, skipping headers, footers, tables, captions, etc.
+    Guards against empty speech when the entire page is non-narratable.
+    """
     from app.models import ExtractedText
+    from app.services.narration import get_narratable_text
 
     doc = get_document_for_user(db, user.id, doc_id)
     if not doc:
@@ -761,8 +765,18 @@ def play_page(
     if not page:
         raise HTTPException(status_code=404, detail="Document or page not found")
 
+    text_to_speak = get_narratable_text(
+        content=page.content,
+        narration_exclusions=page.narration_exclusions,
+        layout_regions=page.layout_regions,
+        bounding_boxes=page.bounding_boxes,
+        fallback_content=page.content,
+    )
+    if not text_to_speak or not text_to_speak.strip():
+        raise HTTPException(status_code=400, detail="Page contains no narratable text")
+
     resolved_voice = voice or get_default_voice(user.id)
-    return _cached_or_queue(db, user, page.content, resolved_voice, doc_id=doc.id)
+    return _cached_or_queue(db, user, text_to_speak, resolved_voice, doc_id=doc.id)
 
 
 @router.get("/cache/{text_hash}")

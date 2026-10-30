@@ -12,8 +12,8 @@ import {
   Podcast,
   getPodcastAudioUrl,
 } from "./api"
-import { splitSentences, sentenceStartTimes, sentenceIndexAt, Sentence } from "@/lib/sentences"
-import { filterNarratable, dehyphenateForSpeech } from "@/lib/narrationFilter"
+import { sentenceStartTimes, sentenceIndexAt, Sentence } from "@/lib/sentences"
+import { dehyphenateForSpeech, buildPageSentences } from "@/lib/narrationFilter"
 import { useReader } from "@/stores/reader"
 
 /**
@@ -300,26 +300,44 @@ class TtsEngine {
     return this.docId === docId && this.page === page ? this.pageAudio?.sentences ?? [] : []
   }
 
+  public clearPageSentencesCache(docId?: number): void {
+    if (docId == null || this.docId === docId) {
+      this.stop()
+    }
+    if (docId == null) {
+      this.pageSentencesCache.clear()
+      return
+    }
+    const prefix = `${docId}:`
+    for (const key of Array.from(this.pageSentencesCache.keys())) {
+      if (key.startsWith(prefix)) {
+        this.pageSentencesCache.delete(key)
+      }
+    }
+  }
+
   private loadPageSentences(docId: number, pageNum: number): Promise<PageSentences> {
     const key = `${docId}:${pageNum}`
     let cached = this.pageSentencesCache.get(key)
     if (!cached) {
-      cached = getPage(docId, pageNum).then((p) => {
-        // Order matters: filter first, THEN dehyphenate. Filtering is what
-        // decides the sentence list's length, and PdfViewer runs exactly
-        // filterNarratable(splitSentences(content)) on the same page text -
-        // the two lists must stay index-for-index identical or clicking a
-        // line reads a different one. Dehyphenation runs after and only
-        // rewrites text, never the length, so the alignment survives.
-        const content = p.content || ""
-        const sentences = dehyphenateForSpeech(
-          filterNarratable(splitSentences(content), content)
-        )
-        return {
-          sentences,
-          totalChars: sentences.reduce((n, s) => n + s.text.trim().length, 0) || 1,
-        }
-      })
+      cached = getPage(docId, pageNum)
+        .then((p) => {
+          // Build sentences using shared buildPageSentences, then dehyphenate
+          // for speech. PdfViewer runs the same sentence builder so sentence
+          // indices stay aligned.
+          const content = p.content || ""
+          const sentences = dehyphenateForSpeech(
+            buildPageSentences(content, p.narration_exclusions)
+          )
+          return {
+            sentences,
+            totalChars: sentences.reduce((n, s) => n + s.text.trim().length, 0) || 1,
+          }
+        })
+        .catch((err) => {
+          this.pageSentencesCache.delete(key)
+          throw err
+        })
       // Evict oldest entries to keep the cache bounded - a long reading
       // session across many documents would otherwise accumulate unbounded
       // page content references in memory.

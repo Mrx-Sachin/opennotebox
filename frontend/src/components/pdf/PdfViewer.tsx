@@ -1,13 +1,25 @@
 "use client"
 
+import axios from "axios"
+
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useViewport } from "@/hooks/useViewport"
 import { getFileUrl, getPage } from "@/services/api"
 import { useReader } from "@/stores/reader"
 import LoadingSpinner from "@/components/ui/LoadingSpinner"
 import { ttsEngine } from "@/services/ttsEngine"
-import { splitSentences, Sentence } from "@/lib/sentences"
-import { filterNarratable, dehyphenateForSpeech } from "@/lib/narrationFilter"
+import { Sentence } from "@/lib/sentences"
+import {
+  dehyphenateForSpeech,
+  buildPageSentences,
+  isPointInRejectedDoclingRegion,
+} from "@/lib/narrationFilter"
+import {
+  BoundingBoxItem,
+  DoclingRegion,
+  extractDoclingRegions,
+  hasDoclingRegions,
+} from "@/services/types"
 import {
   normalizeWithMap,
   findRange,
@@ -45,6 +57,7 @@ import {
   X,
   TextSelect,
   Volume2,
+  Layers,
 } from "lucide-react"
 
 interface PdfViewerProps {
@@ -62,6 +75,8 @@ interface PageText {
   content: string
   sentences: Sentence[]
   normContent: NormalizedText
+  doclingRegions: DoclingRegion[]
+  hasDocling: boolean
 }
 
 // Canvas backing-store multiplier. Above 1 the page is drawn at more device
@@ -100,12 +115,19 @@ function loadPageText(docId: number, pageNum: number): Promise<PageText> {
   let cached = pageTextCache.get(key)
   if (!cached) {
     cached = getPage(docId, pageNum)
-      .then((p) => {
-        const content = p.content || ""
+      .then((page) => {
+        const content = page.content || ""
+        const boxes = page.bounding_boxes ?? null
+        const regions = page.layout_regions ?? null
+        const exclusions = page.narration_exclusions ?? null
+        const doclingRegions = extractDoclingRegions(regions ?? boxes)
+        const hasDocling = doclingRegions.length > 0
         return {
           content,
-          sentences: filterNarratable(splitSentences(content), content),
+          sentences: buildPageSentences(content, exclusions),
           normContent: normalizeWithMap(content),
+          doclingRegions,
+          hasDocling,
         }
       })
       .catch((err) => {
@@ -204,6 +226,7 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
   // Select mode: clicks never start TTS, so a drag can start on the word
   // itself. Off by default; double-click / long-press still select a word.
   const [selectMode, setSelectMode] = useState(false)
+  const [showOverlay, setShowOverlay] = useState(false)
   const viewport = useViewport()
   const touchSelect = viewport === "phone"
   // Inclusive range of pages that currently have a live PdfPage instance.
@@ -676,6 +699,18 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
           >
             {selectMode ? <TextSelect className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
           </button>
+          <button
+            data-testid="docling-overlay-toggle"
+            aria-label="Toggle reading overlay"
+            aria-pressed={showOverlay}
+            onClick={() => setShowOverlay((prev) => !prev)}
+            className={`rounded p-1.5 transition-colors ${
+              showOverlay ? "bg-indigo/15 text-indigo" : "text-cream-dim hover:bg-surface hover:text-cream"
+            }`}
+            title={showOverlay ? "Hide reading overlay" : "Show reading overlay"}
+          >
+            <Layers className="h-4 w-4" />
+          </button>
         </div>
 
         <div className="flex items-center gap-2">
@@ -800,6 +835,7 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
                   onNavigate={goToPage}
                   selectMode={selectMode}
                   touchSelect={touchSelect}
+                  showOverlay={showOverlay}
                 />
               )
             })
@@ -823,6 +859,7 @@ interface PdfPageProps {
   onNavigate: (pageNum: number) => void
   selectMode: boolean
   touchSelect: boolean
+  showOverlay: boolean
 }
 
 type PdfLink = PdfLinkRect
@@ -832,7 +869,7 @@ type PdfLink = PdfLinkRect
  * Clicking a text span starts TTS from that sentence; during playback the
  * active sentence's spans get an amber highlight and stay scrolled into view.
  */
-function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, selectMode, touchSelect }: PdfPageProps) {
+function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, selectMode, touchSelect, showOverlay }: PdfPageProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const textLayerRef = useRef<HTMLDivElement>(null)
@@ -842,6 +879,27 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
   // pendingHighlight before spanDataRef was ready (the "click twice" bug).
   const [textReady, setTextReady] = useState(false)
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null)
+  const [pageData, setPageData] = useState<PageText | null>(null)
+  const [overlayError, setOverlayError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!showOverlay) return
+    let active = true
+    loadPageText(docId, pageNum)
+      .then((data) => {
+        if (active) {
+          setPageData(data)
+          setOverlayError(null)
+        }
+      })
+      .catch((err) => {
+        if (active) setOverlayError("Failed to load reading layout.")
+        console.error("Failed to load page text for overlay:", err)
+      })
+    return () => {
+      active = false
+    }
+  }, [docId, pageNum, showOverlay])
   const [links, setLinks] = useState<PdfLink[]>([])
   const [hoverLinkKey, setHoverLinkKey] = useState<string | null>(null)
   const hoverLink = hoverLinkKey ? links.find((l) => l.key === hoverLinkKey) ?? null : null
@@ -1096,16 +1154,34 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
     try {
       const pageText = await loadPageText(docId, pageNum)
       if (pageText.sentences.length === 0) return
+
+      const container = containerRef.current
+      if (container && pageText.doclingRegions.length > 0) {
+        const containerRect = container.getBoundingClientRect()
+        const targetRect = target.getBoundingClientRect()
+        if (containerRect.width > 0 && containerRect.height > 0) {
+          const centerX = (targetRect.left + targetRect.right) / 2
+          const centerY = (targetRect.top + targetRect.bottom) / 2
+          const normX = (centerX - containerRect.left) / containerRect.width
+          const normY = (centerY - containerRect.top) / containerRect.height
+          if (isPointInRejectedDoclingRegion(normX, normY, pageText.doclingRegions)) {
+            return
+          }
+        }
+      }
+
       // Proportional hint dampens repeated-phrase mismatches
       const hint = Math.floor(
         (ranges[idx][0] / Math.max(normLayer.map.length, 1)) * pageText.normContent.norm.length
       )
       const range = findRange(pageText.normContent, needle, hint)
-      let sentenceIdx = 0
-      if (range) {
-        sentenceIdx = pageText.sentences.findIndex((s) => range.start < s.end)
-        if (sentenceIdx === -1) sentenceIdx = 0
-      }
+      if (!range) return
+
+      const sentenceIdx = pageText.sentences.findIndex(
+        (sentenceItem) => range.start < sentenceItem.end && range.end > sentenceItem.start
+      )
+      if (sentenceIdx === -1) return
+
       void ttsEngine.readPage(
         docId,
         pageNum,
@@ -1113,7 +1189,11 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
         dehyphenateForSpeech(pageText.sentences),
       )
     } catch (err) {
-      console.error("Click-to-read failed:", err)
+      if (axios.isAxiosError(err) && err.response?.status === 404) {
+        useReader.getState().failPendingHighlight("Text extraction is in progress. Speech will be ready once extraction completes.")
+      } else {
+        console.error("Click-to-read failed:", err)
+      }
     }
   }
 
@@ -1329,7 +1409,15 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
 
   const openLink = (link: PdfLink) => {
     if (link.url) {
-      window.open(link.url, "_blank", "noopener,noreferrer")
+      if (!/^https?:\/\//i.test(link.url) && !link.url.startsWith("mailto:")) {
+        console.warn("Blocked non-http(s) link navigation:", link.url)
+        return
+      }
+      try {
+        window.open(link.url, "_blank", "noopener,noreferrer")
+      } catch (err) {
+        console.warn("Failed to open link:", err)
+      }
       return
     }
     if (link.dest) void followDest(link.dest)
@@ -1587,6 +1675,74 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
               : "Click to read aloud. Double-click or long-press a word to select it. Click a link to open it. Alt-click a link to read."
         }
       />
+      {showOverlay && (
+        <div
+          data-testid="docling-overlay-container"
+          className="pointer-events-none absolute inset-0 z-[3] overflow-hidden"
+        >
+          {overlayError ? (
+            <div
+              role="status"
+              className="absolute top-2 right-2 max-w-[280px] rounded bg-void/90 p-2 text-xs text-rose-300 shadow border border-rose-500/30"
+            >
+              {overlayError}
+            </div>
+          ) : pageData ? (
+            pageData.hasDocling ? (
+              <>
+                <div
+                  data-testid="docling-overlay-legend"
+                  className="absolute top-2 right-2 rounded bg-void/90 px-2 py-1 text-[11px] font-medium text-cream shadow border border-surface flex items-center gap-2"
+                >
+                  <span className="flex items-center gap-1 text-emerald-400">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                    {pageData.doclingRegions.filter((regionItem) => regionItem.narrate).length} readable
+                  </span>
+                  <span className="text-cream-dim">•</span>
+                  <span className="flex items-center gap-1 text-rose-400">
+                    <span className="h-2 w-2 rounded-full bg-rose-500" />
+                    {pageData.doclingRegions.filter((regionItem) => !regionItem.narrate).length} skipped
+                  </span>
+                </div>
+                {pageData.doclingRegions.map((regionItem, regionIndex) => {
+                  const [left, top, right, bottom] = regionItem.bbox
+                  const width = Math.max(0, right - left)
+                  const height = Math.max(0, bottom - top)
+                  const isReadable = regionItem.narrate
+                  return (
+                    <div
+                      key={regionIndex}
+                      data-testid="docling-box"
+                      data-status={isReadable ? "readable" : "skipped"}
+                      data-narrate={String(isReadable)}
+                      data-label={regionItem.label}
+                      title={isReadable ? `Readable (${regionItem.label})` : `Skipped (${regionItem.label})`}
+                      className={`absolute rounded border ${
+                        isReadable
+                          ? "border-emerald-500/80 bg-emerald-500/10 text-emerald-300"
+                          : "border-rose-500/80 bg-rose-500/10 text-rose-300"
+                      }`}
+                      style={{
+                        left: `${left * 100}%`,
+                        top: `${top * 100}%`,
+                        width: `${width * 100}%`,
+                        height: `${height * 100}%`,
+                      }}
+                    />
+                  )
+                })}
+              </>
+            ) : (
+              <div
+                data-testid="docling-overlay-unavailable"
+                className="absolute top-2 right-2 max-w-[280px] rounded bg-void/90 p-2 text-xs text-amber-300 shadow border border-amber-500/30"
+              >
+                Reading overlay unavailable. Re-parse document to enable layout analysis.
+              </div>
+            )
+          ) : null}
+        </div>
+      )}
       {links.length > 0 && (
         <div className="pointer-events-none absolute inset-0 z-[2]">
           {links.map((link) => (

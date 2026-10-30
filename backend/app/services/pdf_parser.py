@@ -4,9 +4,13 @@ Handles PDF parsing with OCR for scanned documents, extracts page-level text
 with bounding boxes, headings, tables, and images.
 """
 import re
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from loguru import logger
+from app.services.narration import (
+    compute_narration_exclusions,
+    is_narratable_label,
+)
 
 
 def _has_text_layer(file_path: str) -> bool:
@@ -65,6 +69,7 @@ class PDFParserService:
                 page_data = self._extract_page_data(page, i)
                 result["pages"].append(page_data)
 
+            self._enrich_with_docling_regions(file_path, result)
             logger.info(f"Successfully parsed {result['num_pages']} pages from {file_path}")
             return result
 
@@ -81,6 +86,8 @@ class PDFParserService:
         bounding_boxes = self._get_bounding_boxes(page)
         headings = self._get_headings(page)
 
+        pw = float(getattr(page, "width", 612.0) or 612.0)
+        ph = float(getattr(page, "height", 792.0) or 792.0)
         return {
             "page_number": page_number,
             "content": text,
@@ -88,6 +95,8 @@ class PDFParserService:
             "headings": headings,
             "tables": getattr(page, "tables", []),
             "images": getattr(page, "images", []),
+            "page_width": pw,
+            "page_height": ph,
         }
 
     def _get_bounding_boxes(self, page) -> Optional[list]:
@@ -122,6 +131,143 @@ class PDFParserService:
             pass
         return None
 
+    def _enrich_with_docling_regions(self, file_path: str, result: Optional[dict]) -> None:
+        """Enrich parsed pages with Docling semantic regions and narration exclusions."""
+        if not result or not result.get("pages"):
+            return
+        try:
+            docling_regions = self._detect_docling_regions(file_path, result.get("num_pages", 0))
+        except Exception as e:
+            logger.warning(f"Docling region detection failed: {e}")
+            docling_regions = {}
+        for page in result["pages"]:
+            p_no = page["page_number"]
+            regions = docling_regions.get(p_no, [])
+            pw = float(page.get("page_width", 612.0) or 612.0)
+            ph = float(page.get("page_height", 792.0) or 792.0)
+            exclusions = compute_narration_exclusions(
+                page["content"],
+                page.get("bounding_boxes"),
+                regions,
+                page_width=pw,
+                page_height=ph,
+            )
+            page["layout_regions"] = regions
+            page["narration_exclusions"] = exclusions
+
+    def _detect_docling_regions(
+        self, file_path: str, num_pages: int
+    ) -> dict[int, list[dict]]:
+        """Run separate Docling layout detection with do_ocr=False and do_table_structure=False."""
+        regions_by_page: dict[int, list[dict]] = {p: [] for p in range(1, num_pages + 1)}
+        try:
+            from docling.document_converter import DocumentConverter, PdfFormatOption
+            from docling.datamodel.pipeline_options import (
+                PdfPipelineOptions,
+                AcceleratorOptions,
+                AcceleratorDevice,
+            )
+            from docling.datamodel.base_models import InputFormat
+
+            pipeline_options = PdfPipelineOptions()
+            pipeline_options.do_ocr = False
+            pipeline_options.do_table_structure = False
+            pipeline_options.accelerator_options = AcceleratorOptions(
+                num_threads=4, device=AcceleratorDevice.CPU
+            )
+            converter = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+                }
+            )
+            conv_res = converter.convert(file_path)
+
+            # Prefer raw layout predictions for region-only classification
+            if hasattr(conv_res, "pages") and isinstance(conv_res.pages, list):
+                for idx, page_obj in enumerate(conv_res.pages):
+                    page_no = getattr(page_obj, "page_no", idx + 1)
+                    if page_no not in regions_by_page:
+                        regions_by_page[page_no] = []
+                    pw = float(getattr(page_obj.size, "width", 612.0))
+                    ph = float(getattr(page_obj.size, "height", 792.0))
+
+                    clusters = []
+                    if (
+                        hasattr(page_obj, "predictions")
+                        and hasattr(page_obj.predictions, "layout")
+                        and hasattr(page_obj.predictions.layout, "clusters")
+                        and page_obj.predictions.layout.clusters
+                    ):
+                        clusters = page_obj.predictions.layout.clusters
+
+                    for c in clusters:
+                        label = (
+                            c.label.value
+                            if hasattr(c.label, "value")
+                            else str(c.label)
+                        )
+                        bbox = c.bbox
+                        if hasattr(bbox, "to_top_left_origin"):
+                            tl = bbox.to_top_left_origin(page_height=ph)
+                            l, t, r, b = tl.l, tl.t, tl.r, tl.b
+                        else:
+                            l, t, r, b = bbox.l, bbox.t, bbox.r, bbox.b
+                        norm_bbox = [
+                            max(0.0, min(1.0, float(l) / pw)),
+                            max(0.0, min(1.0, float(t) / ph)),
+                            max(0.0, min(1.0, float(r) / pw)),
+                            max(0.0, min(1.0, float(b) / ph)),
+                        ]
+                        narrate = is_narratable_label(label)
+                        regions_by_page[page_no].append({
+                            "label": label,
+                            "narrate": narrate,
+                            "bbox": norm_bbox,
+                            "source": "docling",
+                        })
+
+            # If layout clusters were empty, fallback to doc.iterate_items()
+            total_extracted = sum(len(v) for v in regions_by_page.values())
+            if total_extracted == 0 and hasattr(conv_res, "document"):
+                doc = conv_res.document
+                for item, _ in doc.iterate_items():
+                    label = getattr(item, "label", None)
+                    label_str = label.value if hasattr(label, "value") else str(label)
+                    prov = getattr(item, "prov", [])
+                    for p in prov:
+                        p_no = getattr(p, "page_no", None)
+                        bbox = getattr(p, "bbox", None)
+                        if p_no in regions_by_page and bbox is not None:
+                            doc_page = doc.pages.get(p_no)
+                            if doc_page and doc_page.size:
+                                pw = float(doc_page.size.width)
+                                ph = float(doc_page.size.height)
+                            else:
+                                pw, ph = 612.0, 792.0
+                            if hasattr(bbox, "to_top_left_origin"):
+                                tl = bbox.to_top_left_origin(page_height=ph)
+                                l, t, r, b = tl.l, tl.t, tl.r, tl.b
+                            else:
+                                l, t, r, b = bbox.l, bbox.t, bbox.r, bbox.b
+                            norm_bbox = [
+                                max(0.0, min(1.0, float(l) / pw)),
+                                max(0.0, min(1.0, float(t) / ph)),
+                                max(0.0, min(1.0, float(r) / pw)),
+                                max(0.0, min(1.0, float(b) / ph)),
+                            ]
+                            narrate = is_narratable_label(label_str)
+                            regions_by_page[p_no].append({
+                                "label": label_str,
+                                "narrate": narrate,
+                                "bbox": norm_bbox,
+                                "source": "docling",
+                            })
+        except Exception as e:
+            logger.warning(f"Docling region detection failed for {file_path}: {e}")
+            return {}
+
+        return regions_by_page
+
     def _fallback_parse(
         self, file_path: str, *, layout_mode: str = "auto"
     ) -> Optional[dict]:
@@ -146,8 +292,11 @@ class PDFParserService:
                         "content": text,
                         "bounding_boxes": boxes,
                         "headings": None,
+                        "page_width": float(page.width),
+                        "page_height": float(page.height or 0.0),
                     }
                     result["pages"].append(page_data)
+            self._enrich_with_docling_regions(file_path, result)
             return result
         except ImportError:
             logger.error("Neither OpenDataLoader nor pdfplumber is available")

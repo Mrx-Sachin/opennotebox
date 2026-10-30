@@ -122,13 +122,40 @@ export default function ReaderPage() {
     }
   }
 
+  const [viewerMountKey, setViewerMountKey] = useState(0)
+  const processingRunRef = useRef<{ docId: number; wasProcessing: boolean } | null>(null)
+
+  useEffect(() => {
+    if (!selectedDoc) return
+    const prev = processingRunRef.current
+    const isProcessing = isDocumentProcessing(selectedDoc)
+    if (prev && prev.docId === selectedDoc.id) {
+      if (
+        prev.wasProcessing &&
+        !isProcessing &&
+        (selectedDoc.processing_status === "extracted" || selectedDoc.processing_status === "completed")
+      ) {
+        ttsEngine.clearPageSentencesCache(selectedDoc.id)
+        clearPageTextCache(selectedDoc.id)
+        setViewerMountKey((key) => key + 1)
+      }
+    }
+    processingRunRef.current = { docId: selectedDoc.id, wasProcessing: isProcessing }
+  }, [selectedDoc])
+
   const handleReparse = async (mode?: LayoutMode) => {
     if (!selectedDocId || reparsing || selectedDoc?.read_only) return
     setReparsing(true)
     try {
+      ttsEngine.clearPageSentencesCache(selectedDocId)
       clearPageTextCache(selectedDocId)
       await reparseDocument(selectedDocId, mode)
-      fetchDocs()
+      await fetchDocs()
+      ttsEngine.clearPageSentencesCache(selectedDocId)
+      clearPageTextCache(selectedDocId)
+      if (useReader.getState().selectedDocId === selectedDocId) {
+        setViewerMountKey((key) => key + 1)
+      }
     } catch (error) {
       console.error("Re-parse failed:", error)
     } finally {
@@ -327,7 +354,7 @@ export default function ReaderPage() {
               )}
               <div className="min-h-0 min-w-0 flex-1">
                 {selectedDoc.format === "pdf" ? (
-                  <PdfViewer key={selectedDoc.id} docId={selectedDoc.id} />
+                  <PdfViewer key={`${selectedDoc.id}-${viewerMountKey}`} docId={selectedDoc.id} />
                 ) : (
                   <TextViewer key={selectedDoc.id}
                     docId={selectedDoc.id}

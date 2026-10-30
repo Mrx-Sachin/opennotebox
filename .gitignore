@@ -24,3 +24,21 @@ certs/
 # Misc
 *.log
 .DS_Store
+_pdf_parser_eval/
+.agents/
+
+# Local scratchpad, evals, and internal intermediate artifacts
+_scratch/
+scratch/
+_tmp/
+tmp/
+_temp/
+temp/
+_eval/
+_evals/
+*.scratch.*
+*.eval.*
+_temp_tests/
+agent.md
+
+decision.md

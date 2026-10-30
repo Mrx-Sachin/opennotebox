@@ -221,6 +221,8 @@ class ExtractedTextResponse(BaseModel):
     content: str
     bounding_boxes: Optional[List] = None
     headings: Optional[List] = None
+    layout_regions: Optional[List] = None
+    narration_exclusions: Optional[List] = None
     model_config = ConfigDict(from_attributes=True)
 
 

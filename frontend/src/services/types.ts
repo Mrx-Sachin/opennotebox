@@ -62,13 +62,65 @@ export interface SharedDocumentUpdate {
   language?: string
 }
 
+export interface LayoutRegion {
+  label: string
+  narrate: boolean
+  bbox: [number, number, number, number]
+  source: "docling"
+  text?: string
+  start?: number
+  end?: number
+}
+
+export interface NarrationExclusion {
+  start: number
+  end: number
+}
+
+export type DoclingRegion = LayoutRegion
+
+export interface LegacyBoundingBox {
+  text?: string
+  bbox?: number[]
+  source?: string
+  narrate?: boolean
+}
+
+export type BoundingBoxItem = LayoutRegion | LegacyBoundingBox
+
+export function isDoclingRegion(item: unknown): item is LayoutRegion {
+  if (item == null || typeof item !== "object") return false
+  const candidate = item as Record<string, unknown>
+  return (
+    candidate.source === "docling" &&
+    typeof candidate.label === "string" &&
+    typeof candidate.narrate === "boolean" &&
+    Array.isArray(candidate.bbox) &&
+    candidate.bbox.length === 4 &&
+    candidate.bbox.every(
+      (coord) => typeof coord === "number" && Number.isFinite(coord)
+    )
+  )
+}
+
+export function hasDoclingRegions(boxes: unknown): boolean {
+  return Array.isArray(boxes) && boxes.some(isDoclingRegion)
+}
+
+export function extractDoclingRegions(boxes: unknown): LayoutRegion[] {
+  if (!Array.isArray(boxes)) return []
+  return boxes.filter(isDoclingRegion)
+}
+
 export interface ExtractedPage {
   id: number
   document_id: number
   page_number: number
   content: string
-  bounding_boxes?: any
+  bounding_boxes?: BoundingBoxItem[] | null
   headings?: any
+  layout_regions?: LayoutRegion[] | null
+  narration_exclusions?: NarrationExclusion[] | null
 }
 
 export interface Summary {

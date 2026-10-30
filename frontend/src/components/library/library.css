@@ -1281,6 +1281,13 @@
   background: #0b0c14;
 }
 
+.now-reading-paragraph-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
 .now-reading-sentence {
   display: flex;
   align-items: flex-start;

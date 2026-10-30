@@ -249,6 +249,8 @@ class ExtractedText(Base):
     headings = Column(JSON, nullable=True)
     tables = Column(JSON, nullable=True)
     images = Column(JSON, nullable=True)
+    layout_regions = Column(JSON, nullable=True)
+    narration_exclusions = Column(JSON, nullable=True)
 
     document = relationship("Document", back_populates="extracted_texts")
 

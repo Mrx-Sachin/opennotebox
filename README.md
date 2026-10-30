@@ -26,8 +26,8 @@ vendor able to shut it off. Lets do this
 ## Features
 
 - **Multi-format reader** - PDF (with a real page-image + text-layer viewer,
-  column-aware reading order, and a per-document layout mode for research
-  papers), EPUB, DOCX, PPTX, TXT and Markdown, all normalized to the same
+  column-aware reading order, per-document layout modes, and Docling region
+  detection), EPUB, DOCX, PPTX, TXT and Markdown, all normalized to the same
   page/section model.
 - **AI summaries** - per-page and per-section/chapter summaries, generated
   on demand and cached, with automatic section/chapter detection (PDF
@@ -38,9 +38,10 @@ vendor able to shut it off. Lets do this
   hallucination.
 - **TTS narration with sync** - page and section text read aloud via a
   self-hosted TTS engine (Piper or Kokoro-82M), with playback synced to
-  on-page highlighting. Numbers, page furniture (page numbers, running
-  headers/footers, tables) are filtered so narration doesn't read them
-  aloud.
+  on-page highlighting. Docling classifies PDF regions so page narration
+  skips running headers, footers, captions, footnotes, tables, figures,
+  code, and formulas while retaining headings and body text. An optional
+  reading overlay shows which regions will be read or skipped.
 - **Podcasts** - turn a document or a section into a two-host spoken-dialogue
   podcast (distinct male/female voices), generated and cached as audio.
 - **Flashcards** - AI-generated flashcards from document content, reviewed
@@ -100,6 +101,28 @@ Batch work (document parsing, summaries, flashcard generation) and
 latency-sensitive work (TTS narration a user is actively waiting on,
 podcast synthesis) run on **separate Celery queues/workers** so a large
 document re-parse can't starve narration behind it.
+
+### PDF narration and reading overlay
+
+PDF text extraction, OCR selection, and column-aware reading order use the
+existing parser. Docling supplies only region classifications and page
+rectangles, with its OCR and table reconstruction disabled. Original text
+and line breaks remain intact for search, chat, summaries, and PDF highlight
+alignment. Narration skips source words whose centers fall inside excluded
+regions. The PDF toolbar can display green reading regions and red skipped
+regions; turning the overlay off does not change what is spoken.
+
+Existing PDFs need to be re-parsed to gain Docling classifications. Until
+then, they keep the existing narration filters and the overlay reports that
+classification is unavailable. Use the existing re-parse action for a private
+PDF, or upload a new version if the document is shared.
+
+Docling runs locally on CPU. Its first conversion may download layout model
+weights, so the parsing worker needs network access during that first run.
+Later conversions reuse its model cache. If region detection fails, the
+worker logs the failure and keeps the existing text extraction and narration
+filters available. Classification is model-generated and can be wrong; the
+overlay makes those decisions visible.
 
 ## Prerequisites
 

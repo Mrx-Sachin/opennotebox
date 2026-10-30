@@ -1,4 +1,8 @@
-import { Sentence } from "./sentences"
+import { Sentence, splitSentences } from "./sentences"
+import {
+  DoclingRegion,
+  NarrationExclusion,
+} from "../services/types"
 
 // Deliberately conservative, same philosophy as the PDF column-gutter
 // detection: a false positive here silently eats real content the user
@@ -142,4 +146,61 @@ export function dehyphenateForSpeech(sentences: Sentence[]): Sentence[] {
     out[i + 1].text = tail[2] + out[i + 1].text
   }
   return out
+}
+
+export function buildPageSentences(
+  content: string,
+  exclusions?: NarrationExclusion[] | null
+): Sentence[] {
+  if (!exclusions?.length) {
+    return filterNarratable(splitSentences(content), content)
+  }
+
+  const sorted = [...exclusions].sort(
+    (first, second) => first.start - second.start || first.end - second.end
+  )
+  const sentences: Sentence[] = []
+  let cursor = 0
+  const appendSlice = (start: number, end: number) => {
+    for (const sentence of splitSentences(content.slice(start, end))) {
+      sentences.push({
+        text: sentence.text,
+        start: start + sentence.start,
+        end: start + sentence.end,
+      })
+    }
+  }
+
+  for (const exclusion of sorted) {
+    const start = Math.min(content.length, Math.max(0, exclusion.start))
+    const end = Math.min(content.length, Math.max(start, exclusion.end))
+    if (start > cursor) appendSlice(cursor, start)
+    cursor = Math.max(cursor, end)
+  }
+  if (cursor < content.length) appendSlice(cursor, content.length)
+  return filterNarratable(sentences, content)
+}
+
+export function isPointInDoclingRegion(
+  normalizedX: number,
+  normalizedY: number,
+  region: DoclingRegion
+): boolean {
+  const [left, top, right, bottom] = region.bbox
+  return (
+    normalizedX >= left &&
+    normalizedX <= right &&
+    normalizedY >= top &&
+    normalizedY <= bottom
+  )
+}
+
+export function isPointInRejectedDoclingRegion(
+  normalizedX: number,
+  normalizedY: number,
+  regions: DoclingRegion[]
+): boolean {
+  return regions.some(
+    (region) => !region.narrate && isPointInDoclingRegion(normalizedX, normalizedY, region)
+  )
 }

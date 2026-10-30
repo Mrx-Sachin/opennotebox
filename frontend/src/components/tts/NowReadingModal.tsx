@@ -20,6 +20,8 @@ import {
 } from "lucide-react"
 import { useReader } from "@/stores/reader"
 import { ttsEngine } from "@/services/ttsEngine"
+import { getPage } from "@/services/api"
+import { buildPageSentences } from "@/lib/narrationFilter"
 
 interface NowReadingModalProps {
   onClose: () => void
@@ -38,8 +40,25 @@ export default function NowReadingModal({ onClose }: NowReadingModalProps) {
   const isPlaying = tts.status === "playing"
   const currentPage = tts.page ?? 1
   const currentSentenceIndex = tts.sentenceIndex ?? 0
+  const [paragraphStarts, setParagraphStarts] = useState<number[]>([])
   const displayTitle = activeReading?.title || (activeReading ? `Document ${activeReading.docId}` : "Now Reading")
   const totalPages = activeReading?.numPages || 1
+
+  useEffect(() => {
+    let active = true
+    setParagraphStarts([])
+    if (!activeReading) return
+    void getPage(activeReading.docId, currentPage).then((page) => {
+      if (!active) return
+      const content = page.content || ""
+      const sentences = buildPageSentences(content, page.narration_exclusions)
+      setParagraphStarts(sentences.flatMap((sentence, index) => {
+        const previous = sentences[index - 1]
+        return previous && /\n\s*\n/.test(content.slice(previous.end, sentence.start)) ? [index] : []
+      }))
+    }).catch(() => {})
+    return () => { active = false }
+  }, [activeReading, currentPage])
 
   useEffect(() => {
     previousFocusedElementRef.current = document.activeElement as HTMLElement | null
@@ -233,31 +252,51 @@ export default function NowReadingModal({ onClose }: NowReadingModalProps) {
             </div>
           ) : (
             <div className="now-reading-sentences-list">
-              {narrationSentences.map((sentenceText, index) => {
-                const isCurrent = currentSentenceIndex === index
-                return (
-                  <button
-                    type="button"
-                    key={index}
-                    ref={isCurrent ? activeSentenceRef : null}
-                    className={`now-reading-sentence ${isCurrent ? "is-active tts-sentence-active" : ""}`}
-                    data-testid={`sentence-item-${index}`}
-                    data-active={isCurrent ? "true" : undefined}
-                    onClick={() => ttsEngine.seekToSentence(index)}
-                    aria-current={isCurrent ? "true" : undefined}
-                  >
-                    <span className="now-reading-sentence-index">
-                      {(index + 1).toString().padStart(2, "0")}
-                    </span>
-                    <span className="now-reading-sentence-text">{sentenceText}</span>
-                    {isCurrent && (
-                      <span data-testid="sentence-item-active" className="sr-only">
-                        Current sentence
-                      </span>
-                    )}
-                  </button>
-                )
-              })}
+              {(() => {
+                const sections: { id: number; items: { text: string; index: number }[] }[] = []
+                let currentSection: { text: string; index: number }[] = []
+
+                narrationSentences.forEach((sentenceText, index) => {
+                  if (paragraphStarts.includes(index) && currentSection.length > 0) {
+                    sections.push({ id: sections.length, items: currentSection })
+                    currentSection = []
+                  }
+                  currentSection.push({ text: sentenceText, index })
+                })
+                if (currentSection.length > 0) {
+                  sections.push({ id: sections.length, items: currentSection })
+                }
+
+                return sections.map((section) => (
+                  <div key={section.id} className="now-reading-paragraph-section">
+                    {section.items.map(({ text: sentenceText, index }) => {
+                      const isCurrent = currentSentenceIndex === index
+                      return (
+                        <button
+                          type="button"
+                          key={index}
+                          ref={isCurrent ? activeSentenceRef : null}
+                          className={`now-reading-sentence ${isCurrent ? "is-active tts-sentence-active" : ""}`}
+                          data-testid={`sentence-item-${index}`}
+                          data-active={isCurrent ? "true" : undefined}
+                          onClick={() => ttsEngine.seekToSentence(index)}
+                          aria-current={isCurrent ? "true" : undefined}
+                        >
+                          <span className="now-reading-sentence-index">
+                            {(index + 1).toString().padStart(2, "0")}
+                          </span>
+                          <span className="now-reading-sentence-text">{sentenceText}</span>
+                          {isCurrent && (
+                            <span data-testid="sentence-item-active" className="sr-only">
+                              Current sentence
+                            </span>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                ))
+              })()}
             </div>
           )}
         </div>

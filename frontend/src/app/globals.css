@@ -176,7 +176,7 @@
   position: absolute;
   text-align: initial;
   inset: 0;
-  overflow: hidden;
+  overflow: clip;
   line-height: 1;
   text-size-adjust: none;
   forced-color-adjust: none;
