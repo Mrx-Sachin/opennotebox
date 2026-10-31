@@ -98,6 +98,10 @@ class Document(Base):
     original_url = Column(Text, nullable=True)
     processing_status = Column(String, default="pending", index=True)
     layout_mode = Column(String, default="auto")  # auto, single_column, research_paper
+    layout_status = Column(String(32), nullable=False, default="not_requested", server_default="not_requested")
+    layout_task_id = Column(String(36), nullable=True)
+    layout_error = Column(Text, nullable=True)
+    layout_requested_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Where the reader was last left. Stored on the document because a

@@ -31,6 +31,7 @@ from app.services.http_metrics import MetricsMiddleware
 from app.services.db_monitor import db_pool_monitor
 from app.services.system_monitor import run_system_monitor, update_system_stats
 from app.services.upload_guard import UploadGuardMiddleware
+from app.services.llm_semaphore import close_llm_semaphore
 
 
 class SecurityHeadersMiddleware:
@@ -108,6 +109,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await sys_monitor_task
     except asyncio.CancelledError:
         pass
+
+    await close_llm_semaphore()
 
     logger.info("Shutting down OpenNoteBox")
 

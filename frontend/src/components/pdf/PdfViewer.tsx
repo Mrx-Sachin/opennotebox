@@ -4,6 +4,7 @@ import axios from "axios"
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useViewport } from "@/hooks/useViewport"
+import { useDocumentLayout } from "@/hooks/useDocumentLayout"
 import { getFileUrl, getPage } from "@/services/api"
 import { useReader } from "@/stores/reader"
 import LoadingSpinner from "@/components/ui/LoadingSpinner"
@@ -15,10 +16,8 @@ import {
   isPointInRejectedDoclingRegion,
 } from "@/lib/narrationFilter"
 import {
-  BoundingBoxItem,
   DoclingRegion,
   extractDoclingRegions,
-  hasDoclingRegions,
 } from "@/services/types"
 import {
   normalizeWithMap,
@@ -62,6 +61,8 @@ import {
 
 interface PdfViewerProps {
   docId: number
+  pageTextVersion?: number
+  layoutResetting?: boolean
 }
 
 interface OutlineItem {
@@ -133,7 +134,7 @@ function loadPageText(docId: number, pageNum: number): Promise<PageText> {
       .catch((err) => {
         // Don't cache rejected promises forever - a transient network error
         // should not make a page permanently unreadable.
-        pageTextCache.delete(key)
+        if (pageTextCache.get(key) === cached) pageTextCache.delete(key)
         throw err
       })
     // Evict oldest entries when the cache grows beyond the cap so a long
@@ -192,7 +193,15 @@ const PAGE_MOUNT_BUFFER = 5
  * makes zoom/page-step math drift so the viewport jumps to the wrong page. */
 const PAGE_STACK_GAP_PX = 24
 
-export default function PdfViewer({ docId }: PdfViewerProps) {
+export default function PdfViewer({ docId, pageTextVersion = 0, layoutResetting = false }: PdfViewerProps) {
+  const layout = useDocumentLayout(docId)
+  const [layoutVersion, setLayoutVersion] = useState(0)
+  useEffect(() => {
+    if (layout.status !== "ready") return
+    clearPageTextCache(docId)
+    ttsEngine.clearPageSentencesCache(docId, true)
+    setLayoutVersion((version) => version + 1)
+  }, [docId, layout.status])
   const { currentPage, setPage, numPages, setNumPages } = useReader()
   const invertPdf = useReader((s) => s.invertPdf)
   const toggleInvertPdf = useReader((s) => s.toggleInvertPdf)
@@ -650,6 +659,7 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
           <div className="h-4 w-px bg-surface" />
           <button
             onClick={() => applyZoom(Math.max(scale - 0.25, 0.5))}
+            title="Zoom out"
             disabled={scale <= 0.5}
             className="rounded p-1.5 text-cream-dim hover:bg-surface hover:text-cream disabled:opacity-30"
           >
@@ -660,6 +670,7 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
           </span>
           <button
             onClick={() => applyZoom(Math.min(scale + 0.25, 3))}
+            title="Zoom in"
             disabled={scale >= 3}
             className="rounded p-1.5 text-cream-dim hover:bg-surface hover:text-cream disabled:opacity-30"
           >
@@ -703,7 +714,11 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
             data-testid="docling-overlay-toggle"
             aria-label="Toggle reading overlay"
             aria-pressed={showOverlay}
-            onClick={() => setShowOverlay((prev) => !prev)}
+            disabled={layout.checking || layoutResetting}
+            onClick={() => {
+              setShowOverlay((prev) => layout.status === "not_requested" ? true : !prev)
+              if (layout.status === "not_requested") void layout.request()
+            }}
             className={`rounded p-1.5 transition-colors ${
               showOverlay ? "bg-indigo/15 text-indigo" : "text-cream-dim hover:bg-surface hover:text-cream"
             }`}
@@ -741,6 +756,20 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
           </button>
         </div>
       </div>
+
+      {(layout.requesting || layout.status === "processing") && (
+        <div role="status" data-testid="layout-analysis-status" className="shrink-0 border-b border-surface bg-panel px-3 py-2 text-xs text-cream-dim">
+          Analyzing layout… You can keep reading.
+        </div>
+      )}
+      {(layout.error || layout.status === "failed") && (
+        <div role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-surface bg-panel px-3 py-2 text-xs text-rose-300">
+          <span>{layout.error || "Layout analysis failed."}</span>
+          <button type="button" onClick={() => { setShowOverlay(true); void layout.retry() }} disabled={layout.requesting || layoutResetting} className="underline disabled:opacity-50">
+            Retry layout analysis
+          </button>
+        </div>
+      )}
 
       <div className="relative flex min-w-0 flex-1 overflow-hidden">
         {showOutline && outline.length > 0 && (
@@ -835,7 +864,8 @@ export default function PdfViewer({ docId }: PdfViewerProps) {
                   onNavigate={goToPage}
                   selectMode={selectMode}
                   touchSelect={touchSelect}
-                  showOverlay={showOverlay}
+                  showOverlay={showOverlay && layout.status === "ready" && !layoutResetting}
+                  pageTextVersion={`${pageTextVersion}:${layoutVersion}`}
                 />
               )
             })
@@ -860,6 +890,7 @@ interface PdfPageProps {
   selectMode: boolean
   touchSelect: boolean
   showOverlay: boolean
+  pageTextVersion: string
 }
 
 type PdfLink = PdfLinkRect
@@ -869,7 +900,7 @@ type PdfLink = PdfLinkRect
  * Clicking a text span starts TTS from that sentence; during playback the
  * active sentence's spans get an amber highlight and stay scrolled into view.
  */
-function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, selectMode, touchSelect, showOverlay }: PdfPageProps) {
+function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, selectMode, touchSelect, showOverlay, pageTextVersion }: PdfPageProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const textLayerRef = useRef<HTMLDivElement>(null)
@@ -899,7 +930,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
     return () => {
       active = false
     }
-  }, [docId, pageNum, showOverlay])
+  }, [docId, pageNum, showOverlay, pageTextVersion])
   const [links, setLinks] = useState<PdfLink[]>([])
   const [hoverLinkKey, setHoverLinkKey] = useState<string | null>(null)
   const hoverLink = hoverLinkKey ? links.find((l) => l.key === hoverLinkKey) ?? null : null
@@ -1517,9 +1548,12 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
     let cancelled = false
     loadPageText(docId, pageNum).then((pageText) => {
       if (cancelled || !spanDataRef.current) return
-      const sentence = pageText.sentences[tts.sentenceIndex]
+      // A layout refresh changes future narration. Keep the current playback
+      // mapped to its own sentence snapshot until another read starts.
+      const playingSentences = ttsEngine.getSentences(docId, pageNum)
+      const sentence = (playingSentences.length ? playingSentences : pageText.sentences)[tts.sentenceIndex]
       if (!sentence) return
-      const range = findRange(data.normLayer, sentence.text)
+      const range = findRange(data.normLayer, pageText.content.slice(sentence.start, sentence.end))
       clear()
       if (!range) return
       const cls = tts.status === "preparing" ? "tts-sentence-preparing" : "tts-sentence-active"
@@ -1533,12 +1567,15 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
       if (first && tts.status === "playing" && useReader.getState().followReading) {
         ;(first as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" })
       }
+    }).catch(() => {
+      // The PDF remains usable while extracted text is still being prepared.
+      // loadPageText evicts this failure so the next revision/click retries it.
     })
     return () => {
       cancelled = true
     }
     // followReading in deps so re-enabling follow immediately re-centers
-  }, [tts.docId, tts.page, tts.sentenceIndex, tts.status, pageNum, docId, textReady, followReading])
+  }, [tts.docId, tts.page, tts.sentenceIndex, tts.status, pageNum, docId, textReady, followReading, pageTextVersion])
 
   // Flash-highlight a citation excerpt once this page's text layer is ready.
   //
@@ -1737,7 +1774,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
                 data-testid="docling-overlay-unavailable"
                 className="absolute top-2 right-2 max-w-[280px] rounded bg-void/90 p-2 text-xs text-amber-300 shadow border border-amber-500/30"
               >
-                Reading overlay unavailable. Re-parse document to enable layout analysis.
+                Layout analysis complete. No reading regions found on this page.
               </div>
             )
           ) : null}

@@ -249,6 +249,7 @@ class TtsEngine {
   private voice: string | null = null
 
   private pageSentencesCache = new Map<string, Promise<PageSentences>>()
+  private pageSentencesVersion = 0
   private prepared = new Map<string, PrepEntry>()
   private summaryBlobUrl: string | null = null
   private directAudioSource: { kind: "podcast" | "summary"; id: number | string } | null = null
@@ -300,19 +301,33 @@ class TtsEngine {
     return this.docId === docId && this.page === page ? this.pageAudio?.sentences ?? [] : []
   }
 
-  public clearPageSentencesCache(docId?: number): void {
-    if (docId == null || this.docId === docId) {
+  public clearPageSentencesCache(docId?: number, preservePlayback = false): void {
+    if (!preservePlayback && (docId == null || this.docId === docId)) {
       this.stop()
     }
     if (docId == null) {
       this.pageSentencesCache.clear()
-      return
-    }
-    const prefix = `${docId}:`
-    for (const key of Array.from(this.pageSentencesCache.keys())) {
-      if (key.startsWith(prefix)) {
-        this.pageSentencesCache.delete(key)
+    } else {
+      const prefix = `${docId}:`
+      for (const key of Array.from(this.pageSentencesCache.keys())) {
+        if (key.startsWith(prefix)) this.pageSentencesCache.delete(key)
       }
+    }
+    if (preservePlayback && this.docId != null && this.page != null && (docId == null || this.docId === docId)) {
+      this.pageSentencesVersion++
+      this.spillQueued = false
+      for (const [key, entry] of this.prepared) {
+        if (entry.pageNum <= this.page) continue
+        entry.controller.abort()
+        if (entry.result) {
+          URL.revokeObjectURL(entry.result.blobUrl)
+          if (entry.result.cacheId != null) {
+            void releaseReadingAudio({ sessionId: entry.sessionId, cacheIds: [entry.result.cacheId] }).catch(() => {})
+          }
+        }
+        this.prepared.delete(key)
+      }
+      this.maintainPrefetch(this.docId, this.page, this.chunkIdx, this.playToken)
     }
   }
 
@@ -335,7 +350,7 @@ class TtsEngine {
           }
         })
         .catch((err) => {
-          this.pageSentencesCache.delete(key)
+          if (this.pageSentencesCache.get(key) === cached) this.pageSentencesCache.delete(key)
           throw err
         })
       // Evict oldest entries to keep the cache bounded - a long reading
@@ -568,17 +583,20 @@ class TtsEngine {
     const maxPages = active?.docId === docId ? active.numPages : null
     if (maxPages != null && pageNum >= maxPages) return
     this.spillQueued = true
+    const sentencesVersion = this.pageSentencesVersion
     void this.loadPageSentences(docId, pageNum + 1)
       .then((next) => {
-        if (token !== this.playToken || next.sentences.length === 0) return
+        if (token !== this.playToken || sentencesVersion !== this.pageSentencesVersion || next.sentences.length === 0) return
         const nextChunks = buildChunks(next.sentences, 0, ENTRY_CHUNK_TARGET_CHARS, CHUNK_TARGET_CHARS)
         if (nextChunks.length === 0) return
         return this.prepareChunk(docId, pageNum + 1, nextChunks[0], 0, token)
       })
-      .then(() => this.maintainPrefetch(docId, pageNum, chunkIdx, token))
+      .then(() => {
+        if (sentencesVersion === this.pageSentencesVersion) this.maintainPrefetch(docId, pageNum, chunkIdx, token)
+      })
       .catch(() => {
         // Allow a later maintainPrefetch call to retry on failure.
-        this.spillQueued = false
+        if (token === this.playToken && sentencesVersion === this.pageSentencesVersion) this.spillQueued = false
       })
   }
 

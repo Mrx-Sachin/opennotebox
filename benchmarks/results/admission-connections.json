@@ -1,0 +1,233 @@
+{
+  "baseline_commit": "596cd40c848a7c9bb761d0bcc051c9763a21c202",
+  "python": "3.14.4",
+  "redis_py": "8.0.1",
+  "load_average": [
+    0.86767578125,
+    0.982421875,
+    1.21826171875
+  ],
+  "cpu_count": 12,
+  "rounds": 5,
+  "scope": "actual Lua lease overhead; excludes model calls",
+  "redis_limits": {
+    "memory_mib": 64,
+    "cpus": 0.5
+  },
+  "scenarios": {
+    "sequential": {
+      "leases_per_round": 100,
+      "samples": {
+        "before": [
+          {
+            "elapsed_ms": 182.55494099867065,
+            "connections_created": 100,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 216.5416709976853,
+            "connections_created": 100,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 217.13954099686816,
+            "connections_created": 100,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 185.85298000107286,
+            "connections_created": 100,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 158.69545099849347,
+            "connections_created": 100,
+            "errors": 0
+          }
+        ],
+        "after": [
+          {
+            "elapsed_ms": 41.95988699939335,
+            "connections_created": 1,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 45.52514699753374,
+            "connections_created": 1,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 39.629068996873684,
+            "connections_created": 1,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 36.83335000096122,
+            "connections_created": 1,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 39.53114499745425,
+            "connections_created": 1,
+            "errors": 0
+          }
+        ]
+      },
+      "elapsed_ms": {
+        "before": {
+          "median": 185.85298000107286,
+          "min": 158.69545099849347,
+          "max": 217.13954099686816
+        },
+        "after": {
+          "median": 39.629068996873684,
+          "min": 36.83335000096122,
+          "max": 45.52514699753374
+        }
+      }
+    },
+    "burst30": {
+      "leases_per_round": 30,
+      "samples": {
+        "before": [
+          {
+            "elapsed_ms": 131.91076499788323,
+            "connections_created": 30,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 123.52747000113595,
+            "connections_created": 30,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 127.49923999945167,
+            "connections_created": 30,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 130.51256100152386,
+            "connections_created": 30,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 122.18842699803645,
+            "connections_created": 30,
+            "errors": 0
+          }
+        ],
+        "after": [
+          {
+            "elapsed_ms": 122.9730560007738,
+            "connections_created": 24,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 120.42195100366371,
+            "connections_created": 24,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 116.32249200192746,
+            "connections_created": 24,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 118.89007799618412,
+            "connections_created": 24,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 122.24124400381697,
+            "connections_created": 24,
+            "errors": 0
+          }
+        ]
+      },
+      "elapsed_ms": {
+        "before": {
+          "median": 127.49923999945167,
+          "min": 122.18842699803645,
+          "max": 131.91076499788323
+        },
+        "after": {
+          "median": 120.42195100366371,
+          "min": 116.32249200192746,
+          "max": 122.9730560007738
+        }
+      }
+    },
+    "ephemeral_loops": {
+      "leases_per_round": 50,
+      "samples": {
+        "before": [
+          {
+            "elapsed_ms": 78.81982800608966,
+            "connections_created": 50,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 69.75461000547512,
+            "connections_created": 50,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 71.58123899716884,
+            "connections_created": 50,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 65.44369900075253,
+            "connections_created": 50,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 77.04753799771424,
+            "connections_created": 50,
+            "errors": 0
+          }
+        ],
+        "after": [
+          {
+            "elapsed_ms": 35.62224400229752,
+            "connections_created": 10,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 26.273426003172062,
+            "connections_created": 10,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 24.96555999823613,
+            "connections_created": 10,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 31.03413099597674,
+            "connections_created": 10,
+            "errors": 0
+          },
+          {
+            "elapsed_ms": 24.064341007033363,
+            "connections_created": 10,
+            "errors": 0
+          }
+        ]
+      },
+      "elapsed_ms": {
+        "before": {
+          "median": 71.58123899716884,
+          "min": 65.44369900075253,
+          "max": 78.81982800608966
+        },
+        "after": {
+          "median": 26.273426003172062,
+          "min": 24.064341007033363,
+          "max": 35.62224400229752
+        }
+      }
+    }
+  },
+  "status": "passed"
+}

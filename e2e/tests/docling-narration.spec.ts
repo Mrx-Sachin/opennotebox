@@ -121,6 +121,8 @@ async function setupDoclingHarness(page: Page, options: HarnessOptions = {}) {
   let currentPages = options.pages || loadCommittedParserFixture()
   const numPages = Object.keys(currentPages).length
   let currentStatus = options.initialProcessingStatus || "completed"
+  let layoutStatus = Object.values(currentPages).every((item) => item.layout_regions != null && item.narration_exclusions != null)
+    ? "ready" : "not_requested"
   let reparseStep = 0
 
   const documents = [
@@ -225,11 +227,20 @@ async function setupDoclingHarness(page: Page, options: HarnessOptions = {}) {
     const reparseMatch = url.pathname.match(/^\/api\/documents\/(\d+)\/re-parse$/)
     if (reparseMatch && method === "POST") {
       currentStatus = "parsing"
+      layoutStatus = "not_requested"
       reparseStep = 1
       documents[0].processing_status = currentStatus
       return route.fulfill({
         json: { status: "ok", message: "Reparse started" },
       })
+    }
+
+    if (url.pathname === `/api/documents/${docId}/layout` && method === "GET") {
+      return route.fulfill({ json: { status: layoutStatus } })
+    }
+    if (url.pathname === `/api/documents/${docId}/analyze-layout` && method === "POST") {
+      layoutStatus = "ready"
+      return route.fulfill({ json: { status: layoutStatus } })
     }
 
     const docMatch = url.pathname.match(/^\/api\/documents\/(\d+)$/)
@@ -530,7 +541,7 @@ test.describe("Docling Layout Narration and Visual Overlay", () => {
     expect(requestedPages).toContain(3)
   })
 
-  test("legacy unclassified page preserves fallback filters and honestly displays unavailable overlay notice", async ({ page }) => {
+  test("empty layout analysis preserves fallback filters and displays a completed result notice", async ({ page }) => {
     const legacyPages: Record<number, MockExtractedPage> = {
       1: {
         page_number: 1,
@@ -553,7 +564,7 @@ test.describe("Docling Layout Narration and Visual Overlay", () => {
 
     const unavailableNotice = page.getByTestId("docling-overlay-unavailable")
     await expect(unavailableNotice).toBeVisible()
-    await expect(unavailableNotice).toContainText("Reading overlay unavailable")
+    await expect(unavailableNotice).toContainText("No reading regions found")
 
     const playButton = page.getByRole("button", { name: "Play (Space)", exact: true })
     await playButton.click()
@@ -606,7 +617,7 @@ test.describe("Docling Layout Narration and Visual Overlay", () => {
     expect(spoken).not.toContain("Table 1:")
   })
 
-  test("re-parse transitions document from legacy to Docling-classified and enables overlay and clean narration without page reload", async ({ page }) => {
+  test("re-parse refreshes text and an explicit layout request enables overlay and clean narration", async ({ page }) => {
     const legacyPages: Record<number, MockExtractedPage> = {
       1: {
         page_number: 1,
@@ -639,15 +650,14 @@ test.describe("Docling Layout Narration and Visual Overlay", () => {
 
     await expect(reparseButton).toBeEnabled({ timeout: 15000 })
     await expect(page.getByRole("button", { name: "Re-parsing…", exact: true })).toHaveCount(0)
+    await expect(page.getByText("extracting text…", { exact: true })).toHaveCount(0, { timeout: 15000 })
 
     await expect(page.locator("#pdf-page-container-1 canvas").first()).toBeVisible({ timeout: 10000 })
 
     const remountedToggle = page.getByTestId("docling-overlay-toggle")
     await expect(remountedToggle).toBeVisible()
-    const isPressed = await remountedToggle.getAttribute("aria-pressed")
-    if (isPressed === "false") {
-      await remountedToggle.click()
-    }
+    await expect(remountedToggle).toBeEnabled()
+    await remountedToggle.click()
     await expect(page.getByTestId("docling-box").first()).toBeVisible({ timeout: 10000 })
 
     const playButton = page.getByRole("button", { name: "Play (Space)", exact: true })

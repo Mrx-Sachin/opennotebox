@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, Dict, Optional, List
+from typing import Annotated, Dict, Optional, List, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
 
@@ -43,6 +43,11 @@ class DocumentCreate(BaseModel):
     title: Optional[str] = None
     format: Optional[str] = None
     layout_mode: Optional[str] = "auto"
+
+
+class DocumentLayoutResponse(BaseModel):
+    status: Literal["not_requested", "processing", "ready", "failed"]
+    error: Optional[str] = None
 
 
 class DocumentResponse(BaseModel):
@@ -212,6 +217,15 @@ class ReadingProgressIn(BaseModel):
     # Fraction through the page, so it survives zoom, resize and a different
     # device - none of which preserve a pixel offset.
     position: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+class ExtractedTextLightweightResponse(BaseModel):
+    id: int
+    document_id: int
+    page_number: int
+    content: str
+    headings: Optional[List] = None
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ExtractedTextResponse(BaseModel):
