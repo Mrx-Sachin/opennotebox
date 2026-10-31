@@ -2,6 +2,11 @@
 
 export type LayoutMode = "auto" | "single_column" | "research_paper"
 
+export interface DocumentLayoutStatus {
+  status: "not_requested" | "processing" | "ready" | "failed"
+  error?: string | null
+}
+
 export interface Document {
   id: number
   user_id: number
@@ -112,13 +117,16 @@ export function extractDoclingRegions(boxes: unknown): LayoutRegion[] {
   return boxes.filter(isDoclingRegion)
 }
 
-export interface ExtractedPage {
+export interface ExtractedPageLightweight {
   id: number
   document_id: number
   page_number: number
   content: string
-  bounding_boxes?: BoundingBoxItem[] | null
   headings?: any
+}
+
+export interface ExtractedPage extends ExtractedPageLightweight {
+  bounding_boxes?: BoundingBoxItem[] | null
   layout_regions?: LayoutRegion[] | null
   narration_exclusions?: NarrationExclusion[] | null
 }

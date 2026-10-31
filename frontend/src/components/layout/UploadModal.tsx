@@ -20,6 +20,7 @@ import {
   UPLOAD_MAX_SIZE_MB,
 } from "@/services/uploadApi"
 import { useReader } from "@/stores/reader"
+import Link from "next/link"
 
 interface UploadModalProps {
   onUploaded: () => void
@@ -218,6 +219,16 @@ export default function UploadModal({ onUploaded, notebookId, notebookName }: Up
                       <span className="min-w-0 flex-1 truncate text-xs text-cream" title={entry.file.name}>
                         {entry.file.name}
                       </span>
+
+                      {entry.docId != null && (
+                        <Link
+                          href={`/dashboard/read/${entry.docId}`}
+                          onClick={() => setUploadModalOpen(false)}
+                          className="shrink-0 rounded px-2 py-1 text-xs text-indigo hover:bg-surface"
+                        >
+                          Open document
+                        </Link>
+                      )}
 
                       {entry.status === "queued" && (
                         <FileClock className="h-3.5 w-3.5 shrink-0 text-cream-dim" />

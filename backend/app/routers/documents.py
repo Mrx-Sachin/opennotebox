@@ -2,19 +2,19 @@
 import asyncio
 import hashlib
 import ipaddress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import httpx
 import logging
 import os
 import socket
 import uuid
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 import httpcore
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -24,7 +24,9 @@ from app.database import get_db
 from app.models import (User, Document, ExtractedText, Summary, Notebook, LibraryEntry)
 from app.schemas import (
     DocumentResponse,
+    DocumentLayoutResponse,
     DocumentLibraryResponse,
+    ExtractedTextLightweightResponse,
     ExtractedTextResponse,
     ReadingProgressIn,
     SectionSummaryGenerateRequest,
@@ -32,7 +34,10 @@ from app.schemas import (
 )
 from app.routers.auth import get_current_user_from_token
 from app.config import settings
-from app.tasks.pdf_tasks import parse_pdf_document, parse_txt, parse_md, reparse_pdf_document
+from app.tasks.pdf_tasks import (
+    analyze_document_layout, invalidate_layout, parse_pdf_document,
+    parse_txt, parse_md, reparse_pdf_document,
+)
 from app.tasks.doc_tasks import parse_docx, parse_pptx
 from app.tasks.epub_tasks import parse_epub
 from app.services.document_sections import ensure_section_stubs
@@ -772,6 +777,83 @@ class LayoutModeUpdate(BaseModel):
     layout_mode: str = Field(..., pattern="^(auto|single_column|research_paper)$")
 
 
+def _layout_response(doc: Document) -> dict:
+    status = doc.layout_status or "not_requested"
+    response = {"status": "processing" if status in {"queued", "running"} else status}
+    if status == "failed" and doc.layout_error:
+        response["error"] = doc.layout_error
+    return response
+
+
+def _expire_layout(db: Session, doc: Document) -> bool:
+    """Surface abandoned broker deliveries or killed workers as retryable failures."""
+    if doc.layout_status not in {"queued", "running"}:
+        return False
+    # The running lease exceeds the worker's hard time limit plus shutdown grace.
+    timeout = 1920 if doc.layout_status == "running" else 3600
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=timeout)
+    expired = db.query(Document).filter(
+        Document.id == doc.id, Document.layout_task_id == doc.layout_task_id,
+        Document.layout_status == doc.layout_status,
+        (Document.layout_requested_at < cutoff) | Document.layout_requested_at.is_(None),
+    ).update({"layout_status": "failed", "layout_error": "Layout analysis timed out. Try again."}, synchronize_session=False)
+    if expired:
+        db.commit()
+        db.refresh(doc)
+    return bool(expired)
+
+
+@router.get("/{doc_id}/layout", response_model=DocumentLayoutResponse, response_model_exclude_none=True)
+def get_document_layout(
+    doc_id: int,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Read optional layout state for an accessible document asset."""
+    doc = get_document_for_user(db, user.id, doc_id)
+    _expire_layout(db, doc)
+    return _layout_response(doc)
+
+
+@router.post("/{doc_id}/analyze-layout", response_model=DocumentLayoutResponse, response_model_exclude_none=True)
+def request_document_layout(
+    doc_id: int,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Claim one optional analysis; failed requests may be retried explicitly."""
+    doc = get_document_for_user(db, user.id, doc_id)
+    if doc.format != "pdf":
+        raise HTTPException(status_code=400, detail="Layout analysis only supports PDF documents")
+    if _expire_layout(db, doc):
+        return _layout_response(doc)
+    if doc.layout_status in {"queued", "running", "ready"}:
+        return _layout_response(doc)
+    if doc.processing_status in {"pending", "parsing", "extracting", "re-parsing"} or not db.query(ExtractedText.id).filter(
+        ExtractedText.document_id == doc_id
+    ).first():
+        raise HTTPException(status_code=409, detail="Text extraction must finish before layout analysis")
+    task_id = str(uuid.uuid4())
+    claimed = db.query(Document).filter(
+        Document.id == doc_id,
+        Document.layout_status.in_(["not_requested", "failed"]),
+        Document.processing_status.notin_(["pending", "parsing", "extracting", "re-parsing"]),
+    ).update({"layout_status": "queued", "layout_task_id": task_id, "layout_error": None, "layout_requested_at": datetime.now(timezone.utc)}, synchronize_session=False)
+    db.commit()
+    if claimed:
+        try:
+            analyze_document_layout.apply_async(args=[doc_id, task_id], task_id=task_id)
+        except Exception:
+            logger.exception("Layout dispatch failed for document %s", doc_id)
+            db.query(Document).filter(
+                Document.id == doc_id, Document.layout_task_id == task_id,
+                Document.layout_status == "queued",
+            ).update({"layout_status": "failed", "layout_error": "Layout analysis could not be queued. Try again."}, synchronize_session=False)
+            db.commit()
+    db.refresh(doc)
+    return _layout_response(doc)
+
+
 @router.post("/{doc_id}/re-parse")
 def reparse_document(
     doc_id: int,
@@ -804,6 +886,7 @@ def reparse_document(
     if body:
         doc.layout_mode = body.layout_mode
 
+    invalidate_layout(doc)
     doc.processing_status = "re-parsing"
     db.commit()
     db.refresh(doc)
@@ -866,16 +949,37 @@ def update_reading_progress(
     return document_response(doc, entry)
 
 
-@router.get("/{doc_id}/pages", response_model=list[ExtractedTextResponse])
+@router.get(
+    "/{doc_id}/pages",
+    response_model=Union[list[ExtractedTextLightweightResponse], list[ExtractedTextResponse]],
+)
 def get_document_pages(
     doc_id: int,
     limit: int = Query(default=100, ge=1, le=500),  # pages are large payloads; higher default but capped
     offset: int = Query(default=0, ge=0),
+    lightweight: bool = Query(default=False),
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
     """Get extracted pages for a document, paginated."""
     get_document_for_user(db, user.id, doc_id)
+
+    if lightweight:
+        pages = (
+            db.query(
+                ExtractedText.id,
+                ExtractedText.document_id,
+                ExtractedText.page_number,
+                ExtractedText.content,
+                ExtractedText.headings,
+            )
+            .filter(ExtractedText.document_id == doc_id)
+            .order_by(ExtractedText.page_number)
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        return [ExtractedTextLightweightResponse.model_validate(p) for p in pages]
 
     pages = db.query(ExtractedText).filter(
         ExtractedText.document_id == doc_id
@@ -1084,6 +1188,7 @@ def get_document_preview(
 @router.get("/{doc_id}/file")
 def download_file(
     doc_id: int,
+    request: Request,
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
@@ -1091,8 +1196,16 @@ def download_file(
     doc = get_document_for_user(db, user.id, doc_id)
     if not os.path.exists(doc.file_path):
         raise HTTPException(status_code=404, detail="File not found on disk")
+    stat = os.stat(doc.file_path)
+    etag = '"' + hashlib.sha256(
+        f"{doc.id}:{stat.st_size}:{stat.st_mtime_ns}".encode()
+    ).hexdigest() + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, max-age=0, must-revalidate", "Vary": "Authorization, Cookie"}
+    if etag in [tag.strip().removeprefix("W/") for tag in request.headers.get("if-none-match", "").split(",")]:
+        return Response(status_code=304, headers=headers)
     return FileResponse(
         doc.file_path,
         media_type="application/pdf",
         filename=get_library_entry(db, user.id, doc_id).title or "document.pdf",
+        headers=headers,
     )

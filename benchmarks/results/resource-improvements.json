@@ -1,0 +1,461 @@
+{
+  "rounds": 5,
+  "baseline_commit": "596cd40c848a7c9bb761d0bcc051c9763a21c202",
+  "load_average": [
+    0.65380859375,
+    1.037109375,
+    1.17822265625
+  ],
+  "cpu_count": 12,
+  "fixture": "30 accounts, 3 text documents with 100 pages each and null geometry; 1 PDF geometry probe",
+  "versions": {
+    "python": "3.14.4",
+    "fastapi": "0.136.3",
+    "pydantic": "2.13.4",
+    "sqlalchemy": "2.0.51",
+    "psycopg": "3.3.4",
+    "uvicorn": "0.50.2",
+    "postgres_image": "pgvector/pgvector:pg16",
+    "traefik_image": "traefik:v3.7.14"
+  },
+  "scope": "real document routes, synthetic data; excludes LLM/TTS/parsing capacity",
+  "indexes": {
+    "samples_ms": {
+      "before": [
+        0.5459477499243803,
+        0.22791549999965355,
+        0.20496439974522218,
+        0.22596020025957841,
+        0.31942679997882806
+      ],
+      "after": [
+        0.06287880023592152,
+        0.03471790005278308,
+        0.04009429976576939,
+        0.0348102501448011,
+        0.12094805024389643
+      ]
+    },
+    "summary_ms": {
+      "before": {
+        "median": 0.22791549999965355,
+        "min": 0.20496439974522218,
+        "max": 0.5459477499243803
+      },
+      "after": {
+        "median": 0.04009429976576939,
+        "min": 0.03471790005278308,
+        "max": 0.12094805024389643
+      }
+    },
+    "plans": {
+      "before": [
+        {
+          "Plan": {
+            "Node Type": "Limit",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Startup Cost": 1408.7,
+            "Total Cost": 1408.72,
+            "Plan Rows": 6,
+            "Plan Width": 12,
+            "Actual Startup Time": 0.512,
+            "Actual Total Time": 0.514,
+            "Actual Rows": 6,
+            "Actual Loops": 1,
+            "Shared Hit Blocks": 605,
+            "Shared Read Blocks": 0,
+            "Shared Dirtied Blocks": 0,
+            "Shared Written Blocks": 0,
+            "Local Hit Blocks": 0,
+            "Local Read Blocks": 0,
+            "Local Dirtied Blocks": 0,
+            "Local Written Blocks": 0,
+            "Temp Read Blocks": 0,
+            "Temp Written Blocks": 0,
+            "Plans": [
+              {
+                "Node Type": "Sort",
+                "Parent Relationship": "Outer",
+                "Parallel Aware": false,
+                "Async Capable": false,
+                "Startup Cost": 1408.7,
+                "Total Cost": 1408.72,
+                "Plan Rows": 6,
+                "Plan Width": 12,
+                "Actual Startup Time": 0.512,
+                "Actual Total Time": 0.513,
+                "Actual Rows": 6,
+                "Actual Loops": 1,
+                "Sort Key": [
+                  "page_number",
+                  "chunk_index"
+                ],
+                "Sort Method": "quicksort",
+                "Sort Space Used": 25,
+                "Sort Space Type": "Memory",
+                "Shared Hit Blocks": 605,
+                "Shared Read Blocks": 0,
+                "Shared Dirtied Blocks": 0,
+                "Shared Written Blocks": 0,
+                "Local Hit Blocks": 0,
+                "Local Read Blocks": 0,
+                "Local Dirtied Blocks": 0,
+                "Local Written Blocks": 0,
+                "Temp Read Blocks": 0,
+                "Temp Written Blocks": 0,
+                "Plans": [
+                  {
+                    "Node Type": "Bitmap Heap Scan",
+                    "Parent Relationship": "Outer",
+                    "Parallel Aware": false,
+                    "Async Capable": false,
+                    "Relation Name": "chunk",
+                    "Alias": "chunk",
+                    "Startup Cost": 20.79,
+                    "Total Cost": 1408.62,
+                    "Plan Rows": 6,
+                    "Plan Width": 12,
+                    "Actual Startup Time": 0.167,
+                    "Actual Total Time": 0.509,
+                    "Actual Rows": 6,
+                    "Actual Loops": 1,
+                    "Recheck Cond": "(document_id = 7)",
+                    "Rows Removed by Index Recheck": 0,
+                    "Filter": "(emb IS NULL)",
+                    "Rows Removed by Filter": 594,
+                    "Exact Heap Blocks": 600,
+                    "Lossy Heap Blocks": 0,
+                    "Shared Hit Blocks": 605,
+                    "Shared Read Blocks": 0,
+                    "Shared Dirtied Blocks": 0,
+                    "Shared Written Blocks": 0,
+                    "Local Hit Blocks": 0,
+                    "Local Read Blocks": 0,
+                    "Local Dirtied Blocks": 0,
+                    "Local Written Blocks": 0,
+                    "Temp Read Blocks": 0,
+                    "Temp Written Blocks": 0,
+                    "Plans": [
+                      {
+                        "Node Type": "Bitmap Index Scan",
+                        "Parent Relationship": "Outer",
+                        "Parallel Aware": false,
+                        "Async Capable": false,
+                        "Index Name": "idx_chunk_doc",
+                        "Startup Cost": 0.0,
+                        "Total Cost": 20.79,
+                        "Plan Rows": 600,
+                        "Plan Width": 0,
+                        "Actual Startup Time": 0.057,
+                        "Actual Total Time": 0.057,
+                        "Actual Rows": 600,
+                        "Actual Loops": 1,
+                        "Index Cond": "(document_id = 7)",
+                        "Shared Hit Blocks": 5,
+                        "Shared Read Blocks": 0,
+                        "Shared Dirtied Blocks": 0,
+                        "Shared Written Blocks": 0,
+                        "Local Hit Blocks": 0,
+                        "Local Read Blocks": 0,
+                        "Local Dirtied Blocks": 0,
+                        "Local Written Blocks": 0,
+                        "Temp Read Blocks": 0,
+                        "Temp Written Blocks": 0
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "Planning": {
+            "Shared Hit Blocks": 0,
+            "Shared Read Blocks": 0,
+            "Shared Dirtied Blocks": 0,
+            "Shared Written Blocks": 0,
+            "Local Hit Blocks": 0,
+            "Local Read Blocks": 0,
+            "Local Dirtied Blocks": 0,
+            "Local Written Blocks": 0,
+            "Temp Read Blocks": 0,
+            "Temp Written Blocks": 0
+          },
+          "Planning Time": 0.069,
+          "Triggers": [],
+          "Execution Time": 0.524
+        }
+      ],
+      "after": [
+        {
+          "Plan": {
+            "Node Type": "Limit",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Startup Cost": 27.44,
+            "Total Cost": 27.46,
+            "Plan Rows": 6,
+            "Plan Width": 12,
+            "Actual Startup Time": 0.014,
+            "Actual Total Time": 0.015,
+            "Actual Rows": 6,
+            "Actual Loops": 1,
+            "Shared Hit Blocks": 7,
+            "Shared Read Blocks": 0,
+            "Shared Dirtied Blocks": 0,
+            "Shared Written Blocks": 0,
+            "Local Hit Blocks": 0,
+            "Local Read Blocks": 0,
+            "Local Dirtied Blocks": 0,
+            "Local Written Blocks": 0,
+            "Temp Read Blocks": 0,
+            "Temp Written Blocks": 0,
+            "Plans": [
+              {
+                "Node Type": "Sort",
+                "Parent Relationship": "Outer",
+                "Parallel Aware": false,
+                "Async Capable": false,
+                "Startup Cost": 27.44,
+                "Total Cost": 27.46,
+                "Plan Rows": 6,
+                "Plan Width": 12,
+                "Actual Startup Time": 0.014,
+                "Actual Total Time": 0.014,
+                "Actual Rows": 6,
+                "Actual Loops": 1,
+                "Sort Key": [
+                  "page_number",
+                  "chunk_index"
+                ],
+                "Sort Method": "quicksort",
+                "Sort Space Used": 25,
+                "Sort Space Type": "Memory",
+                "Shared Hit Blocks": 7,
+                "Shared Read Blocks": 0,
+                "Shared Dirtied Blocks": 0,
+                "Shared Written Blocks": 0,
+                "Local Hit Blocks": 0,
+                "Local Read Blocks": 0,
+                "Local Dirtied Blocks": 0,
+                "Local Written Blocks": 0,
+                "Temp Read Blocks": 0,
+                "Temp Written Blocks": 0,
+                "Plans": [
+                  {
+                    "Node Type": "Bitmap Heap Scan",
+                    "Parent Relationship": "Outer",
+                    "Parallel Aware": false,
+                    "Async Capable": false,
+                    "Relation Name": "chunk",
+                    "Alias": "chunk",
+                    "Startup Cost": 4.19,
+                    "Total Cost": 27.36,
+                    "Plan Rows": 6,
+                    "Plan Width": 12,
+                    "Actual Startup Time": 0.008,
+                    "Actual Total Time": 0.011,
+                    "Actual Rows": 6,
+                    "Actual Loops": 1,
+                    "Recheck Cond": "((document_id = 7) AND (emb IS NULL))",
+                    "Rows Removed by Index Recheck": 0,
+                    "Exact Heap Blocks": 6,
+                    "Lossy Heap Blocks": 0,
+                    "Shared Hit Blocks": 7,
+                    "Shared Read Blocks": 0,
+                    "Shared Dirtied Blocks": 0,
+                    "Shared Written Blocks": 0,
+                    "Local Hit Blocks": 0,
+                    "Local Read Blocks": 0,
+                    "Local Dirtied Blocks": 0,
+                    "Local Written Blocks": 0,
+                    "Temp Read Blocks": 0,
+                    "Temp Written Blocks": 0,
+                    "Plans": [
+                      {
+                        "Node Type": "Bitmap Index Scan",
+                        "Parent Relationship": "Outer",
+                        "Parallel Aware": false,
+                        "Async Capable": false,
+                        "Index Name": "idx_chunk_unembedded",
+                        "Startup Cost": 0.0,
+                        "Total Cost": 4.19,
+                        "Plan Rows": 6,
+                        "Plan Width": 0,
+                        "Actual Startup Time": 0.005,
+                        "Actual Total Time": 0.005,
+                        "Actual Rows": 6,
+                        "Actual Loops": 1,
+                        "Index Cond": "(document_id = 7)",
+                        "Shared Hit Blocks": 1,
+                        "Shared Read Blocks": 0,
+                        "Shared Dirtied Blocks": 0,
+                        "Shared Written Blocks": 0,
+                        "Local Hit Blocks": 0,
+                        "Local Read Blocks": 0,
+                        "Local Dirtied Blocks": 0,
+                        "Local Written Blocks": 0,
+                        "Temp Read Blocks": 0,
+                        "Temp Written Blocks": 0
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "Planning": {
+            "Shared Hit Blocks": 0,
+            "Shared Read Blocks": 0,
+            "Shared Dirtied Blocks": 0,
+            "Shared Written Blocks": 0,
+            "Local Hit Blocks": 0,
+            "Local Read Blocks": 0,
+            "Local Dirtied Blocks": 0,
+            "Local Written Blocks": 0,
+            "Temp Read Blocks": 0,
+            "Temp Written Blocks": 0
+          },
+          "Planning Time": 0.059,
+          "Triggers": [],
+          "Execution Time": 0.025
+        }
+      ]
+    },
+    "rows_per_query": 6,
+    "migration_upgrade_downgrade_replay": "passed"
+  },
+  "http": {
+    "profiles": [
+      {
+        "variant": "before",
+        "bytes": 203677,
+        "profile": "         11060 function calls (11000 primitive calls) in 0.011 seconds\n\n   Ordered by: cumulative time\n   List reduced from 397 to 20 due to restriction <20>\n\n   ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.000    0.000    0.009    0.009 baseline_documents.py:869(get_document_pages)\n        1    0.000    0.000    0.007    0.007 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/orm/query.py:2689(all)\n        1    0.000    0.000    0.005    0.005 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/result.py:1818(all)\n        1    0.000    0.000    0.005    0.005 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/result.py:582(_allrows)\n        4    0.000    0.000    0.005    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/orm/loading.py:208(chunks)\n        1    0.000    0.000    0.005    0.005 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/result.py:1732(_fetchall_impl)\n        1    0.000    0.000    0.005    0.005 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/result.py:2333(_fetchall_impl)\n        2    0.000    0.000    0.004    0.002 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/result.py:576(_raw_all_rows)\n        2    0.000    0.000    0.004    0.002 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/cursor.py:2260(_fetchall_impl)\n        2    0.000    0.000    0.004    0.002 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/cursor.py:1195(fetchall)\n        2    0.000    0.000    0.004    0.002 /home/mrx/.local/venv/lib/python3.14/site-packages/psycopg/cursor.py:274(fetchall)\n      400    0.000    0.000    0.003    0.000 /home/mrx/.local/venv/lib/python3.14/site-packages/psycopg/types/json.py:256(load)\n        2    0.000    0.000    0.003    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/orm/query.py:2859(_iter)\n      400    0.001    0.000    0.003    0.000 /usr/lib/python3.14/json/__init__.py:304(loads)\n        2    0.000    0.000    0.003    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/orm/session.py:2313(execute)\n        2    0.000    0.000    0.003    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/orm/session.py:2141(_execute_internal)\n        2    0.000    0.000    0.003    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/orm/context.py:296(orm_execute_statement)\n        2    0.000    0.000    0.002    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/base.py:1377(execute)\n        2    0.000    0.000    0.002    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/sql/elements.py:517(_execute_on_connection)\n        2    0.000    0.000    0.002    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/base.py:1593(_execute_clauseelement)\n\n\n"
+      },
+      {
+        "variant": "after",
+        "bytes": 196477,
+        "profile": "         3939 function calls (3889 primitive calls) in 0.006 seconds\n\n   Ordered by: cumulative time\n   List reduced from 400 to 20 due to restriction <20>\n\n   ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.000    0.000    0.006    0.006 /home/mrx/.t3/worktrees/meta_deepread/perf-verified-resource-improvements/backend/app/routers/documents.py:870(get_document_pages)\n        2    0.000    0.000    0.003    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/orm/query.py:2859(_iter)\n        2    0.000    0.000    0.003    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/orm/session.py:2313(execute)\n        2    0.000    0.000    0.003    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/orm/session.py:2141(_execute_internal)\n        1    0.000    0.000    0.003    0.003 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/orm/query.py:2689(all)\n        2    0.000    0.000    0.003    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/orm/context.py:296(orm_execute_statement)\n        2    0.000    0.000    0.002    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/base.py:1377(execute)\n        2    0.000    0.000    0.002    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/sql/elements.py:517(_execute_on_connection)\n        2    0.000    0.000    0.002    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/base.py:1593(_execute_clauseelement)\n        1    0.000    0.000    0.002    0.002 /home/mrx/.t3/worktrees/meta_deepread/perf-verified-resource-improvements/backend/app/services/library_access.py:27(get_document_for_user)\n        2    0.000    0.000    0.002    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/base.py:1793(_execute_context)\n        2    0.000    0.000    0.002    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/base.py:1852(_exec_single_context)\n        1    0.000    0.000    0.002    0.002 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/orm/query.py:2738(first)\n        2    0.000    0.000    0.002    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/default.py:951(do_execute)\n        2    0.000    0.000    0.002    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/psycopg/cursor.py:100(execute)\n        2    0.001    0.001    0.002    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/psycopg/connection.py:476(wait)\n        1    0.000    0.000    0.001    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/result.py:1416(all)\n        1    0.000    0.000    0.001    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/result.py:582(_allrows)\n        4    0.000    0.000    0.001    0.000 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/orm/loading.py:208(chunks)\n        1    0.000    0.000    0.001    0.001 /home/mrx/.local/venv/lib/python3.14/site-packages/sqlalchemy/engine/result.py:2333(_fetchall_impl)\n\n\n"
+      }
+    ],
+    "1": {
+      "batch_latency_ms": {
+        "before": [
+          5.7023379995371215,
+          6.920915002410766,
+          6.195522997586522,
+          5.403251001553144,
+          6.09861800330691
+        ],
+        "after": [
+          8.327219002239872,
+          18.472023999493103,
+          5.441163004434202,
+          5.010359003790654,
+          4.949492999003269
+        ]
+      },
+      "summary_ms": {
+        "before": {
+          "median": 6.09861800330691,
+          "min": 5.403251001553144,
+          "max": 6.920915002410766
+        },
+        "after": {
+          "median": 5.441163004434202,
+          "min": 4.949492999003269,
+          "max": 18.472023999493103
+        }
+      },
+      "requests_per_variant": 5,
+      "errors": 0
+    },
+    "15": {
+      "batch_latency_ms": {
+        "before": [
+          112.49980200227583,
+          71.3260740012629,
+          72.53823800419923,
+          89.215628002421,
+          94.22368800005643
+        ],
+        "after": [
+          64.76176000433043,
+          68.48615700437222,
+          66.38641199970152,
+          71.45960500201909,
+          99.34681899903808
+        ]
+      },
+      "summary_ms": {
+        "before": {
+          "median": 89.215628002421,
+          "min": 71.3260740012629,
+          "max": 112.49980200227583
+        },
+        "after": {
+          "median": 68.48615700437222,
+          "min": 64.76176000433043,
+          "max": 99.34681899903808
+        }
+      },
+      "requests_per_variant": 75,
+      "errors": 0
+    },
+    "30": {
+      "batch_latency_ms": {
+        "before": [
+          160.45166199910454,
+          158.1082340053399,
+          166.2511610047659,
+          159.91059700172627,
+          184.14685699826805
+        ],
+        "after": [
+          139.2658550030319,
+          140.520696004387,
+          142.60732600087067,
+          134.94349300162867,
+          139.5319549992564
+        ]
+      },
+      "summary_ms": {
+        "before": {
+          "median": 160.45166199910454,
+          "min": 158.1082340053399,
+          "max": 184.14685699826805
+        },
+        "after": {
+          "median": 139.5319549992564,
+          "min": 134.94349300162867,
+          "max": 142.60732600087067
+        }
+      },
+      "requests_per_variant": 150,
+      "errors": 0
+    },
+    "payload_bytes": {
+      "full": 203677,
+      "lightweight": 196477
+    },
+    "lightweight_query_count": 3
+  },
+  "api_rss_after_http_bytes": 260931584,
+  "proxy": {
+    "json_identity_bytes": 196477,
+    "json_gzip_bytes": 2472,
+    "sse_arrivals": [
+      [
+        0.0013676739981747232,
+        "data: first"
+      ],
+      [
+        0.20106077099626418,
+        "data: last"
+      ]
+    ],
+    "audio_uncompressed": true,
+    "websocket_echo": true
+  },
+  "status": "passed"
+}

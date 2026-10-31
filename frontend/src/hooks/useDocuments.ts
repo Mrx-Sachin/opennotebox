@@ -18,6 +18,6 @@ export function useDocuments(userId?: number, notebookId?: number | null, ready 
       signal, params: { limit: 200, notebook_id: notebookId || undefined, unfiled: notebookId === null || undefined },
     }).then((response) => response.data),
     refetchOnWindowFocus: true,
-    refetchInterval: (query) => query.state.data?.some(isDocumentProcessing) ? 2000 : false,
+    refetchInterval: (query) => query.state.data?.some(isDocumentProcessing) ? 8000 : false,
   })
 }

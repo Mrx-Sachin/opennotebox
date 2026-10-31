@@ -1,0 +1,16 @@
+{
+  "failures": 0,
+  "database": "disposable PostgreSQL 16",
+  "database_memory_limit_mib": 512,
+  "database_cpu_limit": 1,
+  "concurrent_requests": 30,
+  "queued_builds": 1,
+  "migration_upgrade_downgrade_upgrade": "passed",
+  "legacy_empty_result_backfill": "passed",
+  "actual_layout_task_seconds_single_run": 10.692350192985032,
+  "regions": 17,
+  "exclusion_ranges": 4,
+  "text_and_geometry_unchanged": true,
+  "duplicate_task_ignored": true,
+  "scope": "Actual PostgreSQL handler concurrency and real CPU Docling task body. Enqueue recorded in memory, not a broker/worker integration or 30-user throughput test."
+}

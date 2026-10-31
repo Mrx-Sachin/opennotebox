@@ -1,0 +1,137 @@
+{
+  "baseline": "596cd40",
+  "pdf": "/home/mrx/local/github/meta_deepread/prototypes/docling_quantization_benchmark/basper.pdf",
+  "pdf_sha256": "9050c761b6313936c8362c2cf8b44747d214653212a413d0aa55f3a3f20cb09d",
+  "load_average_after": [
+    6.56787109375,
+    4.4912109375,
+    2.3662109375
+  ],
+  "cpu_count": 12,
+  "versions": {
+    "docling": "2.144.0",
+    "pdfplumber": "0.11.10",
+    "pypdfium2": "5.14.0"
+  },
+  "scope": "Fresh-process parse_pdf with automatic OCR detection, full text and word boxes. Eager includes actual Docling layout and exclusions; deferred never runs Docling. Peak RSS is the entire parser process, not stack memory. No network, DB, broker, browser, OCR-image benchmark, or simultaneous-user capacity claim.",
+  "failures": 0,
+  "exact_page_text_equivalent": true,
+  "samples": [
+    {
+      "variant": "eager",
+      "seconds": 35.84010154797579,
+      "process_peak_rss_mib": 2558.6171875,
+      "pages": 28,
+      "word_boxes": 18010,
+      "layout_regions": 403,
+      "text_sha256": "a14f5cc3e4808980fbcee7d60f31609e929d72c3edba680eedbbf2d54e2207cd"
+    },
+    {
+      "variant": "deferred",
+      "seconds": 2.5191227860050276,
+      "process_peak_rss_mib": 274.61328125,
+      "pages": 28,
+      "word_boxes": 18010,
+      "layout_regions": 0,
+      "text_sha256": "a14f5cc3e4808980fbcee7d60f31609e929d72c3edba680eedbbf2d54e2207cd"
+    },
+    {
+      "variant": "eager",
+      "seconds": 47.21014999001636,
+      "process_peak_rss_mib": 2593.828125,
+      "pages": 28,
+      "word_boxes": 18010,
+      "layout_regions": 403,
+      "text_sha256": "a14f5cc3e4808980fbcee7d60f31609e929d72c3edba680eedbbf2d54e2207cd"
+    },
+    {
+      "variant": "deferred",
+      "seconds": 2.350795858015772,
+      "process_peak_rss_mib": 274.05859375,
+      "pages": 28,
+      "word_boxes": 18010,
+      "layout_regions": 0,
+      "text_sha256": "a14f5cc3e4808980fbcee7d60f31609e929d72c3edba680eedbbf2d54e2207cd"
+    },
+    {
+      "variant": "eager",
+      "seconds": 36.13290245999815,
+      "process_peak_rss_mib": 2697.32421875,
+      "pages": 28,
+      "word_boxes": 18010,
+      "layout_regions": 403,
+      "text_sha256": "a14f5cc3e4808980fbcee7d60f31609e929d72c3edba680eedbbf2d54e2207cd"
+    },
+    {
+      "variant": "deferred",
+      "seconds": 2.592934633983532,
+      "process_peak_rss_mib": 273.97265625,
+      "pages": 28,
+      "word_boxes": 18010,
+      "layout_regions": 0,
+      "text_sha256": "a14f5cc3e4808980fbcee7d60f31609e929d72c3edba680eedbbf2d54e2207cd"
+    },
+    {
+      "variant": "eager",
+      "seconds": 34.97667364697554,
+      "process_peak_rss_mib": 2649.34765625,
+      "pages": 28,
+      "word_boxes": 18010,
+      "layout_regions": 403,
+      "text_sha256": "a14f5cc3e4808980fbcee7d60f31609e929d72c3edba680eedbbf2d54e2207cd"
+    },
+    {
+      "variant": "deferred",
+      "seconds": 2.2913718950003386,
+      "process_peak_rss_mib": 274.421875,
+      "pages": 28,
+      "word_boxes": 18010,
+      "layout_regions": 0,
+      "text_sha256": "a14f5cc3e4808980fbcee7d60f31609e929d72c3edba680eedbbf2d54e2207cd"
+    },
+    {
+      "variant": "eager",
+      "seconds": 37.07852808400639,
+      "process_peak_rss_mib": 2694.109375,
+      "pages": 28,
+      "word_boxes": 18010,
+      "layout_regions": 403,
+      "text_sha256": "a14f5cc3e4808980fbcee7d60f31609e929d72c3edba680eedbbf2d54e2207cd"
+    },
+    {
+      "variant": "deferred",
+      "seconds": 2.4628404989780392,
+      "process_peak_rss_mib": 274.0078125,
+      "pages": 28,
+      "word_boxes": 18010,
+      "layout_regions": 0,
+      "text_sha256": "a14f5cc3e4808980fbcee7d60f31609e929d72c3edba680eedbbf2d54e2207cd"
+    }
+  ],
+  "summary": {
+    "eager": {
+      "seconds": {
+        "median": 36.13290245999815,
+        "min": 34.97667364697554,
+        "max": 47.21014999001636
+      },
+      "process_peak_rss_mib": {
+        "median": 2649.34765625,
+        "min": 2558.6171875,
+        "max": 2697.32421875
+      }
+    },
+    "deferred": {
+      "seconds": {
+        "median": 2.4628404989780392,
+        "min": 2.2913718950003386,
+        "max": 2.592934633983532
+      },
+      "process_peak_rss_mib": {
+        "median": 274.05859375,
+        "min": 273.97265625,
+        "max": 274.61328125
+      }
+    }
+  }
+}

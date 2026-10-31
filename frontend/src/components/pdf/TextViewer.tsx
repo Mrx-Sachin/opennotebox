@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { getPages, ExtractedPage } from "@/services/api"
+import { getPages, ExtractedPageLightweight } from "@/services/api"
 import { useReader } from "@/stores/reader"
 import { useNotes } from "@/stores/notes"
 import LoadingSpinner from "@/components/ui/LoadingSpinner"
@@ -31,7 +31,7 @@ const IN_PROGRESS_STATUSES = new Set(["pending", "parsing", "re-parsing"])
  * page images the way PdfViewer does for actual PDFs.
  */
 export default function TextViewer({ docId, processingStatus }: TextViewerProps) {
-  const [pages, setPages] = useState<ExtractedPage[]>([])
+  const [pages, setPages] = useState<ExtractedPageLightweight[]>([])
   const [loading, setLoading] = useState(true)
   const [outlineOpen, setOutlineOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -62,7 +62,7 @@ export default function TextViewer({ docId, processingStatus }: TextViewerProps)
   useEffect(() => {
     let mounted = true
     setLoading(true)
-    getPages(docId)
+    getPages(docId, { lightweight: true })
       .then((data) => {
         if (!mounted) return
         setPages(data)

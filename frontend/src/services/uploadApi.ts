@@ -47,7 +47,7 @@ const MAX_CONCURRENT_UPLOADS = 3
 const POLL_TIMEOUT_MS = 10 * 60 * 1000
 const POLL_INTERVAL_MS = 2000
 
-const TERMINAL_DONE_STATUSES = new Set(["extracted", "summarizing_pages", "completed"])
+const TERMINAL_DONE_STATUSES = new Set(["extracted", "summarizing_pages", "summarizing_sections", "completed"])
 
 export type UploadStatus = "queued" | "uploading" | "processing" | "done" | "error" | "canceled"
 

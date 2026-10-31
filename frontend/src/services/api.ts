@@ -1,7 +1,9 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from "axios"
 import {
   Document,
+  DocumentLayoutStatus,
   ExtractedPage,
+  ExtractedPageLightweight,
   Summary,
   Message,
   Conversation,
@@ -15,6 +17,7 @@ import {
 export type {
   Document,
   ExtractedPage,
+  ExtractedPageLightweight,
   Summary,
   Message,
   Conversation,
@@ -52,6 +55,12 @@ export const refreshToken = (refreshToken: string) =>
 
 export const getMe = () =>
   api.get<User>("/api/auth/me").then((r) => r.data)
+
+export const getDocumentLayout = (docId: number, signal?: AbortSignal) =>
+  api.get<DocumentLayoutStatus>(`/api/documents/${docId}/layout`, { signal }).then((r) => r.data)
+
+export const analyzeDocumentLayout = (docId: number) =>
+  api.post<DocumentLayoutStatus>(`/api/documents/${docId}/analyze-layout`).then((r) => r.data)
 
 // Admin endpoints
 export const listUsers = () =>
@@ -234,9 +243,32 @@ export const updateReadingProgress = (
 export const deleteDocument = (id: number) =>
   api.delete(`/api/documents/${id}`).then((r) => r.data)
 
+export interface GetPagesOptions {
+  lightweight?: boolean
+}
+
 // Pages
-export const getPages = (docId: number) =>
-  api.get<ExtractedPage[]>(`/api/documents/${docId}/pages`).then((r) => r.data)
+export function getPages(
+  docId: number,
+  options: { lightweight: true }
+): Promise<ExtractedPageLightweight[]>
+export function getPages(
+  docId: number,
+  options?: { lightweight?: false }
+): Promise<ExtractedPage[]>
+export function getPages(
+  docId: number,
+  options: GetPagesOptions
+): Promise<ExtractedPageLightweight[]>
+export function getPages(
+  docId: number,
+  options?: GetPagesOptions
+): Promise<ExtractedPageLightweight[] | ExtractedPage[]> {
+  const params = new URLSearchParams()
+  if (options?.lightweight) params.set("lightweight", "true")
+  const qs = params.toString() ? `?${params.toString()}` : ""
+  return api.get<ExtractedPageLightweight[]>(`/api/documents/${docId}/pages${qs}`).then((r) => r.data)
+}
 
 export const getPage = (docId: number, pageNum: number) =>
   api.get<ExtractedPage>(`/api/documents/${docId}/page/${pageNum}`).then((r) => r.data)

@@ -7,12 +7,14 @@ keeps long model calls from losing their slots while they are still running.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from redis.asyncio import Redis
+from redis.asyncio import BlockingConnectionPool, Redis
 from redis.exceptions import RedisError
 
 from app.config import settings
@@ -70,15 +72,68 @@ class LLMAdmissionTimeout(TimeoutError):
     """Raised when an LLM request cannot get a slot before its wait limit."""
 
 
+_client_cache: dict[tuple[int, int], tuple[Redis, asyncio.Task[None], str]] = {}
+
+
+async def _pool_keeper(key: tuple[int, int], client: Redis) -> None:
+    try:
+        await asyncio.Event().wait()
+    finally:
+        cached = _client_cache.get(key)
+        if cached is not None and cached[0] is client:
+            _client_cache.pop(key)
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
+
 def _new_redis_client() -> Redis:
-    """Create a short-lived Redis client for one admission lease."""
-    return Redis.from_url(
+    """Create a Redis client for admission leases."""
+    pool = BlockingConnectionPool.from_url(
         settings.llm_admission_redis_url,
         decode_responses=True,
         socket_connect_timeout=1.0,
         socket_timeout=1.0,
-        max_connections=1,
+        max_connections=max(1, settings.llm_max_concurrency),
+        timeout=1.0,
     )
+    return Redis.from_pool(pool)
+
+
+def _get_redis_client() -> Redis:
+    loop = asyncio.get_running_loop()
+    pid = os.getpid()
+    key = (pid, id(loop))
+
+    cached = _client_cache.get(key)
+    if cached is not None:
+        client, keeper, cached_url = cached
+        if cached_url == settings.llm_admission_redis_url and not keeper.done():
+            return client
+        if not keeper.done():
+            keeper.cancel()
+        _client_cache.pop(key, None)
+
+    for cached_key in list(_client_cache.keys()):
+        if cached_key[0] != pid:
+            _client_cache.pop(cached_key, None)
+
+    client = _new_redis_client()
+    keeper = asyncio.create_task(_pool_keeper(key, client))
+    _client_cache[key] = (client, keeper, settings.llm_admission_redis_url)
+    return client
+
+
+async def close_llm_semaphore() -> None:
+    """Close the current process and event loop's admission pool."""
+    key = (os.getpid(), id(asyncio.get_running_loop()))
+    entry = _client_cache.pop(key, None)
+    if entry is not None:
+        client, keeper, _ = entry
+        keeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await keeper
+        with contextlib.suppress(Exception):
+            await client.aclose()
 
 
 def _lane_limit(lane: str) -> int:
@@ -152,11 +207,10 @@ async def _release_lease(client: Redis, lane: str, token: str) -> None:
 
 @asynccontextmanager
 async def _llm_admission(lane: str) -> AsyncIterator[None]:
-    client = _new_redis_client()
+    client = _get_redis_client()
     token = uuid.uuid4().hex
     owner = asyncio.current_task()
-    if owner is None:  # pragma: no cover - async context managers require a task
-        await client.aclose()
+    if owner is None:
         raise RuntimeError("LLM admission requires an asyncio task")
 
     acquired = False
@@ -186,7 +240,6 @@ async def _llm_admission(lane: str) -> AsyncIterator[None]:
             await asyncio.gather(heartbeat, return_exceptions=True)
         if acquired:
             await _release_lease(client, lane, token)
-        await client.aclose()
 
 
 @asynccontextmanager

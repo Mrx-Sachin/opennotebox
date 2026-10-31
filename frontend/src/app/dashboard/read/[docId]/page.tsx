@@ -122,7 +122,7 @@ export default function ReaderPage() {
     }
   }
 
-  const [viewerMountKey, setViewerMountKey] = useState(0)
+  const [pageTextVersion, setPageTextVersion] = useState(0)
   const processingRunRef = useRef<{ docId: number; wasProcessing: boolean } | null>(null)
 
   useEffect(() => {
@@ -133,15 +133,16 @@ export default function ReaderPage() {
       if (
         prev.wasProcessing &&
         !isProcessing &&
-        (selectedDoc.processing_status === "extracted" || selectedDoc.processing_status === "completed")
+        ["extracted", "summarizing_pages", "summarizing_sections", "completed"].includes(selectedDoc.processing_status)
       ) {
         ttsEngine.clearPageSentencesCache(selectedDoc.id)
         clearPageTextCache(selectedDoc.id)
-        setViewerMountKey((key) => key + 1)
+        setPageTextVersion((version) => version + 1)
+        void queryClient.invalidateQueries({ queryKey: ["document-layout", user?.id, selectedDoc.id] })
       }
     }
     processingRunRef.current = { docId: selectedDoc.id, wasProcessing: isProcessing }
-  }, [selectedDoc])
+  }, [selectedDoc, queryClient, user?.id])
 
   const handleReparse = async (mode?: LayoutMode) => {
     if (!selectedDocId || reparsing || selectedDoc?.read_only) return
@@ -150,11 +151,13 @@ export default function ReaderPage() {
       ttsEngine.clearPageSentencesCache(selectedDocId)
       clearPageTextCache(selectedDocId)
       await reparseDocument(selectedDocId, mode)
+      queryClient.setQueryData(["document-layout", user?.id, selectedDocId], { status: "not_requested" })
+      await queryClient.invalidateQueries({ queryKey: ["document-layout", user?.id, selectedDocId] })
       await fetchDocs()
       ttsEngine.clearPageSentencesCache(selectedDocId)
       clearPageTextCache(selectedDocId)
       if (useReader.getState().selectedDocId === selectedDocId) {
-        setViewerMountKey((key) => key + 1)
+        setPageTextVersion((version) => version + 1)
       }
     } catch (error) {
       console.error("Re-parse failed:", error)
@@ -354,7 +357,7 @@ export default function ReaderPage() {
               )}
               <div className="min-h-0 min-w-0 flex-1">
                 {selectedDoc.format === "pdf" ? (
-                  <PdfViewer key={`${selectedDoc.id}-${viewerMountKey}`} docId={selectedDoc.id} />
+                  <PdfViewer key={selectedDoc.id} docId={selectedDoc.id} pageTextVersion={pageTextVersion} layoutResetting={reparsing} />
                 ) : (
                   <TextViewer key={selectedDoc.id}
                     docId={selectedDoc.id}

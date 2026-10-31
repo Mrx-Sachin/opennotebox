@@ -14,13 +14,18 @@ from app.services.narration import (
 
 
 def _has_text_layer(file_path: str) -> bool:
-    """Check if first page has meaningful text (not scanned)."""
+    """Sample the cover, middle and last page for meaningful embedded text."""
     try:
         import pdfplumber
         with pdfplumber.open(file_path) as pdf:
-            first_page = pdf.pages[0]
-            text = first_page.extract_text() or ""
-            return len(text.strip()) > 100
+            indices = dict.fromkeys((0, len(pdf.pages) // 2, len(pdf.pages) - 1))
+            for index in indices:
+                if index < 0:
+                    continue
+                text = pdf.pages[index].extract_text() or ""
+                if len(text.strip()) > 100:
+                    return True
+            return False
     except Exception:
         return False  # fallback to OCR if detection fails
 
@@ -38,7 +43,7 @@ class PDFParserService:
         Parse a PDF file and return extracted content.
 
         use_ocr: True to force OCR, False to skip, None to auto-detect.
-        When auto-detecting, the first page is sampled for extractable text.
+        Auto-detection samples up to three pages, including sparse covers.
 
         layout_mode: "auto" | "single_column" | "research_paper" - controls
         multi-column reading-order reconstruction in the pdfplumber fallback.
@@ -69,7 +74,6 @@ class PDFParserService:
                 page_data = self._extract_page_data(page, i)
                 result["pages"].append(page_data)
 
-            self._enrich_with_docling_regions(file_path, result)
             logger.info(f"Successfully parsed {result['num_pages']} pages from {file_path}")
             return result
 
@@ -97,6 +101,8 @@ class PDFParserService:
             "images": getattr(page, "images", []),
             "page_width": pw,
             "page_height": ph,
+            "layout_regions": [],
+            "narration_exclusions": [],
         }
 
     def _get_bounding_boxes(self, page) -> Optional[list]:
@@ -264,7 +270,7 @@ class PDFParserService:
                             })
         except Exception as e:
             logger.warning(f"Docling region detection failed for {file_path}: {e}")
-            return {}
+            raise
 
         return regions_by_page
 
@@ -294,9 +300,10 @@ class PDFParserService:
                         "headings": None,
                         "page_width": float(page.width),
                         "page_height": float(page.height or 0.0),
+                        "layout_regions": [],
+                        "narration_exclusions": [],
                     }
                     result["pages"].append(page_data)
-            self._enrich_with_docling_regions(file_path, result)
             return result
         except ImportError:
             logger.error("Neither OpenDataLoader nor pdfplumber is available")

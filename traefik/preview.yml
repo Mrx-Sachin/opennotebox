@@ -1,5 +1,10 @@
 http:
   middlewares:
+    api-compression:
+      compress:
+        includedContentTypes:
+          - application/json
+        minResponseBodyBytes: 1024
     security-headers:
       headers:
         customResponseHeaders:
@@ -12,7 +17,7 @@ http:
       rule: 'PathPrefix(`/api`) || PathPrefix(`/ws`) || Path(`/health`)'
       priority: 100
       entryPoints: [weblocal]
-      middlewares: [security-headers]
+      middlewares: [security-headers, api-compression]
       service: api
     frontend:
       rule: 'PathPrefix(`/`)'

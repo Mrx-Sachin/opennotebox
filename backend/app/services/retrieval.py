@@ -52,8 +52,9 @@ _SCHEMA = [
             UNIQUE(document_id, page_number, chunk_index)
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_chunk_doc ON chunk(document_id, page_number, chunk_index)",
     "CREATE INDEX IF NOT EXISTS idx_chunk_fts ON chunk USING GIN(tsvectors)",
+    "CREATE INDEX IF NOT EXISTS idx_chunk_unembedded "
+    "ON chunk(document_id, page_number, chunk_index) WHERE emb IS NULL",
 ]
 
 _SQLITE_SCHEMA = [
@@ -68,7 +69,8 @@ _SQLITE_SCHEMA = [
         UNIQUE(document_id, page_number, chunk_index)
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_chunk_doc ON chunk(document_id, page_number, chunk_index)",
+    "CREATE INDEX IF NOT EXISTS idx_chunk_unembedded "
+    "ON chunk(document_id, page_number, chunk_index) WHERE emb IS NULL",
 ]
 
 

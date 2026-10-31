@@ -154,11 +154,14 @@ def test_repeated_words_in_columns_use_their_visual_line():
 
 
 def test_failed_detector_fallback():
-    """Verify that if Docling detector raises an exception, parser falls back gracefully."""
+    """Explicit optional enrichment preserves baseline content on detector failure."""
     parser = PDFParserService()
-    with patch.object(parser, "_detect_docling_regions", side_effect=RuntimeError("Docling model load error")):
+    with patch.object(parser, "_detect_docling_regions", side_effect=RuntimeError("Docling model load error")) as detector:
         fixture_path = Path(__file__).resolve().parents[2] / "e2e" / "fixtures" / "docling-narration.pdf"
         result = parser.parse_pdf(str(fixture_path), use_ocr=False)
+        detector.assert_not_called()
+        parser._enrich_with_docling_regions(str(fixture_path), result)
+        detector.assert_called_once()
 
         assert result is not None
         assert result["num_pages"] == 3
@@ -267,11 +270,19 @@ def test_parse_pdf_docling_fixture():
     assert fixture_path.exists(), "e2e fixture docling-narration.pdf must exist"
 
     parser = PDFParserService()
-    result = parser.parse_pdf(str(fixture_path), use_ocr=False)
+    with patch.object(parser, "_detect_docling_regions") as detector:
+        result = parser.parse_pdf(str(fixture_path), use_ocr=False)
+    detector.assert_not_called()
 
     assert result is not None
     assert result["num_pages"] == 3
     assert len(result["pages"]) == 3
+    for page in result["pages"]:
+        assert page["layout_regions"] == []
+        assert page["narration_exclusions"] == []
+
+    # Semantic detection remains available to the explicit enrichment task.
+    parser._enrich_with_docling_regions(str(fixture_path), result)
 
     page_one = result["pages"][0]
     assert len(page_one["content"]) > 0
