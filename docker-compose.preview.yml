@@ -19,7 +19,7 @@ x-backend: &backend
     VLLM_BASE_URL: http://host.docker.internal:8767/v1
     VLLM_MODEL: ${VLLM_MODEL:-antigravity/gemini-3.8-flash-tiered}
     VLLM_API_KEY: ${VLLM_API_KEY:-not-needed}
-    PIPER_TTS_URL: http://tts:5111
+    TTS_URL: http://tts:5111
   volumes:
     - ${PREVIEW_STATE_DIR:?}/data:/app/data
     - ${PREVIEW_STATE_DIR:?}/exports:/app/exports

@@ -233,7 +233,7 @@ async def deep_health_check(
     try:
         import httpx
         start = time.perf_counter()
-        resp = httpx.get(f"{settings.piper_tts_url}/", timeout=3.0)
+        resp = httpx.get(f"{settings.tts_url}/", timeout=3.0)
         latency = (time.perf_counter() - start) * 1000
         results["tts"] = {
             "status": "healthy" if resp.status_code < 500 else "degraded",

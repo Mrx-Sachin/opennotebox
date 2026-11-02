@@ -1,7 +1,7 @@
 """Strip Markdown syntax down to plain speakable text for TTS.
 
 Summaries are now written in Markdown (headings, **bold**, bullet lists,
-etc. - see prompts.py), but Piper reads the literal symbols aloud ("hash
+etc. - see prompts.py), but TTS engines read the literal symbols aloud ("hash
 hash", "star star") if they're sent as-is. This is only meant for
 summary-derived text; raw PDF page text is never Markdown and must not be
 run through this.

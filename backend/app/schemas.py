@@ -1,3 +1,4 @@
+from app.voice_catalog import DEFAULT_VOICE, KokoroVoiceId
 from datetime import datetime
 from typing import Annotated, Dict, Optional, List
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
@@ -469,7 +470,7 @@ class LLMSettingsOut(BaseModel):
 
 
 class TTSSettings(BaseModel):
-    default_voice: str = "default"
+    default_voice: KokoroVoiceId = DEFAULT_VOICE
 
 
 class ExportSettings(BaseModel):

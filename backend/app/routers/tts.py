@@ -24,6 +24,7 @@ from app.services.llm_settings import get_default_voice
 from app.services.markdown_strip import strip_markdown
 from app.services.library_access import get_document_for_user
 from app.tasks.tts_tasks import generate_tts as generate_tts_task, _wav_duration
+from app.voice_catalog import KokoroVoiceId, VOICE_CATALOG
 from app.services.reading_audio import (
     register_producer,
     unregister_producer,
@@ -54,73 +55,7 @@ class ReadingAudioResponse(StreamingResponse):
                 if inspect.isawaitable(finish_result):
                     await finish_result
 
-# Mirrors tts/main.py's VOICE_MODELS registry, for the UI voice picker/lab.
-# "high" quality tier sounds markedly less robotic than "medium" but is
-# slower to synthesize - listed honestly so the user can judge the
-# quality/speed tradeoff themselves rather than have it picked for them.
-VOICE_CATALOG = [
-    {
-        "id": "default",
-        "label": "Narrator (libritts_r)",
-        "description": "Used for page and section narration. Warmer, medium quality.",
-    },
-    {
-        "id": "host_a",
-        "label": "Host A - Ryan (male, high quality)",
-        "description": "Podcast dialogue voice. Slower to synthesize.",
-    },
-    {
-        "id": "host_b",
-        "label": "Host B - Lessac (female, high quality)",
-        "description": "Podcast dialogue voice. Slower to synthesize.",
-    },
-    {
-        "id": "en_US-ryan-medium",
-        "label": "Ryan (male, medium quality)",
-        "description": "Faster synthesis, noticeably more robotic than the high-quality tier.",
-    },
-    {
-        "id": "en_US-lessac-medium",
-        "label": "Lessac (female, medium quality)",
-        "description": "Faster synthesis, noticeably more robotic than the high-quality tier.",
-    },
-    # Kokoro-82M: a different, more natural/expressive engine than Piper.
-    # ~4-8s per short sentence on this deployment's CPU vs Piper's ~1.5-4s -
-    # noticeably slower, but the naturalness gap over Piper is large enough
-    # to be worth it for most reading. IDs curated from the model's graded
-    # voice list (huggingface.co/hexgrad/Kokoro-82M/VOICES.md) to the
-    # top-graded voice per gender/accent.
-    {
-        "id": "kokoro-af_heart",
-        "label": "Heart (female, US, Kokoro)",
-        "description": "Top-graded Kokoro voice. Natural, expressive. Slower than Piper.",
-    },
-    {
-        "id": "kokoro-af_bella",
-        "label": "Bella (female, US, Kokoro)",
-        "description": "Natural, expressive. Slower than Piper.",
-    },
-    {
-        "id": "kokoro-am_michael",
-        "label": "Michael (male, US, Kokoro)",
-        "description": "Natural, expressive. Slower than Piper.",
-    },
-    {
-        "id": "kokoro-am_fenrir",
-        "label": "Fenrir (male, US, Kokoro)",
-        "description": "Natural, expressive. Slower than Piper.",
-    },
-    {
-        "id": "kokoro-bf_emma",
-        "label": "Emma (female, British, Kokoro)",
-        "description": "Natural, expressive. Slower than Piper.",
-    },
-    {
-        "id": "kokoro-bm_george",
-        "label": "George (male, British, Kokoro)",
-        "description": "Natural, expressive. Slower than Piper.",
-    },
-]
+
 
 TEXT_MAX_CHARS = 5000
 
@@ -176,7 +111,7 @@ def _cached_or_queue(
 
 @router.get("/voices")
 def list_voices():
-    """Voice registry for the UI voice picker/lab (see tts/main.py VOICE_MODELS)."""
+    """Voice registry for the UI voice picker/lab."""
     return {"voices": VOICE_CATALOG}
 
 
@@ -187,7 +122,7 @@ async def release_gpu(user: User = Depends(get_current_user_from_token)):
         raise HTTPException(status_code=403, detail="Administrator access required")
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            await client.post(f"{settings.piper_tts_url}/release-gpu")
+            await client.post(f"{settings.tts_url}/release-gpu")
     except Exception as release_error:
         logger.warning(f"TTS release-gpu proxy failed: {release_error}")
     return {"status": "ok"}
@@ -195,7 +130,7 @@ async def release_gpu(user: User = Depends(get_current_user_from_token)):
 
 class PlayTextRequest(BaseModel):
     text: str = Field(..., max_length=TEXT_MAX_CHARS)
-    voice: Optional[str] = None
+    voice: Optional[KokoroVoiceId] = None
     # Native synthesis speed (not client-side playbackRate). Each engine has
     # its own valid range - main.py clamps per-engine (Kokoro: 0.5-2.0) and
     # the frontend applies any remainder above that as audio.playbackRate.
@@ -220,13 +155,13 @@ def play_text(
     spoken_text = strip_markdown(body.text)
     # Must pass user.id: get_default_voice() with no args returns the seed
     # default and ignores this user's Settings choice.
-    resolved_voice = body.voice or get_default_voice(user.id)
+    resolved_voice = body.voice or get_default_voice(user.id, db=db)
     return _cached_or_queue(db, user, spoken_text, resolved_voice, speed=body.speed or 1.0)
 
 
 class StreamRequest(BaseModel):
     text: str = Field(..., max_length=TEXT_MAX_CHARS)
-    voice: Optional[str] = None
+    voice: Optional[KokoroVoiceId] = None
     speed: Optional[float] = Field(None, ge=0.1, le=4.0)
     session_id: Optional[str] = Field(None, min_length=1, max_length=128)
 
@@ -288,7 +223,7 @@ async def stream_tts(
     acks_late config) actually matters; this endpoint has neither.
     """
     spoken_text = strip_markdown(body.text)
-    resolved_voice = body.voice or get_default_voice(user.id)
+    resolved_voice = body.voice or get_default_voice(user.id, db=db)
     speed = body.speed or 1.0
     text_hash = _hash_text(spoken_text, user.id, resolved_voice, speed)
 
@@ -418,7 +353,7 @@ async def stream_tts(
     client = httpx.AsyncClient(timeout=180.0)
     stream_ctx = client.stream(
         "POST",
-        f"{settings.piper_tts_url}/tts",
+        f"{settings.tts_url}/tts",
         json={
             "text": spoken_text[:TEXT_MAX_CHARS],
             "voice": resolved_voice,
@@ -630,15 +565,14 @@ def release_reading_audio(
 @router.post("/play/{summary_id}")
 def play_summary(
     summary_id: int,
-    voice: Optional[str] = None,
+    voice: Optional[KokoroVoiceId] = None,
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
     """Start TTS playback for a summary. Returns audio URL or queues generation.
 
-    Summaries are stored as Markdown (see services/prompts.py); Piper would
-    otherwise read the literal symbols aloud ("hash hash", "star star"), so
-    the text is stripped to plain speakable text before hashing/synthesis.
+    Summaries are stored as Markdown (see services/prompts.py); literal
+    markdown symbols are stripped to plain speakable text before hashing/synthesis.
     """
     summary = db.query(Summary).filter(
         Summary.id == summary_id,
@@ -653,7 +587,7 @@ def play_summary(
         raise HTTPException(status_code=404, detail="Document not found")
 
     spoken_text = strip_markdown(summary.content)
-    resolved_voice = voice or get_default_voice(user.id)
+    resolved_voice = voice or get_default_voice(user.id, db=db)
 
     return _cached_or_queue(
         db, user, spoken_text, resolved_voice, doc_id=doc.id, summary_id=summary_id
@@ -740,7 +674,7 @@ def get_audio(
 def play_page(
     doc_id: int,
     page_num: int,
-    voice: Optional[str] = None,
+    voice: Optional[KokoroVoiceId] = None,
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
@@ -775,7 +709,7 @@ def play_page(
     if not text_to_speak or not text_to_speak.strip():
         raise HTTPException(status_code=400, detail="Page contains no narratable text")
 
-    resolved_voice = voice or get_default_voice(user.id)
+    resolved_voice = voice or get_default_voice(user.id, db=db)
     return _cached_or_queue(db, user, text_to_speak, resolved_voice, doc_id=doc.id)
 
 

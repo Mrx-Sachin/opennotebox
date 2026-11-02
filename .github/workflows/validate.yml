@@ -39,6 +39,8 @@ jobs:
           uv pip install --system --requirement /tmp/opennotebox-requirements.txt
       - name: Run backend tests including Redis admission
         run: python -m pytest -q
+      - name: Check Kokoro HTTP contract
+        run: python -m pytest -q ../tts/test_kokoro_endpoint.py
 
   frontend:
     runs-on: ubuntu-latest
@@ -75,7 +77,7 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:3101/login > /dev/null
           cd e2e
-          E2E_BASE_URL=http://127.0.0.1:3101 npx playwright test tests/library.spec.ts tests/library.phone.spec.ts tests/chat-stream.spec.ts tests/notebooks.spec.ts tests/notebooks.phone.spec.ts tests/shared-library.spec.ts tests/shared-library.phone.spec.ts tests/citation-highlight.spec.ts tests/docling-narration.spec.ts
+          E2E_BASE_URL=http://127.0.0.1:3101 npx playwright test tests/library.spec.ts tests/library.phone.spec.ts tests/chat-stream.spec.ts tests/notebooks.spec.ts tests/notebooks.phone.spec.ts tests/shared-library.spec.ts tests/shared-library.phone.spec.ts tests/citation-highlight.spec.ts tests/docling-narration.spec.ts tests/settings-voice.spec.ts
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

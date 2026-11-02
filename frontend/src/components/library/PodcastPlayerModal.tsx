@@ -207,7 +207,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                   </div>
                   <div className="podcast-host-meta">
                     <span className="podcast-host-role">Host A</span>
-                    <span className="podcast-host-name">Ryan</span>
+                    <span className="podcast-host-name">Michael</span>
                   </div>
                 </div>
 
@@ -240,7 +240,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                   </div>
                   <div className="podcast-host-meta">
                     <span className="podcast-host-role">Host B</span>
-                    <span className="podcast-host-name">Lessac</span>
+                    <span className="podcast-host-name">Bella</span>
                   </div>
                 </div>
               </div>
@@ -271,6 +271,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                     const isHostA =
                       line.speaker.toLowerCase().includes("host a") ||
                       line.speaker.toLowerCase().includes("host_a") ||
+                      line.speaker.toLowerCase().includes("michael") ||
                       line.speaker.toLowerCase().includes("ryan")
                     return (
                       <div

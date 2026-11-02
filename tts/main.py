@@ -1,96 +1,25 @@
-"""Minimal Piper TTS HTTP server wrapper.
-
-Proxies to a locally running Piper TTS instance or runs Piper directly.
-"""
-from piper_pool import ClientGoneError, synthesize_piper_in_memory
+"""Kokoro TTS HTTP server wrapper."""
 import asyncio
-
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel
 import gc
+import os
 import re
 import subprocess
-import os
 import threading
 import time
 from typing import Optional
 
-app = FastAPI(title="Piper TTS Service")
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, field_validator
+
+app = FastAPI(title="TTS Service")
 
 
-class TTSTextRequest(BaseModel):
-    text: str
-    voice: str = "en_US-lessac-medium"
-    speed: float = 1.0
+class ClientGoneError(Exception):
+    """Raised when the client disconnects or abandons synthesis."""
 
 
-# Both Piper and Kokoro phonemize through espeak-ng (Kokoro via misaki's
-# espeak-ng fallback). espeak-ng expands a clean digit string correctly
-# ("10000000" -> "ten million") but breaks on two common real-world number
-# formats:
-#   - thousands-separator commas: "10,000,000" phonemizes as "ten, zero
-#     zero zero, zero zero zero" instead of "ten million" - it reads each
-#     comma-group as its own broken fragment rather than one number.
-#   - digits separated by whitespace: "1 0 0" -> "one zero zero" instead of
-#     "one hundred". This is usually a PDF extraction artifact (a multi-
-#     digit number's characters got split into separate "words" during
-#     column/table extraction) rather than the source text itself.
-# Fix by normalizing to a single clean digit run before it reaches either
-# engine's phonemizer - confirmed via direct phonemizer testing that a
-# bare "100"/"10000000" is read correctly, only the formatting breaks it.
-_THOUSANDS_COMMA_RE = re.compile(r"(?<=\d),(?=\d{3}(?:\D|$))")
-_SPACED_DIGITS_RE = re.compile(r"(?<!\d)\d(?:[ \t]+\d)+(?!\d)")
-
-
-def normalize_numbers_for_speech(text: str) -> str:
-    text = _THOUSANDS_COMMA_RE.sub("", text)
-    text = _SPACED_DIGITS_RE.sub(lambda m: m.group(0).replace(" ", "").replace("\t", ""), text)
-    return text
-
-
-# Voice registry: "host_a" (male) / "host_b" (female) plus "default" (used
-# for page/section narration). Upgraded from the "medium" quality tier to
-# "high" (host_a/host_b) and to libritts_r-medium (default) - the plain
-# "medium" lessac/ryan voices read as noticeably robotic; these sound far
-# more natural, at the cost of slower synthesis (see HANDOFF.md). Direct
-# Piper voice names are kept mapped for backward compatibility with any
-# already-cached text_hash entries that reference them.
-VOICE_MODELS = {
-    "host_a": "/models/en_US-ryan-high.onnx",
-    "host_b": "/models/en_US-lessac-high.onnx",
-    "default": os.environ.get("PIPER_MODEL_PATH", "/models/en_US-libritts_r-medium.onnx"),
-    "en_US-lessac-medium": "/models/en_US-lessac-medium.onnx",
-    "en_US-ryan-medium": "/models/en_US-ryan-medium.onnx",
-    "en_US-ryan-high": "/models/en_US-ryan-high.onnx",
-    "en_US-lessac-high": "/models/en_US-lessac-high.onnx",
-    "en_US-libritts_r-medium": "/models/en_US-libritts_r-medium.onnx",
-}
-
-
-def resolve_model_path(voice: str) -> str:
-    """Resolve a requested voice name to an on-disk Piper model path.
-
-    Unknown voice names fall back to the historical default so existing
-    behavior is unaffected when "voice" is omitted or unrecognized.
-    """
-    return VOICE_MODELS.get(voice, VOICE_MODELS["default"])
-
-
-HF_VOICES_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0"
 KOKORO_RELEASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
-# Piper voices: each has a ".onnx.json" sidecar, downloaded alongside it below.
-MODEL_DOWNLOAD_URLS = {
-    "/models/en_US-lessac-medium.onnx": f"{HF_VOICES_BASE}/en/en_US/lessac/medium/en_US-lessac-medium.onnx",
-    "/models/en_US-ryan-medium.onnx": f"{HF_VOICES_BASE}/en/en_US/ryan/medium/en_US-ryan-medium.onnx",
-    "/models/en_US-ryan-high.onnx": f"{HF_VOICES_BASE}/en/en_US/ryan/high/en_US-ryan-high.onnx",
-    "/models/en_US-lessac-high.onnx": f"{HF_VOICES_BASE}/en/en_US/lessac/high/en_US-lessac-high.onnx",
-    "/models/en_US-libritts_r-medium.onnx": f"{HF_VOICES_BASE}/en/en_US/libritts_r/medium/en_US-libritts_r-medium.onnx",
-}
-# Kokoro's model + shared voice-vector file - no ".json" sidecar, so kept
-# out of MODEL_DOWNLOAD_URLS's Piper-shaped download loop below.
-# f32, not int8 - see the Dockerfile comment for why (measured 4-8s vs
-# 24-33s per sentence on this deployment's CPU, int8 lost the tradeoff).
 KOKORO_MODEL_URLS = {
     "/models/kokoro-v1.0.onnx": f"{KOKORO_RELEASE}/kokoro-v1.0.onnx",
     "/models/voices-v1.0.bin": f"{KOKORO_RELEASE}/voices-v1.0.bin",
@@ -98,8 +27,7 @@ KOKORO_MODEL_URLS = {
 
 # Kokoro voice IDs -> (native kokoro voice name, language code). Curated from
 # the model's own graded voice list (huggingface.co/hexgrad/Kokoro-82M/VOICES.md)
-# to the top-graded voice per gender/accent rather than exposing all ~26 -
-# most of the lower-graded ones are undertrained and sound worse than Piper.
+# to the top-graded voice per gender/accent rather than exposing all ~26.
 KOKORO_VOICES = {
     "kokoro-af_heart": ("af_heart", "en-us"),
     "kokoro-af_bella": ("af_bella", "en-us"),
@@ -108,6 +36,42 @@ KOKORO_VOICES = {
     "kokoro-bf_emma": ("bf_emma", "en-gb"),
     "kokoro-bm_george": ("bm_george", "en-gb"),
 }
+
+
+class TTSTextRequest(BaseModel):
+    text: str
+    voice: str = "kokoro-af_heart"
+    speed: float = 1.0
+
+    @field_validator("voice")
+    @classmethod
+    def validate_voice(cls, voice: str) -> str:
+        if voice not in KOKORO_VOICES:
+            raise ValueError(f"Unsupported voice '{voice}'. Valid voices: {list(KOKORO_VOICES.keys())}")
+        return voice
+
+
+# Kokoro phonemizes through espeak-ng via phonemizer-fork.
+# espeak-ng expands a clean digit string correctly ("10000000" -> "ten million")
+# but breaks on two common real-world number formats:
+#   - thousands-separator commas: "10,000,000" phonemizes as "ten, zero
+#     zero zero, zero zero zero" instead of "ten million" - it reads each
+#     comma-group as its own broken fragment rather than one number.
+#   - digits separated by whitespace: "1 0 0" -> "one zero zero" instead of
+#     "one hundred". This is usually a PDF extraction artifact (a multi-
+#     digit number's characters got split into separate "words" during
+#     column/table extraction) rather than the source text itself.
+# Fix by normalizing to a single clean digit run before it reaches the
+# phonemizer - confirmed via direct phonemizer testing that a
+# bare "100"/"10000000" is read correctly, only the formatting breaks it.
+_THOUSANDS_COMMA_RE = re.compile(r"(?<=\d),(?=\d{3}(?:\D|$))")
+_SPACED_DIGITS_RE = re.compile(r"(?<!\d)\d(?:[ 	]+\d)+(?!\d)")
+
+
+def normalize_numbers_for_speech(text: str) -> str:
+    text = _THOUSANDS_COMMA_RE.sub("", text)
+    text = _SPACED_DIGITS_RE.sub(lambda m: m.group(0).replace(" ", "").replace("	", ""), text)
+    return text
 
 _kokoro = None
 
@@ -440,9 +404,8 @@ def _build_kokoro_retrying(model_path: str, voices_path: str):
 
 
 def get_kokoro():
-    """Lazily construct the Kokoro ONNX session on first use - it's a much
-    bigger model than any single Piper voice, no reason to pay that load
-    cost at startup if nobody ever picks a Kokoro voice.
+    """Lazily construct the Kokoro ONNX session on first use - no reason
+    to pay that load cost at startup before the first synthesis request arrives.
 
     Also sizes _kokoro_gate here, on first construction, since whether CUDA
     actually came up is only knowable after the session exists (see
@@ -870,9 +833,8 @@ def synthesize_kokoro(
     sf.write(buf, combined, sample_rate, format="WAV")
     return buf.getvalue()
 
-# The "high" and libritts_r models are much bigger (~100-300MB) than the
-# original "medium" lessac/ryan files (~60MB) - give urlretrieve enough
-# socket timeout headroom for a slow link instead of the interpreter default.
+# Kokoro model files are large (~310MB) - give urlretrieve enough socket timeout
+# headroom for a slow link instead of the interpreter default.
 MODEL_DOWNLOAD_TIMEOUT_SECONDS = 300
 
 
@@ -934,10 +896,6 @@ def download_missing_models():
         except Exception as e:
             print(f"Failed to download {src}: {e}")
 
-    for model_path, url in MODEL_DOWNLOAD_URLS.items():
-        fetch(model_path, url, "Piper")
-        fetch(f"{model_path}.json", f"{url}.json", "Piper")
-
     for model_path, url in KOKORO_MODEL_URLS.items():
         fetch(model_path, url, "Kokoro")
 
@@ -967,99 +925,49 @@ def release_gpu_memory():
 
 @app.post("/tts")
 async def synthesize(request: TTSTextRequest, http_request: Request):
-    """Synthesize text to speech using Piper, or Kokoro for kokoro-* voices."""
+    """Synthesize text to speech using Kokoro."""
     text = normalize_numbers_for_speech(request.text)
 
-    if request.voice in KOKORO_VOICES:
-        _cancel_idle_timer()
-        cancelled = threading.Event()
+    _cancel_idle_timer()
+    cancelled = threading.Event()
 
-        async def _watch_disconnect():
-            try:
-                while not cancelled.is_set():
-                    if await http_request.is_disconnected():
-                        cancelled.set()
-                        return
-                    await asyncio.sleep(0.3)
-            except asyncio.CancelledError:
-                pass
-
-        watcher = asyncio.create_task(_watch_disconnect())
+    async def _watch_disconnect():
         try:
-            from fastapi.responses import Response
+            while not cancelled.is_set():
+                if await http_request.is_disconnected():
+                    cancelled.set()
+                    return
+                await asyncio.sleep(0.3)
+        except asyncio.CancelledError:
+            pass
 
-            audio_data = await run_in_threadpool(
-                synthesize_kokoro, text, request.voice, request.speed, cancelled
-            )
-            return Response(content=audio_data, media_type="audio/wav")
-        except ClientGoneError:
-            # 499 (nginx's "client closed request") - nobody is listening for
-            # this response, the status only matters for the API's logs.
-            print("Kokoro synthesis abandoned: client disconnected")
-            raise HTTPException(status_code=499, detail="Client disconnected")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Kokoro synthesis failed: {e}")
-        finally:
-            cancelled.set()
-            watcher.cancel()
-            _start_idle_timer()
-
-    # Non-Kokoro (Piper) path doesn't hold GPU memory, nothing to track.
-
+    watcher = asyncio.create_task(_watch_disconnect())
     try:
-        model_path = resolve_model_path(request.voice)
+        from fastapi.responses import Response
 
-        cancelled = threading.Event()
-
-        async def _watch_disconnect():
-            try:
-                while not cancelled.is_set():
-                    if await http_request.is_disconnected():
-                        cancelled.set()
-                        return
-                    await asyncio.sleep(0.3)
-            except asyncio.CancelledError:
-                pass
-
-        watcher = asyncio.create_task(_watch_disconnect())
         try:
-            try:
-                audio_data = await asyncio.wait_for(
-                    run_in_threadpool(
-                        synthesize_piper_in_memory,
-                        text,
-                        model_path,
-                        request.speed,
-                        0.1,
-                        cancelled,
-                    ),
-                    timeout=120.0,
-                )
-            except (ClientGoneError, asyncio.CancelledError):
-                if cancelled.is_set():
-                    raise ClientGoneError()
-                raise
-            except asyncio.TimeoutError:
-                raise HTTPException(status_code=504, detail="Piper synthesis timed out")
-
-            from fastapi.responses import Response
-            return Response(
-                content=audio_data,
-                media_type="audio/wav",
+            audio_data = await asyncio.wait_for(
+                run_in_threadpool(
+                    synthesize_kokoro, text, request.voice, request.speed, cancelled
+                ),
+                timeout=120.0,
             )
-        except ClientGoneError:
-            print("Piper synthesis abandoned: client disconnected")
-            raise HTTPException(status_code=499, detail="Client disconnected")
-        finally:
-            cancelled.set()
-            watcher.cancel()
+        except (ClientGoneError, asyncio.CancelledError):
+            if cancelled.is_set():
+                raise ClientGoneError()
+            raise
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="Kokoro synthesis timed out")
 
+        return Response(content=audio_data, media_type="audio/wav")
+    except ClientGoneError:
+        print("Kokoro synthesis abandoned: client disconnected")
+        raise HTTPException(status_code=499, detail="Client disconnected")
     except HTTPException:
         raise
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=503,
-            detail="Piper not installed or model not found",
-        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Kokoro synthesis failed: {e}")
+    finally:
+        cancelled.set()
+        watcher.cancel()
+        _start_idle_timer()

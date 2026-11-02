@@ -49,6 +49,7 @@ from app.routers.auth import get_current_user_from_token
 from app.services.export_service import EXPORT_KEY
 from app.services.llm_monitor import check_llm_health
 from app.services.llm_settings import _seed_backends, _seed_user_prefs, invalidate_cache
+from app.voice_catalog import DEFAULT_VOICE, is_valid_voice, normalize_voice
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -114,6 +115,18 @@ def _get_or_seed_prefs(db: Session, user_id: int) -> UserSettings:
         db.add(row)
         db.commit()
         db.refresh(row)
+        return row
+
+    prefs = dict(row.value or {})
+    tts = dict(prefs.get("tts", {}) or {})
+    current_voice = tts.get("default_voice")
+    if not is_valid_voice(current_voice):
+        tts["default_voice"] = DEFAULT_VOICE
+        prefs["tts"] = tts
+        row.value = prefs
+        db.commit()
+        db.refresh(row)
+        invalidate_cache(user_id=user_id)
     return row
 
 
@@ -146,7 +159,8 @@ def _to_response(backends: list, prefs: dict, export: dict) -> SettingsResponse:
     backend_names = {b.get("name") for b in backends}
     if active not in backend_names and backends:
         active = backends[0]["name"]
-    tts = prefs.get("tts", {}) or {}
+    tts = dict(prefs.get("tts", {}) or {})
+    normalized_voice = normalize_voice(tts.get("default_voice"))
     return SettingsResponse(
         llm=LLMSettingsOut(
             backends=[
@@ -166,7 +180,7 @@ def _to_response(backends: list, prefs: dict, export: dict) -> SettingsResponse:
             ],
             active=active,
         ),
-        tts=TTSSettings(default_voice=tts.get("default_voice") or "default"),
+        tts=TTSSettings(default_voice=normalized_voice),
         export=ExportSettings(enabled=bool(export.get("enabled"))),
     )
 

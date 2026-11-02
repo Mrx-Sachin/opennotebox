@@ -181,7 +181,7 @@ def test_generate_tts_tags_summary_provenance_on_cache_hit(
     db.refresh(summary)
 
     test_text = "This is a sentence for summary audio provenance test."
-    voice = "default"
+    voice = "kokoro-af_heart"
     speed = 1.0
     text_hash = hashlib.md5(f"{test_text}{test_user.id}{voice}{speed}".encode()).hexdigest()
 
