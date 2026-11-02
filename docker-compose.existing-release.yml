@@ -8,6 +8,8 @@ services:
     volumes: !override
       - ${EXISTING_DATA_DIR:?Set the existing data directory}:/app/data
       - ${EXISTING_EXPORT_DIR:?Set the existing export directory}:/app/exports
+    environment:
+      META_API_KEY: ${META_API_KEY:-}
 
   worker:
     image: ${BACKEND_IMAGE:?Set the validated backend image}
@@ -15,12 +17,16 @@ services:
     volumes: !override
       - ${EXISTING_DATA_DIR:?}:/app/data
       - ${EXISTING_EXPORT_DIR:?}:/app/exports
+    environment:
+      META_API_KEY: ${META_API_KEY:-}
 
   worker-tts:
     image: ${BACKEND_IMAGE:?Set the validated backend image}
     build: !reset null
     volumes: !override
       - ${EXISTING_DATA_DIR:?}:/app/data
+    environment:
+      META_API_KEY: ${META_API_KEY:-}
 
   beat:
     image: ${BACKEND_IMAGE:?Set the validated backend image}
