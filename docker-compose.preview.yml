@@ -21,6 +21,7 @@ x-backend: &backend
     VLLM_API_KEY: ${VLLM_API_KEY:-not-needed}
     META_API_KEY: ${META_API_KEY:-}
     TTS_URL: http://tts:5111
+    CORS_ORIGINS: '["https://opennotebox.mrxsach.in","https://deepread.mrxsach.in","http://localhost:3013","http://127.0.0.1:3013","http://localhost:3000"]'
   volumes:
     - ${PREVIEW_STATE_DIR:?}/data:/app/data
     - ${PREVIEW_STATE_DIR:?}/exports:/app/exports

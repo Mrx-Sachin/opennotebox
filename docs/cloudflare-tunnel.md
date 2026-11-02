@@ -1,9 +1,9 @@
 # Cloudflare Tunnel: opennotebox.mrxsach.in
 
-Exposes the app on this laptop at `http://127.0.0.1:3003` as
+Exposes the app on this laptop at `http://127.0.0.1:3013` as
 **https://opennotebox.mrxsach.in** via Cloudflare Tunnel (`cloudflared`).
 No router port forwarding. The laptop must be on and online, and something
-must be listening on port 3003.
+must be listening on port 3013.
 
 The legacy domain **https://deepread.mrxsach.in** also points to the same
 tunnel and continues to work.
@@ -37,7 +37,7 @@ Public URLs:
 |------|--------|
 | Public hostname (primary) | `opennotebox.mrxsach.in` |
 | Public hostname (legacy) | `deepread.mrxsach.in` |
-| Local service | `http://127.0.0.1:3003` |
+| Local service | `http://127.0.0.1:3013` |
 | Tunnel name | `opennotebox` |
 | Tunnel ID | `777e211c-311d-4bf2-b2b6-ec497af85e38` |
 | Binary | `~/.local/bin/cloudflared` |
@@ -83,7 +83,7 @@ systemctl --user stop cloudflared-opennotebox
 ```
 
 Both hostnames will stop serving until you start the service again.
-Your local app on 3003 is unaffected.
+Your local app on 3013 is unaffected.
 
 ### Disable autostart (optional)
 
@@ -119,9 +119,9 @@ credentials-file: /home/mrx/.cloudflared/777e211c-311d-4bf2-b2b6-ec497af85e38.js
 
 ingress:
   - hostname: opennotebox.mrxsach.in
-    service: http://127.0.0.1:3003
+    service: http://127.0.0.1:3013
   - hostname: deepread.mrxsach.in
-    service: http://127.0.0.1:3003
+    service: http://127.0.0.1:3013
   - service: http_status:404
 ```
 
@@ -136,7 +136,7 @@ can register a connector for this tunnel.
 
 ## Verify from outside
 
-1. Laptop online, app on `:3003`, tunnel service active.
+1. Laptop online, app on `:3013`, tunnel service active.
 2. From phone on cellular (not home Wi-Fi), open https://opennotebox.mrxsach.in
 3. Or from any machine:
 
@@ -148,7 +148,7 @@ curl -sI https://deepread.mrxsach.in/
 
 ## Common problems
 
-**Domain times out or 502.** Tunnel not running, or nothing on 3003.
+**Domain times out or 502.** Tunnel not running, or nothing on 3013.
 
 ```bash
 systemctl --user status cloudflared-opennotebox

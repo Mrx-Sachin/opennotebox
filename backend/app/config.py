@@ -98,7 +98,15 @@ class Settings(BaseSettings):
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    cors_origins: List[str] = ["http://localhost:3000"]
+    cors_origins: List[str] = [
+        "http://localhost:3000",
+        "http://localhost:3003",
+        "http://localhost:3013",
+        "http://127.0.0.1:3003",
+        "http://127.0.0.1:3013",
+        "https://opennotebox.mrxsach.in",
+        "https://deepread.mrxsach.in",
+    ]
     # Self-hosted deployments are normally reached from more than one device on
     # the same network - a phone or laptop opens http://<host-lan-ip>:3003 and
     # the frontend then calls the API on that same hostname. Pinning CORS to a
