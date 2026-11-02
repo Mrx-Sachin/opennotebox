@@ -254,7 +254,7 @@ def _export_podcasts(
                 json.dump(meta, f, indent=2)
 
             if podcast.audio_path and os.path.exists(podcast.audio_path):
-                # Piper (tts/main.py) writes WAV, not MP3, despite the
+                # The TTS service (tts/main.py) writes WAV, not MP3, despite the
                 # "podcast-<id>.mp3" example in the original layout sketch -
                 # using the real extension from audio_path here rather than
                 # hardcoding .mp3 so the exported file is actually playable

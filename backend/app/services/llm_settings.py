@@ -31,6 +31,9 @@ the default *because a caller forgot to pass one*.
 """
 import time
 from typing import Optional
+from sqlalchemy.orm import Session
+
+from app.voice_catalog import DEFAULT_VOICE, is_valid_voice, normalize_voice
 
 from loguru import logger
 
@@ -75,13 +78,6 @@ def _seed_backends() -> list[dict]:
             "api_key": settings.effective_meta_api_key,
         })
     return backends
-
-
-# Kokoro's top-graded voice. Markedly more natural than the Piper voices, and
-# the one the app has shipped as its narration default since Kokoro landed -
-# seeding "default" here instead silently downgraded every new user to the
-# robotic Piper voice.
-DEFAULT_VOICE = "kokoro-af_heart"
 
 
 def _default_active_backend() -> str:
@@ -150,7 +146,7 @@ def _load_backends() -> list[dict]:
     return data
 
 
-def _load_user_prefs(user_id: Optional[int]) -> dict:
+def _load_user_prefs(user_id: Optional[int], db: Optional[Session] = None) -> dict:
     """Load one user's preferences (active backend + TTS voice), cached per
     user_id for ~15s. user_id=None (an un-migrated call site - see module
     docstring) returns the deployment default rather than guessing at any
@@ -168,17 +164,25 @@ def _load_user_prefs(user_id: Optional[int]) -> dict:
         from app.database import SessionLocal
         from app.models import UserSettings
 
-        db = SessionLocal()
+        session = db if db is not None else SessionLocal()
         try:
             row = (
-                db.query(UserSettings)
+                session.query(UserSettings)
                 .filter(UserSettings.user_id == user_id, UserSettings.key == "prefs")
                 .first()
             )
             if row and row.value:
-                data = row.value
+                data = dict(row.value)
+                tts_prefs = dict(data.get("tts", {}) or {})
+                current_voice = tts_prefs.get("default_voice")
+                if not is_valid_voice(current_voice):
+                    tts_prefs["default_voice"] = DEFAULT_VOICE
+                    data["tts"] = tts_prefs
+                    row.value = data
+                    session.commit()
         finally:
-            db.close()
+            if db is None:
+                session.close()
     except Exception as e:
         logger.warning(f"llm_settings: failed to load prefs for user {user_id}, using defaults: {e}")
 
@@ -246,11 +250,11 @@ def get_active_llm(user_id: Optional[int] = None) -> dict:
         return fallback
 
 
-def get_default_voice(user_id: Optional[int] = None) -> str:
-    """Return user_id's configured default TTS voice name (e.g. "default").
-    See module docstring re: user_id=None callers."""
+def get_default_voice(user_id: Optional[int] = None, db: Optional[Session] = None) -> str:
+    """Return user_id's configured default TTS voice name."""
     try:
-        prefs = _load_user_prefs(user_id)
-        return (prefs.get("tts", {}) or {}).get("default_voice") or DEFAULT_VOICE
+        prefs = _load_user_prefs(user_id, db=db)
+        raw_voice = (prefs.get("tts", {}) or {}).get("default_voice")
+        return normalize_voice(raw_voice)
     except Exception:
         return DEFAULT_VOICE

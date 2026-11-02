@@ -39,7 +39,7 @@ const CHUNK_TARGET_CHARS = 320
 
 // Above this, further speed-up is applied as audio.playbackRate instead of
 // requesting it from the synthesizer. Matches Kokoro's own hard cap (it
-// asserts 0.5-2.0) and keeps Piper's synthesis load in the same range.
+// asserts 0.5-2.0).
 // Below this, the full requested speed is synthesized natively.
 //
 // This matters because playbackRate alone doesn't work at high multiples:

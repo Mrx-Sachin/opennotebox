@@ -37,7 +37,7 @@ vendor able to shut it off. Lets do this
   with numbered inline citations back to the source page, not a free-form
   hallucination.
 - **TTS narration with sync** - page and section text read aloud via a
-  self-hosted TTS engine (Piper or Kokoro-82M), with playback synced to
+  self-hosted TTS engine (Kokoro-82M), with playback synced to
   on-page highlighting. Docling classifies PDF regions so page narration
   skips running headers, footers, captions, footnotes, tables, figures,
   code, and formulas while retaining headings and body text. An optional
@@ -89,7 +89,7 @@ vendor able to shut it off. Lets do this
                                     │ HTTP
                                     ▼
                              ┌─────────────┐
-                             │     tts     │  Piper CLI + Kokoro-82M (ONNX),
+                             │     tts     │  Kokoro-82M (ONNX),
                              │   :5111     │  optional CUDA
                              └─────────────┘
 
@@ -258,7 +258,7 @@ summaries, worse retrieval reranking, and less reliable citations.
 
 ## GPU acceleration for TTS (optional)
 
-The `tts` service (Piper + Kokoro-82M, both ONNX-based) runs on CPU by
+The `tts` service (Kokoro-82M, ONNX-based) runs on CPU by
 default and works correctly that way - it's just slower per sentence. GPU
 support is opt-in via a separate compose overlay
 (`docker-compose.gpu.yml`) precisely so the base stack never fails to start
@@ -314,9 +314,8 @@ outside Docker, tests, and linters.
   refusing connections from the container's IP.
 - **Uploads fail with "File too large".** Raise `UPLOAD_MAX_SIZE_MB` in
   `.env` and restart the `api` and `worker` containers.
-- **TTS is very slow.** Expected on CPU, especially with the Kokoro voices.
-  Either use a Piper `medium`-tier voice (faster, more robotic) or set up
-  GPU acceleration.
+- **TTS is very slow.** Expected on CPU. Set up GPU acceleration if faster
+  synthesis is needed.
 - **A document is stuck "processing".** Check `docker compose logs worker`
   - a stuck job usually means the LLM backend was unreachable or the
     document triggered a parser edge case. The `beat`/eviction jobs and the
@@ -336,8 +335,7 @@ This is an honest snapshot, not a promise:
   suite in `e2e/` walks login, the sample book, notes, and PDF links against
   a running stack (`./e2e/run.sh`). Most product surface is still untested.
   See [CONTRIBUTING.md](CONTRIBUTING.md).
-- **English-only TTS voices** are bundled (Piper `en_US` voices, Kokoro's
-  English voices). Other languages aren't wired up.
+- **English-only TTS voices** are bundled (Kokoro's English voices). Other languages aren't wired up.
 - **One shared LLM configuration per deployment**, not per-user - see
   `backend/app/routers/settings.py`.
 - **No mobile-optimized layout** - the reader is built for desktop-width

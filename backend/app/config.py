@@ -115,8 +115,7 @@ class Settings(BaseSettings):
     cors_allow_private_networks: bool = True
 
     # TTS
-    piper_tts_url: str = "http://tts:5111"
-    piper_voice_model: str = "en_US-lessac-medium"
+    tts_url: str = "http://tts:5111"
 
     # Shared provider admission applies across API and Celery processes. These
     # are application-side bounds, not a claim about provider capacity. The

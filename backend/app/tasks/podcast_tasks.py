@@ -153,14 +153,9 @@ async def _generate_script(prompt: str, user_id: Optional[int] = None) -> str:
 
 
 def _synthesize_line(text: str, voice: str) -> bytes:
-    """Call the Piper TTS service for a single dialogue line and return WAV bytes.
-
-    host_a/host_b now use the "high" quality Piper models (see tts/main.py),
-    noticeably slower to synthesize than the old "medium" tier - 180s gives
-    comfortable headroom over the ~120s a max-length (2000-char) line takes.
-    """
+    """Call the TTS service for a single dialogue line and return WAV bytes."""
     response = httpx.post(
-        f"{settings.piper_tts_url}/tts",
+        f"{settings.tts_url}/tts",
         json={"text": text[:2000], "voice": voice},
         timeout=180,
     )
@@ -171,9 +166,7 @@ def _synthesize_line(text: str, voice: str) -> bytes:
 def _stitch_wavs(wav_bytes_list: List[bytes], output_path: str) -> tuple[float, List[dict]]:
     """Concatenate WAV clips with a short silence gap between them.
 
-    Assumes all clips share the same sample format (true for Piper output
-    across voices in this deployment). Returns total duration in seconds and
-    line timing metadata.
+    Assumes all clips share the same sample format. Returns total duration in seconds and line timing metadata.
     """
     tmp_paths = []
     try:

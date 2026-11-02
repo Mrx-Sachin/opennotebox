@@ -282,7 +282,7 @@ async def synthesize_interruption_audio(
         speaker = line.get("speaker", "A")
         voice = SPEAKER_VOICE.get(speaker, SPEAKER_VOICE["A"])
         resp = await client.post(
-            f"{settings.piper_tts_url}/tts",
+            f"{settings.tts_url}/tts",
             json={"text": line["text"][:1000], "voice": voice},
         )
         if resp.status_code != 200:

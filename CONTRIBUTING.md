@@ -50,7 +50,7 @@ from the previous step is listening (`http://localhost:8000` /
 The `tts` service is simplest to keep running via Docker
 (`docker compose up -d tts`) even during frontend/backend development - it
 bundles several downloaded ONNX voice models that aren't worth reproducing
-in a native venv. Point the backend's `piper_tts_url` setting at it
+in a native venv. Point the backend's `tts_url` setting at it
 (`http://localhost:5111` if you're running the backend natively against the
 Dockerized `tts` container).
 

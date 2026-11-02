@@ -20,6 +20,7 @@ from app.database import SessionLocal
 from app.models import Document, LibraryEntry, Summary, TTSCache, User
 from app.services.library_access import accessible_document_query
 from app.services.llm_settings import get_default_voice
+from app.voice_catalog import normalize_voice
 from app.services.reading_audio import (
     ACTIVE_COUNTER_TTL_SECONDS,
     is_chunk_protected,
@@ -159,7 +160,7 @@ def generate_tts(
     voice: Optional[str] = None,
     speed: float = 1.0,
 ) -> dict:
-    """Generate TTS audio for a text segment using Piper TTS."""
+    """Generate TTS audio for a text segment using Kokoro TTS."""
     database_session: Session = SessionLocal()
     temporary_file_path: Optional[str] = None
     try:
@@ -200,7 +201,7 @@ def generate_tts(
             elif doc_id is None:
                 doc_id = summary.document_id
 
-        resolved_voice = voice or get_default_voice(user_id)
+        resolved_voice = normalize_voice(voice or get_default_voice(user_id))
         text_hash = hashlib.md5(f"{text}{user_id}{resolved_voice}{speed}".encode()).hexdigest()
 
         now_utc = datetime.now(timezone.utc)
@@ -251,7 +252,7 @@ def generate_tts(
             database_session.commit()
 
             response = httpx.post(
-                f"{settings.piper_tts_url}/tts",
+                f"{settings.tts_url}/tts",
                 json={
                     "text": text[:5000],
                     "voice": resolved_voice,
@@ -336,7 +337,7 @@ def generate_tts(
                     database_session.rollback()
                     return {"text_hash": text_hash, "status": "not_accessible"}
             else:
-                raise RuntimeError(f"Piper TTS failed: {response.status_code}")
+                raise RuntimeError(f"TTS synthesis failed: {response.status_code}")
         finally:
             unregister_producer(user_id, text_hash)
 
