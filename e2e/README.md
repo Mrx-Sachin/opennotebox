@@ -59,3 +59,18 @@ viewer test at all. They are not a full product suite.
 
 GitHub Actions does not boot the full Docker stack (API, worker, Traefik,
 Postgres). Run this locally before merging reader/notes/PDF changes.
+
+## Physical-line narration regression
+
+The Whisper regression uses real PDF pages and the actual parser and viewer.
+It mocks API responses and speech audio, so it needs a running frontend but
+does not need a seeded user, database, worker, or speech model.
+
+```bash
+E2E_BASE_URL=http://127.0.0.1:3013 ./scripts/run_whisper_highlight_tests.sh
+```
+
+Run that command from the repository root. The suite checks clicked-line
+highlighting, automatic advancement, symbols, zoom, and the known corrupted
+paragraph data. It runs in the validation workflow. See
+[the test guide](../docs/whisper_line_highlight_regression_tests.md) for details.

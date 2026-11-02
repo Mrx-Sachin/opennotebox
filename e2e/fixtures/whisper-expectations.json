@@ -1,0 +1,741 @@
+{
+  "provenance": {
+    "source_pdf": "doc-3.pdf",
+    "source_sha256": "9185ccc01c249b68444af1808f17868b71c11afecb29c3fbc59111f6bf5b16ec",
+    "fixture_sha256": "f7e503ba05a1b6b43d7947a795b90fcc23bec582ca4f4e486227a349cee7865b",
+    "fixture_pdf": "whisper-pages-7-8-11.pdf",
+    "fixture_pages": [
+      7,
+      8,
+      11
+    ],
+    "page_dimensions": {
+      "width": 612.0,
+      "height": 792.0
+    }
+  },
+  "passages": [
+    {
+      "id": "page8-welsh",
+      "page_number": 8,
+      "phrase": "amount of Welsh",
+      "expected_line_text": "amount of Welsh translation data is surprising, ranking 4th",
+      "prev_line_text": "posedly having 9,000 hours of translation data. This large",
+      "next_line_text": "overall for translation data and ahead of some of the most",
+      "column": "right",
+      "symbol": null,
+      "words": [
+        "amount",
+        "of",
+        "Welsh",
+        "translation",
+        "data",
+        "is",
+        "surprising,",
+        "ranking",
+        "4th"
+      ],
+      "word_count": 9,
+      "envelope": [
+        307.44,
+        472.18,
+        541.44,
+        482.14
+      ],
+      "norm_envelope": [
+        0.5024,
+        0.5962,
+        0.8847,
+        0.6088
+      ],
+      "word_boxes": [
+        {
+          "text": "amount",
+          "bbox": [
+            307.44,
+            472.18132160000005,
+            337.3875756,
+            482.1439216
+          ]
+        },
+        {
+          "text": "of",
+          "bbox": [
+            339.8732243748,
+            472.18132160000005,
+            348.1886678664,
+            482.1439216
+          ]
+        },
+        {
+          "text": "Welsh",
+          "bbox": [
+            350.6842991664,
+            472.18132160000005,
+            375.39104903640003,
+            482.1439216
+          ]
+        },
+        {
+          "text": "translation",
+          "bbox": [
+            377.8766978112,
+            472.18132160000005,
+            420.02291920560003,
+            482.1439216
+          ]
+        },
+        {
+          "text": "data",
+          "bbox": [
+            422.51855050560005,
+            472.18132160000005,
+            439.14943748880006,
+            482.1439216
+          ]
+        },
+        {
+          "text": "is",
+          "bbox": [
+            441.63508626360004,
+            472.18132160000005,
+            448.29343057200003,
+            482.1439216
+          ]
+        },
+        {
+          "text": "surprising,",
+          "bbox": [
+            450.7790793468,
+            472.18132160000005,
+            493.2048114468001,
+            482.1439216
+          ]
+        },
+        {
+          "text": "ranking",
+          "bbox": [
+            495.70044274680004,
+            472.18132160000005,
+            526.1970572328001,
+            482.1439216
+          ]
+        },
+        {
+          "text": "4th",
+          "bbox": [
+            528.6827060076,
+            472.18132160000005,
+            541.4403732132001,
+            482.1439216
+          ]
+        }
+      ]
+    },
+    {
+      "id": "page8-example",
+      "page_number": 8,
+      "phrase": "As an example",
+      "expected_line_text": "As an example, Welsh (CY) is an outlier with much worse",
+      "prev_line_text": "training data due to errors in audio language identification.",
+      "next_line_text": "than expected performance at only 13 BLEU despite sup-",
+      "column": "right",
+      "symbol": "(CY)",
+      "words": [
+        "As",
+        "an",
+        "example,",
+        "Welsh",
+        "(CY)",
+        "is",
+        "an",
+        "outlier",
+        "with",
+        "much",
+        "worse"
+      ],
+      "word_count": 11,
+      "envelope": [
+        307.08,
+        436.32,
+        541.44,
+        446.28
+      ],
+      "norm_envelope": [
+        0.5018,
+        0.5509,
+        0.8847,
+        0.5635
+      ],
+      "word_boxes": [
+        {
+          "text": "As",
+          "bbox": [
+            307.082,
+            436.31632160000004,
+            318.33861222620004,
+            446.2789216
+          ]
+        },
+        {
+          "text": "an",
+          "bbox": [
+            320.8310754194,
+            436.31632160000004,
+            330.39564962419996,
+            446.2789216
+          ]
+        },
+        {
+          "text": "example,",
+          "bbox": [
+            332.8881128174,
+            436.31632160000004,
+            369.596219114,
+            446.2789216
+          ]
+        },
+        {
+          "text": "Welsh",
+          "bbox": [
+            372.0886823072,
+            436.31632160000004,
+            397.1754256664,
+            446.2789216
+          ]
+        },
+        {
+          "text": "(CY)",
+          "bbox": [
+            399.6678888596,
+            436.31632160000004,
+            419.0869440786,
+            446.2789216
+          ]
+        },
+        {
+          "text": "is",
+          "bbox": [
+            421.57940727180005,
+            436.31632160000004,
+            428.3374273932,
+            446.2789216
+          ]
+        },
+        {
+          "text": "an",
+          "bbox": [
+            430.82989058640004,
+            436.31632160000004,
+            440.3944647912,
+            446.2789216
+          ]
+        },
+        {
+          "text": "outlier",
+          "bbox": [
+            442.8869279844,
+            436.31632160000004,
+            469.3414865106,
+            446.2789216
+          ]
+        },
+        {
+          "text": "with",
+          "bbox": [
+            471.83394970380004,
+            436.31632160000004,
+            489.8485820514,
+            446.2789216
+          ]
+        },
+        {
+          "text": "much",
+          "bbox": [
+            492.3410452446,
+            436.31632160000004,
+            514.8542696970001,
+            446.2789216
+          ]
+        },
+        {
+          "text": "worse",
+          "bbox": [
+            517.3467328902,
+            436.31632160000004,
+            541.4405437578,
+            446.2789216
+          ]
+        }
+      ]
+    },
+    {
+      "id": "page8-measuring",
+      "page_number": 8,
+      "phrase": "by measuring",
+      "expected_line_text": "by measuring their performance on the X\u2192en subset of",
+      "prev_line_text": "We study the translation capabilities of Whisper models",
+      "next_line_text": "CoVoST2 (Wang et al., 2020b). We compare with Maestro,",
+      "column": "left",
+      "symbol": "X\u2192en",
+      "words": [
+        "by",
+        "measuring",
+        "their",
+        "performance",
+        "on",
+        "the",
+        "X\u2192en",
+        "subset",
+        "of"
+      ],
+      "word_count": 9,
+      "envelope": [
+        55.44,
+        425.62,
+        289.44,
+        436.27
+      ],
+      "norm_envelope": [
+        0.0906,
+        0.5374,
+        0.4729,
+        0.5508
+      ],
+      "word_boxes": [
+        {
+          "text": "by",
+          "bbox": [
+            55.44,
+            426.3033216,
+            65.601852,
+            436.26592159999996
+          ]
+        },
+        {
+          "text": "measuring",
+          "bbox": [
+            68.995910568,
+            426.3033216,
+            111.330186,
+            436.26592159999996
+          ]
+        },
+        {
+          "text": "their",
+          "bbox": [
+            114.73440642,
+            426.3033216,
+            133.36108113600002,
+            436.26592159999996
+          ]
+        },
+        {
+          "text": "performance",
+          "bbox": [
+            136.755139704,
+            426.3033216,
+            188.10297786000007,
+            436.26592159999996
+          ]
+        },
+        {
+          "text": "on",
+          "bbox": [
+            191.50719828000007,
+            426.3033216,
+            201.66905028000008,
+            436.26592159999996
+          ]
+        },
+        {
+          "text": "the",
+          "bbox": [
+            205.06310884800007,
+            426.3033216,
+            217.48089199200007,
+            436.26592159999996
+          ]
+        },
+        {
+          "text": "X\u2192en",
+          "bbox": [
+            220.879,
+            425.6159022,
+            248.77412,
+            436.04674439999997
+          ]
+        },
+        {
+          "text": "subset",
+          "bbox": [
+            252.173,
+            426.3033216,
+            277.57763,
+            436.26592159999996
+          ]
+        },
+        {
+          "text": "of",
+          "bbox": [
+            280.971688568,
+            426.3033216,
+            289.436511284,
+            436.26592159999996
+          ]
+        }
+      ]
+    },
+    {
+      "id": "page7-multiplier",
+      "page_number": 7,
+      "phrase": "language is roughly",
+      "expected_line_text": "language is roughly 10\u00d7 higher for VoxPopuli.",
+      "prev_line_text": "data per language, the average amount of training data per",
+      "next_line_text": "These two benchmarks are somewhat narrow since they",
+      "column": "left",
+      "symbol": "10\u00d7",
+      "words": [
+        "language",
+        "is",
+        "roughly",
+        "10\u00d7",
+        "higher",
+        "for",
+        "VoxPopuli."
+      ],
+      "word_count": 7,
+      "envelope": [
+        55.44,
+        677.14,
+        243.15,
+        687.32
+      ],
+      "norm_envelope": [
+        0.0906,
+        0.855,
+        0.3973,
+        0.8678
+      ],
+      "word_boxes": [
+        {
+          "text": "language",
+          "bbox": [
+            55.44,
+            677.3623216,
+            91.40498600000001,
+            687.3249216
+          ]
+        },
+        {
+          "text": "is",
+          "bbox": [
+            93.895636,
+            677.3623216,
+            100.5406902,
+            687.3249216
+          ]
+        },
+        {
+          "text": "roughly",
+          "bbox": [
+            103.03134020000002,
+            677.3623216,
+            134.02498880000002,
+            687.3249216
+          ]
+        },
+        {
+          "text": "10\u00d7",
+          "bbox": [
+            136.51563880000003,
+            677.1431444,
+            154.22691028,
+            687.3249216
+          ]
+        },
+        {
+          "text": "higher",
+          "bbox": [
+            156.71800000000002,
+            677.3623216,
+            182.17244300000002,
+            687.3249216
+          ]
+        },
+        {
+          "text": "for",
+          "bbox": [
+            184.663093,
+            677.3623216,
+            196.27948460000002,
+            687.3249216
+          ]
+        },
+        {
+          "text": "VoxPopuli.",
+          "bbox": [
+            198.7701346,
+            677.3623216,
+            243.15351760000001,
+            687.3249216
+          ]
+        }
+      ]
+    },
+    {
+      "id": "page7-caution",
+      "page_number": 7,
+      "phrase": "We caution",
+      "expected_line_text": "setting. We caution that we do use a simple text standardizer",
+      "prev_line_text": "et al., 2022), and Maestro (Chen et al., 2022b) in a zero-shot",
+      "next_line_text": "for this result which prevents direct comparison or claims",
+      "column": "left",
+      "symbol": null,
+      "words": [
+        "setting.",
+        "We",
+        "caution",
+        "that",
+        "we",
+        "do",
+        "use",
+        "a",
+        "simple",
+        "text",
+        "standardizer"
+      ],
+      "word_count": 11,
+      "envelope": [
+        55.44,
+        545.86,
+        289.61,
+        555.82
+      ],
+      "norm_envelope": [
+        0.0906,
+        0.6892,
+        0.4732,
+        0.7018
+      ],
+      "word_boxes": [
+        {
+          "text": "setting.",
+          "bbox": [
+            55.44,
+            545.8553216,
+            83.91968611600001,
+            555.8179216
+          ]
+        },
+        {
+          "text": "We",
+          "bbox": [
+            86.907270604,
+            545.8553216,
+            99.66796644,
+            555.8179216
+          ]
+        },
+        {
+          "text": "caution",
+          "bbox": [
+            101.86471974,
+            545.8553216,
+            130.608016252,
+            555.8179216
+          ]
+        },
+        {
+          "text": "that",
+          "bbox": [
+            132.81453290000002,
+            545.8553216,
+            147.45955490000003,
+            555.8179216
+          ]
+        },
+        {
+          "text": "we",
+          "bbox": [
+            149.6563082,
+            545.8553216,
+            161.04037196800002,
+            555.8179216
+          ]
+        },
+        {
+          "text": "do",
+          "bbox": [
+            163.24688861600004,
+            545.8553216,
+            173.01023661600001,
+            555.8179216
+          ]
+        },
+        {
+          "text": "use",
+          "bbox": [
+            175.20698991600003,
+            545.8553216,
+            188.22153280000003,
+            555.8179216
+          ]
+        },
+        {
+          "text": "a",
+          "bbox": [
+            190.42804944800005,
+            545.8553216,
+            194.76297596000006,
+            555.8179216
+          ]
+        },
+        {
+          "text": "simple",
+          "bbox": [
+            196.95972926000005,
+            545.8553216,
+            222.99857837600007,
+            555.8179216
+          ]
+        },
+        {
+          "text": "text",
+          "bbox": [
+            225.19533167600005,
+            545.8553216,
+            239.69390345600007,
+            555.8179216
+          ]
+        },
+        {
+          "text": "standardizer",
+          "bbox": [
+            241.90042010400006,
+            545.8553216,
+            289.6139017800001,
+            555.8179216
+          ]
+        }
+      ]
+    },
+    {
+      "id": "page11-wer",
+      "page_number": 11,
+      "phrase": "Improvements in WER",
+      "expected_line_text": "Improvements in WER follow a power-law trend for mul-",
+      "prev_line_text": "effects when approaching human-level performance.",
+      "next_line_text": "tilingual speech recognition till 54,000 hours and then de-",
+      "column": "left",
+      "symbol": null,
+      "words": [
+        "Improvements",
+        "in",
+        "WER",
+        "follow",
+        "a",
+        "power-law",
+        "trend",
+        "for",
+        "mul-"
+      ],
+      "word_count": 9,
+      "envelope": [
+        55.44,
+        635.52,
+        291.09,
+        645.48
+      ],
+      "norm_envelope": [
+        0.0906,
+        0.8024,
+        0.4756,
+        0.815
+      ],
+      "word_boxes": [
+        {
+          "text": "Improvements",
+          "bbox": [
+            55.44,
+            635.5193216,
+            113.85032529600001,
+            645.4819216000001
+          ]
+        },
+        {
+          "text": "in",
+          "bbox": [
+            116.492406816,
+            635.5193216,
+            124.39832767200002,
+            645.4819216000001
+          ]
+        },
+        {
+          "text": "WER",
+          "bbox": [
+            127.05057104400001,
+            635.5193216,
+            149.63020618800002,
+            645.4819216000001
+          ]
+        },
+        {
+          "text": "follow",
+          "bbox": [
+            152.27228770800002,
+            635.5193216,
+            178.56099883200002,
+            645.4819216000001
+          ]
+        },
+        {
+          "text": "a",
+          "bbox": [
+            181.20308035200003,
+            635.5193216,
+            185.71494264000003,
+            645.4819216000001
+          ]
+        },
+        {
+          "text": "power-law",
+          "bbox": [
+            188.36718601200005,
+            635.5193216,
+            231.21971589600008,
+            645.4819216000001
+          ]
+        },
+        {
+          "text": "trend",
+          "bbox": [
+            233.87195926800013,
+            635.5193216,
+            254.75456512800014,
+            645.4819216000001
+          ]
+        },
+        {
+          "text": "for",
+          "bbox": [
+            257.3966466480001,
+            635.5193216,
+            269.2453660800001,
+            645.4819216000001
+          ]
+        },
+        {
+          "text": "mul-",
+          "bbox": [
+            271.89760945200015,
+            635.5193216,
+            291.0933478800001,
+            645.4819216000001
+          ]
+        }
+      ]
+    }
+  ]
+}

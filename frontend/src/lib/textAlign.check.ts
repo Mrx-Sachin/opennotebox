@@ -5,7 +5,7 @@
  *     --outDir /tmp/tac --module commonjs --target es2020 \
  *     && node /tmp/tac/textAlign.check.js
  */
-import { findQuoteExtent, normalizeWithMap } from "./textAlign"
+import { findQuoteExtent, normalizeWithMap, findRange, normalizeNeedle } from "./textAlign"
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error("FAIL: " + msg)
@@ -62,6 +62,103 @@ assert(
 
 const missing = findQuoteExtent(norm, "this sentence is not on the page at all xyzzy")
 assert(missing == null, "unknown quote should miss")
+
+const expandedCase = normalizeWithMap("\u0130stanbul uses X → en.")
+assert(expandedCase.map.length === expandedCase.norm.length, "lowercase expansion preserves the offset map")
+const expandedMatch = findRange(expandedCase, "X→en")
+assert(!!expandedMatch && "\u0130stanbul uses X → en.".slice(expandedMatch.start, expandedMatch.end) === "X → en", "symbol bounds stay correct after Unicode lowercase expansion")
+
+assert(normalizeNeedle("separate words") !== normalizeNeedle("separatewords"), "ordinary word boundaries remain significant")
+assert(!findRange(normalizeWithMap("X → en"), "X en"), "arrow glyph remains significant")
+assert(!findRange(normalizeWithMap("10 × higher"), "10 higher"), "multiplication glyph remains significant")
+
+// ---------------------------------------------------------------------------
+// Narrow symmetric normalization checks: symbols, arrows, parentheses
+// ---------------------------------------------------------------------------
+
+// 1. Symmetrical needle normalization
+const sampleSymbols = "10× higher for VoxPopuli. X→en translation. Welsh (CY)."
+assert(
+  normalizeNeedle(sampleSymbols) === normalizeWithMap(sampleSymbols).norm,
+  "normalizeNeedle and normalizeWithMap.norm must be strictly symmetric"
+)
+
+// 2. Interspan whitespace around × (multiplication symbol)
+const layerMult = "The average amount of training data per language is roughly 10 × higher for VoxPopuli."
+const normMult = normalizeWithMap(layerMult)
+const needleMult = "language is roughly 10× higher for VoxPopuli."
+const matchMult = findRange(normMult, needleMult)
+assert(!!matchMult, "10× higher needle should match 10 × higher layer")
+assert(
+  layerMult.slice(matchMult!.start, matchMult!.end) === "language is roughly 10 × higher for VoxPopuli.",
+  "slicing layer text with range must preserve accurate original layer bounds"
+)
+
+// Reverse symmetry: needle has space, layer does not
+const layerMultTight = "language is roughly 10× higher for VoxPopuli."
+const normMultTight = normalizeWithMap(layerMultTight)
+const needleMultSpaced = "roughly 10 × higher"
+const matchMultSpaced = findRange(normMultTight, needleMultSpaced)
+assert(!!matchMultSpaced, "spaced needle should match tight layer")
+assert(
+  layerMultTight.slice(matchMultSpaced!.start, matchMultSpaced!.end) === "roughly 10× higher",
+  "reverse slice must match original tight bounds"
+)
+
+// Decimal multiplier: 12.5× increase vs 12.5 × increase
+const layerDecimal = "another 12.5 × increase in size results in only a"
+const normDecimal = normalizeWithMap(layerDecimal)
+const needleDecimal = "12.5× increase in size results in only a"
+const matchDecimal = findRange(normDecimal, needleDecimal)
+assert(!!matchDecimal, "12.5× increase should match 12.5 × increase")
+assert(
+  layerDecimal.slice(matchDecimal!.start, matchDecimal!.end) === "12.5 × increase in size results in only a",
+  "decimal multiplier slice matches layer bounds"
+)
+
+// 3. Interspan whitespace around Unicode arrows
+const layerArrow = "measuring their performance on the X → en subset of CoVoST2"
+const normArrow = normalizeWithMap(layerArrow)
+const needleArrow = "performance on the X→en subset"
+const matchArrow = findRange(normArrow, needleArrow)
+assert(!!matchArrow, "X→en needle should match X → en layer")
+assert(
+  layerArrow.slice(matchArrow!.start, matchArrow!.end) === "performance on the X → en subset",
+  "arrow slice must match layer bounds"
+)
+
+// 4. Interspan whitespace inside parentheses: (CY), (HE), (TE)
+const layerParen = "As an example, Welsh ( CY ) is an outlier with much worse"
+const normParen = normalizeWithMap(layerParen)
+const needleParen = "Welsh (CY) is an outlier"
+const matchParen = findRange(normParen, needleParen)
+assert(!!matchParen, "Welsh (CY) needle should match Welsh ( CY ) layer")
+assert(
+  layerParen.slice(matchParen!.start, matchParen!.end) === "Welsh ( CY ) is an outlier",
+  "parentheses slice must cover ( CY ) including interspan padding"
+)
+
+// Multiple parenthesized codes in one line
+const layerCodes = "dataset such as Hebrew ( HE ), Telugu ( TE ), Chinese ( ZH ), and Korean ( KO )."
+const normCodes = normalizeWithMap(layerCodes)
+const needleCodes = "(TE), Chinese (ZH), and Korean (KO)."
+const matchCodes = findRange(normCodes, needleCodes)
+assert(!!matchCodes, "multiple parenthesized language codes should match")
+assert(
+  layerCodes.slice(matchCodes!.start, matchCodes!.end) === "( TE ), Chinese ( ZH ), and Korean ( KO ).",
+  "multiple codes slice matches layer text"
+)
+
+// Internal spaces inside parentheses are preserved
+const layerCitationParen = "subset of CoVoST2 ( Wang et al., 2020b ). We compare"
+const normCitationParen = normalizeWithMap(layerCitationParen)
+const needleCitationParen = "CoVoST2 (Wang et al., 2020b)."
+const matchCitationParen = findRange(normCitationParen, needleCitationParen)
+assert(!!matchCitationParen, "parenthesized author citation should match while keeping internal spaces")
+assert(
+  layerCitationParen.slice(matchCitationParen!.start, matchCitationParen!.end) === "CoVoST2 ( Wang et al., 2020b ).",
+  "citation inside parenthesis retains words and spaces"
+)
 
 console.log("textAlign: OK")
 

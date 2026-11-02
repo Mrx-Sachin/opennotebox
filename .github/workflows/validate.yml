@@ -44,6 +44,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install locked PDF extraction dependencies for reader regression
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tomllib
+
+          packages = tomllib.loads(Path("backend/uv.lock").read_text())["package"]
+          requirements = [
+              f"{package['name']}=={package['version']}"
+              for package in packages
+              if package["name"] in {"pdfplumber", "loguru"}
+          ]
+          Path("/tmp/reader-pdf-requirements.txt").write_text("\n".join(requirements) + "\n")
+          PY
+          python -m pip install -r /tmp/reader-pdf-requirements.txt
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -56,12 +75,19 @@ jobs:
         run: |
           npm ci
           npm run build
+      - name: Check text alignment and source offsets
+        working-directory: frontend
+        run: |
+          npx tsc src/lib/textAlign.check.ts --outDir /tmp/reader-text-align --module commonjs --target es2020
+          node /tmp/reader-text-align/textAlign.check.js
       - name: Install browser tests
         working-directory: e2e
         run: |
           npm ci
           npx playwright install --with-deps chromium
       - name: Check gallery, reader, and streaming using isolated API fixtures
+        env:
+          PYTHON_BIN: python
         shell: bash
         run: |
           cp -r frontend/public frontend/.next/standalone/public
@@ -75,7 +101,7 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:3101/login > /dev/null
           cd e2e
-          E2E_BASE_URL=http://127.0.0.1:3101 npx playwright test tests/library.spec.ts tests/library.phone.spec.ts tests/chat-stream.spec.ts tests/notebooks.spec.ts tests/notebooks.phone.spec.ts tests/shared-library.spec.ts tests/shared-library.phone.spec.ts tests/citation-highlight.spec.ts tests/docling-narration.spec.ts
+          E2E_BASE_URL=http://127.0.0.1:3101 npx playwright test tests/library.spec.ts tests/library.phone.spec.ts tests/chat-stream.spec.ts tests/notebooks.spec.ts tests/notebooks.phone.spec.ts tests/shared-library.spec.ts tests/shared-library.phone.spec.ts tests/citation-highlight.spec.ts tests/docling-narration.spec.ts tests/whisper-line-highlight-regression.spec.ts
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

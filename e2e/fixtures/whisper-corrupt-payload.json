@@ -1,0 +1,582 @@
+{
+  "docId": 3,
+  "provenance": "legacy-docling-stored-before.json",
+  "pages": [
+    {
+      "id": 41,
+      "document_id": 3,
+      "page_number": 7,
+      "content": "Whisper performs well on Multilingual LibriSpeech, outperforming XLS-R (Babu et al., 2021), mSLAM (Bapna et al., 2022), and Maestro (Chen et al., 2022b) in a zero-shot setting. We caution that we do use a simple text standardizer for this result which prevents direct comparison or claims of SOTA performance. On VoxPopuli, however, Whisper significantly underperforms prior work and only beats the VP-10K+FT baseline from the original paper. We suspect the underperformance of Whisper models on VoxPopuli could be due to other models including this distribution as a major source for their unsupervised pre-training data and the dataset having significantly more supervised data, which benefits fine-tuning. While MLS has 10 hours of training data per language, the average amount of training data per language is roughly 10\u00d7 higher for VoxPopuli.\n\n| Model             | MLS   |   VoxPopuli |\n|-------------------|-------|-------------|\n| VP-10K + FT       | -     |        15.3 |\n| XLS-R (1B)        | 10.9  |        10.6 |\n| mSLAM-CTC (2B)    | 9.7   |         9.1 |\n| Maestro           | -     |         8.1 |\n| Zero-Shot Whisper | 7.3   |        13.6 |\n\nThese two benchmarks are somewhat narrow since they only include 15 unique languages, almost all of which are in the Indo-European language family and many of which are high-resource languages. These benchmarks only provide limited coverage and room to study Whisper models multilingual capabilities which include training data for speech recognition in 75 languages. To study the performance of Whisper more broadly we also report performance on the Fleurs dataset (Conneau et al., 2022). In particular, we were interested in studying the relationship between the amount of training data we have for a given language and the resulting downstream zero-shot performance for that language. We visualize this relation in Figure 3. We find a strong squared correlation coefficient of 0.83 between the log of the word error rate and the log of the amount of training data per language. Checking the regression coefficient for a linear fit to these log-log values results in an estimate that WER halves for every 16\u00d7 increase in training data. We also observed that many of the largest outliers in terms of worse than expected performance according to this trend are languages that have unique scripts and are more distantly related to the Indo-European languages making up the majority of the training dataset such as Hebrew (HE), Telugu (TE), Chinese (ZH), and Korean (KO). These differences could be due to a lack of transfer due to linguistic distance, our byte level BPE tokenizer being a poor match for these languages, or variations in data quality.",
+      "bounding_boxes": [
+        {
+          "text": "Whisper performs well on Multilingual LibriSpeech, outperforming XLS-R (Babu et al., 2021), mSLAM (B",
+          "bbox": [
+            55.1,
+            535.2,
+            289.6,
+            687.2
+          ]
+        },
+        {
+          "text": "These two benchmarks are somewhat narrow since they only include 15 unique languages, almost all of ",
+          "bbox": [
+            55.1,
+            696.6,
+            289.8,
+            717.1
+          ]
+        }
+      ],
+      "headings": null,
+      "layout_regions": [
+        {
+          "label": "page_header",
+          "narrate": false,
+          "bbox": [
+            0.09096916049134497,
+            0.061366456927675186,
+            0.4786926967645782,
+            0.07152164343631628
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "page_header",
+          "narrate": false,
+          "bbox": [
+            0.8768925884969874,
+            0.060873474737610477,
+            0.883876127355239,
+            0.06928885103476168
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "picture",
+          "narrate": false,
+          "bbox": [
+            0.09451341317370048,
+            0.0882976512716274,
+            0.46632878920611215,
+            0.3586058568472814
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "caption",
+          "narrate": false,
+          "bbox": [
+            0.0899437860725752,
+            0.38251923069809424,
+            0.4736889608545241,
+            0.4343102580369121
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "table",
+          "narrate": false,
+          "bbox": [
+            0.13334325403949016,
+            0.4714193247785472,
+            0.4243910047743056,
+            0.5841501794680201
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "caption",
+          "narrate": false,
+          "bbox": [
+            0.09081344978482116,
+            0.5974245167741872,
+            0.47465629826963335,
+            0.649204215618095
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "text",
+          "narrate": true,
+          "bbox": [
+            0.09026893914914598,
+            0.6753870646158854,
+            0.47325732661228553,
+            0.8678470669370709
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "text",
+          "narrate": true,
+          "bbox": [
+            0.09036560931236916,
+            0.8791686164008247,
+            0.4730955136367698,
+            0.9055844412909614
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "picture",
+          "narrate": false,
+          "bbox": [
+            0.5064831403345843,
+            0.0881338312168314,
+            0.8793260162951899,
+            0.3558939153497869
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "caption",
+          "narrate": false,
+          "bbox": [
+            0.5017084857217626,
+            0.3804043471211135,
+            0.8864188599430658,
+            0.44368770869091306
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "text",
+          "narrate": true,
+          "bbox": [
+            0.5012083863900378,
+            0.5319855429909446,
+            0.8866319843367034,
+            0.9055844412909614
+          ],
+          "source": "docling"
+        }
+      ],
+      "narration_exclusions": []
+    },
+    {
+      "id": 42,
+      "document_id": 3,
+      "page_number": 8,
+      "content": "| X \u2192 English       |   High |   Mid |   Low |   All |\n|-------------------|--------|-------|-------|-------|\n| XMEF-X            |   34.2 |  20.2 |   5.9 |  14.7 |\n| XLS-R (2B)        |   36.1 |  27.7 |  15.1 |  22.1 |\n| mSLAM-CTC (2B)    |   37.8 |  29.6 |  18.5 |  24.8 |\n| Maestro           |   38.2 |  31.3 |  18.4 |  25.2 |\n| Zero-Shot Whisper |   36.2 |  32.6 |  25.2 |  29.1 |\n\n| Language ID        |   Fleurs |\n|--------------------|----------|\n| w2v-bert-51 (0.6B) |     71.4 |\n| mSLAM-CTC (2B)     |     77.7 |\n| Zero-shot Whisper  |     64.5 |\n\n3.5. Translation\n\nWe study the translation capabilities of Whisper models by measuring their performance on the X\u2192en subset of CoVoST2 (Wang et al., 2020b). We compare with Maestro, mSLAM, and XLS-R, the highest-performing prior work. We achieve a new state of the art of 29.1 BLEU zero-shot without using any of the CoVoST2 training data. We attribute this to the 68,000 hours of X\u2192en translation data for these languages in our pre-training dataset which, although noisy, is vastly larger than the 861 hours of training data for X\u2192en translation in CoVoST2. Since Whisper evaluation is zero-shot, it does particularly well on the lowest resource grouping of CoVoST2, improving over mSLAM by 6.7 BLEU. Conversely, the best Whisper model does not actually improve over Maestro and mSLAM on average for the highest resource languages.\n\nFor an additional analysis on an even wider set of languages, we also re-purpose Fleurs, which is a speech recognition dataset, as a translation dataset. Since the same sentences are transcribed for every language we use the English transcripts as reference translations. In Figure 4 we visualize the correlation between the amount of translation training data per language and the resulting zero-shot BLEU score on Fleurs. While there is a clear trend of improvement with increasing training data, the squared correlation coefficient is much lower than the 0.83 observed for speech recognition and only 0.24. We suspect this is partly caused by the noisier training data due to errors in audio language identification. As an example, Welsh (CY) is an outlier with much worse than expected performance at only 13 BLEU despite supposedly having 9,000 hours of translation data. This large amount of Welsh translation data is surprising, ranking 4th overall for translation data and ahead of some of the most spoken languages in the world like French, Spanish, and Russian. Inspection shows the majority of supposedlyWelsh translation data is actually English audio with English captions where the English audio was mis-classified as Welsh by the language identification system, resulting in it being included as translation training data rather transcription data according to our dataset creation rules.\n\n3.6. Language Identification\n\nTo evaluate language identification, we use the Fleurs dataset (Conneau et al., 2022). The zero-shot performance of Whisper is not competitive with prior supervised work here and underperforms the supervised SOTA by 13.6%. However, Whisper is heavily disadvantaged for language identification on Fleurs, since the Whisper dataset contains no training data for 20 of the 102 languages in Fleurs, upperbounding accuracy at 80.4%. On the 82 overlapping languages the best Whisper model achieves 80.3% accuracy.",
+      "bounding_boxes": [
+        {
+          "text": "3.5. Translation",
+          "bbox": [
+            55.4,
+            396.6,
+            122.0,
+            405.6
+          ]
+        },
+        {
+          "text": "We study the translation capabilities of Whisper models by measuring their performance on the X\u2192en s",
+          "bbox": [
+            55.0,
+            415.7,
+            291.2,
+            591.6
+          ]
+        },
+        {
+          "text": "For an additional analysis on an even wider set of languages, we also re-purpose Fleurs, which is a ",
+          "bbox": [
+            55.1,
+            601.0,
+            291.1,
+            717.1
+          ]
+        },
+        {
+          "text": "3.6. Language Identification",
+          "bbox": [
+            307.4,
+            593.9,
+            426.5,
+            602.8
+          ]
+        },
+        {
+          "text": "To evaluate language identification, we use the Fleurs dataset (Conneau et al., 2022). The zero-shot",
+          "bbox": [
+            307.1,
+            612.9,
+            543.2,
+            717.1
+          ]
+        }
+      ],
+      "headings": [
+        "3.5. Translation",
+        "3.6. Language Identification"
+      ],
+      "layout_regions": [
+        {
+          "label": "page_header",
+          "narrate": false,
+          "bbox": [
+            0.09096916049134497,
+            0.061366456927675186,
+            0.4786926967645782,
+            0.07152164343631628
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "page_header",
+          "narrate": false,
+          "bbox": [
+            0.8774786057815053,
+            0.060697305082070704,
+            0.8838110032424428,
+            0.0693642972695707
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "table",
+          "narrate": false,
+          "bbox": [
+            0.10547059501697814,
+            0.09775069265654593,
+            0.45402706370634194,
+            0.20939092925100616
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "caption",
+          "narrate": false,
+          "bbox": [
+            0.08997365540149165,
+            0.22301167189472854,
+            0.4746638777988409,
+            0.2886398777817235
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "table",
+          "narrate": false,
+          "bbox": [
+            0.1739462808845869,
+            0.3137353646634805,
+            0.38468509250217015,
+            0.39501617894028174
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "caption",
+          "narrate": false,
+          "bbox": [
+            0.09063130422355303,
+            0.40900914355961965,
+            0.47467609480315565,
+            0.47463727238202336
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "section_header",
+          "narrate": true,
+          "bbox": [
+            0.09084869210236991,
+            0.5007864441534485,
+            0.199004752963197,
+            0.5096420904602668
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "text",
+          "narrate": true,
+          "bbox": [
+            0.08990654914207707,
+            0.5244375672003235,
+            0.47487176633348654,
+            0.7470869777178524
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "text",
+          "narrate": true,
+          "bbox": [
+            0.09035195867999707,
+            0.7584085175485322,
+            0.4748612447501787,
+            0.9055844412909614
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "picture",
+          "narrate": false,
+          "bbox": [
+            0.504897223578559,
+            0.08417693051424893,
+            0.8812492221009498,
+            0.3684816842127328
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "caption",
+          "narrate": false,
+          "bbox": [
+            0.5017084857217626,
+            0.3899548848470052,
+            0.8847281262765523,
+            0.4832685836637863
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "text",
+          "narrate": true,
+          "bbox": [
+            0.5020163043651705,
+            0.5219855645690301,
+            0.8866201163896548,
+            0.7295402565387764
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "section_header",
+          "narrate": true,
+          "bbox": [
+            0.5026133917515574,
+            0.7498520745171441,
+            0.6965422287485958,
+            0.7611228865806503
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "text",
+          "narrate": true,
+          "bbox": [
+            0.5021303463605494,
+            0.7735032168301669,
+            0.8866491380080678,
+            0.9055844412909614
+          ],
+          "source": "docling"
+        }
+      ],
+      "narration_exclusions": []
+    },
+    {
+      "id": 45,
+      "document_id": 3,
+      "page_number": 11,
+      "content": "|   Dataset size |   English WER (\u2193) |   Multilingual WER (\u2193) |   X\u2192En BLEU (\u2191) |\n|----------------|-------------------|------------------------|-----------------|\n|           3405 |              30.5 |                   92.4 |             0.2 |\n|           6811 |              19.6 |                   72.7 |             1.7 |\n|          13621 |              14.4 |                   56.6 |             7.9 |\n|          27243 |              12.3 |                   45.0 |            13.9 |\n|          54486 |              10.9 |                   36.4 |            19.2 |\n|         681070 |               9.9 |                   29.2 |            24.8 |\n\nAll increases in the dataset size result in improved performance on all tasks, although we see significant variability in improvement rates across tasks and sizes. Performance improves rapidly on English speech recognition from 3,000 to 13,000 hours and then slows down noticeably between 13,000 and 54,000 hours. Using the full dataset, which corresponds to another 12.5\u00d7 increase in size results in only a further 1 point drop in WER. This mirrors the diminishing returns observed with model size scaling for English speech recognition and could similarly be explained by saturation effects when approaching human-level performance.\n\nImprovements in WER follow a power-law trend for multilingual speech recognition till 54,000 hours and then deviate from this trend, improving only a further 7 points when increasing to the full dataset size. For X\u2192en translation, performance is practically zero when training on 7,000 hours of audio or less, and then follows a roughly log-linear improvement trend till 54,000 hours before also showing diminishing returns when further scaling to the full dataset size.\n\nThe general trend across tasks of diminishing returns when moving from 54,000 hours to our full dataset size of 680,000 hours could suggest that the current best Whisper models are under-trained relative to dataset size and performance could be further improved by a combination of longer training and larger models. It could also suggest that we are nearing the end of performance improvements from dataset size scaling for speech recognition. Further analysis is needed to characterize \"scaling laws\" for speech recognition in order to decided between these explanations.\n\n4.3. Multitask and Multilingual Transfer\n\nA potential concern with jointly training a single model on many tasks and languages is the possibility of negative transfer where interference between the learning of several tasks results in performance worse than would be achieved by training on only a single task or language. To investigate whether this is occurring, we compared the performance of models trained on just English speech recognition with our standard multitask and multilingual training setup and measured their average performance across our suite of zeroshot English speech recognition benchmarks. We adjust for the amount of FLOPs spent training on the task of English speech recognition as only 65% of compute is spent on this task in a joint training setup; analysis would otherwise be confounded by under-training on the task when compared to a same-sized English-only model.\n\nOur results visualized in Figure 9 show that for small models trained with moderate amounts of compute, there is indeed negative transfer between tasks and languages: joint models underperform English-only models trained for the same amount of compute. However, multitask and multilingual models scale better and for our largest experiments outperform their English-only counterparts demonstrating positive transfer from other tasks. For our largest experiments, joint models also slightly outperform English-only models even when not adjusting for compute spent per task.",
+      "bounding_boxes": [
+        {
+          "text": "All increases in the dataset size result in improved performance on all tasks, although we see signi",
+          "bbox": [
+            54.7,
+            499.4,
+            291.1,
+            627.5
+          ]
+        },
+        {
+          "text": "Improvements in WER follow a power-law trend for multilingual speech recognition till 54,000 hours a",
+          "bbox": [
+            55.1,
+            636.8,
+            291.1,
+            717.1
+          ]
+        },
+        {
+          "text": "The general trend across tasks of diminishing returns when moving from 54,000 hours to our full data",
+          "bbox": [
+            307.1,
+            316.5,
+            541.6,
+            432.7
+          ]
+        },
+        {
+          "text": "4.3. Multitask and Multilingual Transfer",
+          "bbox": [
+            307.4,
+            448.9,
+            480.0,
+            457.8
+          ]
+        },
+        {
+          "text": "A potential concern with jointly training a single model on many tasks and languages is the possibil",
+          "bbox": [
+            307.1,
+            467.9,
+            543.1,
+            643.8
+          ]
+        },
+        {
+          "text": "Our results visualized in Figure 9 show that for small models trained with moderate amounts of compu",
+          "bbox": [
+            307.4,
+            653.2,
+            543.1,
+            709.6
+          ]
+        }
+      ],
+      "headings": [
+        "4.3. Multitask and Multilingual Transfer"
+      ],
+      "layout_regions": [
+        {
+          "label": "page_header",
+          "narrate": false,
+          "bbox": [
+            0.09096916049134497,
+            0.061366456927675186,
+            0.4786926967645782,
+            0.07152164343631628
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "page_header",
+          "narrate": false,
+          "bbox": [
+            0.8702349693946589,
+            0.060697305082070704,
+            0.8829812442555147,
+            0.0692007662069918
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "picture",
+          "narrate": false,
+          "bbox": [
+            0.09200200224234388,
+            0.0855513582325945,
+            0.8801104975681678,
+            0.2527484893798828
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "caption",
+          "narrate": false,
+          "bbox": [
+            0.0899437860725752,
+            0.2742414378156566,
+            0.8862774418849572,
+            0.3260323880898832
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "table",
+          "narrate": false,
+          "bbox": [
+            0.11142754398919398,
+            0.37039885858092647,
+            0.44714121101728455,
+            0.506364456330887
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "caption",
+          "narrate": false,
+          "bbox": [
+            0.09073473737130758,
+            0.5197641777269768,
+            0.47491180818844464,
+            0.5992168465045967
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "text",
+          "narrate": true,
+          "bbox": [
+            0.09025233399634268,
+            0.6301017144713739,
+            0.4748607460969414,
+            0.7923723278623639
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "text",
+          "narrate": true,
+          "bbox": [
+            0.09034444148244422,
+            0.8036938676930437,
+            0.47486408707363154,
+            0.9055844412909614
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "text",
+          "narrate": true,
+          "bbox": [
+            0.5027933557049121,
+            0.3615272213714291,
+            0.8847228405522365,
+            0.3853391782201902
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "text",
+          "narrate": true,
+          "bbox": [
+            0.5021237142724928,
+            0.3992645957253196,
+            0.8850227306091708,
+            0.54642667674055
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "section_header",
+          "narrate": true,
+          "bbox": [
+            0.5026622597688164,
+            0.5667523470791903,
+            0.7840894312640421,
+            0.5780231591426965
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "text",
+          "narrate": true,
+          "bbox": [
+            0.5020170523450266,
+            0.5904034701260653,
+            0.8866492377387153,
+            0.8130528806435942
+          ],
+          "source": "docling"
+        },
+        {
+          "label": "text",
+          "narrate": true,
+          "bbox": [
+            0.5025641248117085,
+            0.824374420474274,
+            0.886610342786203,
+            0.8960756051419961
+          ],
+          "source": "docling"
+        }
+      ],
+      "narration_exclusions": []
+    }
+  ]
+}

@@ -19,12 +19,16 @@ function isDash(ch: string): boolean {
   const c = ch.charCodeAt(0)
   return c === 0x2d || c === 0xad || c === 0x2212 || (c >= 0x2010 && c <= 0x2015)
 }
-const DASHES = /[\u00ad\u2010-\u2015\u2212\-]/g
+function isTightSymbol(ch: string): boolean {
+  return ch === "\u00d7" || ch === "\u2192"
+}
 
 export function normalizeWithMap(original: string): NormalizedText {
   let norm = ""
   const map: number[] = []
   let pendingSpace = false
+  let lastNonSpaceChar = ""
+
   for (let i = 0; i < original.length; i++) {
     const ch = original[i]
     if (/\s/.test(ch) || isDash(ch)) {
@@ -32,19 +36,28 @@ export function normalizeWithMap(original: string): NormalizedText {
       continue
     }
     if (pendingSpace) {
-      norm += " "
-      map.push(i)
+      const suppress =
+        lastNonSpaceChar === "(" ||
+        ch === ")" ||
+        isTightSymbol(lastNonSpaceChar) ||
+        isTightSymbol(ch)
+      if (!suppress) {
+        norm += " "
+        map.push(i)
+      }
       pendingSpace = false
     }
-    norm += ch.toLowerCase()
-    map.push(i)
+    lastNonSpaceChar = ch
+    const lower = ch.toLowerCase()
+    norm += lower
+    for (let j = 0; j < lower.length; j++) map.push(i)
   }
   return { norm, map }
 }
 
-/** Normalize a needle the same way (no map needed). */
+/** Normalize a needle symmetrically with normalizeWithMap. */
 export function normalizeNeedle(s: string): string {
-  return s.replace(DASHES, " ").replace(/\s+/g, " ").trim().toLowerCase()
+  return normalizeWithMap(s).norm
 }
 
 /**
