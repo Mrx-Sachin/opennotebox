@@ -6,6 +6,7 @@ import {
   getAudioUrl,
   fetchAudioBlobUrl,
   streamTts,
+  TtsStreamResult,
   releaseReadingAudio,
   beaconReleaseReadingAudio,
   heartbeatReadingAudio,
@@ -213,6 +214,37 @@ function buildChunks(sentences: Sentence[], startIndex: number, entryChars: numb
   return chunks
 }
 
+
+function splitTextIntoSpeechChunks(text: string): string[] {
+  const clean = text
+    .replace(/\[\d+(?:\s*,\s*\d+)*\]/g, "")
+    .replace(/[*_#`~>]/g, "")
+    .replace(/https?:\/\/\S+/g, "")
+    .trim()
+  if (!clean) return []
+
+  const sentences = clean.match(/[^.!?\n]+[.!?\n]+|[^.!?\n]+$/g) || [clean]
+  const chunks: string[] = []
+  let current = ""
+
+  for (const s of sentences) {
+    const trimmed = s.trim()
+    if (!trimmed) continue
+    // Entry chunk target is ~120 chars so first audio plays in <0.5s!
+    const targetLimit = chunks.length === 0 ? 130 : 280
+    if (current.length === 0) {
+      current = trimmed
+    } else if (current.length + trimmed.length + 1 <= targetLimit) {
+      current += " " + trimmed
+    } else {
+      chunks.push(current)
+      current = trimmed
+    }
+  }
+  if (current) chunks.push(current)
+  return chunks
+}
+
 class TtsEngine {
   private audio: HTMLAudioElement | null = null
   private sessionId =
@@ -252,6 +284,23 @@ class TtsEngine {
   private pageSentencesVersion = 0
   private prepared = new Map<string, PrepEntry>()
   private summaryBlobUrl: string | null = null
+  private speakingMessageId: number | string | null = null
+  private textPlaybackQueue: {
+    chunks: string[]
+    currentIdx: number
+    token: number
+    messageId?: number | string
+    prefetches: Map<number, Promise<TtsStreamResult>>
+    chunkDurations: Map<number, number>
+  } | null = null
+  private interruptionState: {
+    podcast: Podcast
+    savedTime: number
+    wasPlaying: boolean
+    podcastBlobUrl: string
+    answerBlobUrl?: string | null
+    onFinished?: () => void
+  } | null = null
   private directAudioSource: { kind: "podcast" | "summary"; id: number | string } | null = null
 
   // Leading+trailing debounce state for click/seek entry points (readPage,
@@ -874,8 +923,16 @@ class TtsEngine {
     if (!this.audio) return
     const state = useReader.getState().tts
     if (state.status !== "playing") return
-    // Direct audio (podcast/summary): plain time tracking, no sentence sync
+    // Direct audio (podcast/summary/streamed text): plain time tracking, no sentence sync
     if (!this.pageAudio) {
+      if (this.textPlaybackQueue) {
+        const elapsed = this.textQueueElapsed()
+        const total = this.estimatedTextQueueDuration()
+        if (Math.abs(elapsed - state.currentTime) > 0.25 || Math.abs(total - state.duration) > 0.5) {
+          this.set({ currentTime: elapsed, duration: total })
+        }
+        return
+      }
       if (Math.abs(this.audio.currentTime - state.currentTime) > 0.25) {
         this.set({ currentTime: this.audio.currentTime, duration: this.audio.duration || state.duration })
       }
@@ -892,7 +949,24 @@ class TtsEngine {
   }
 
   private onEnded() {
+    if (this.interruptionState) {
+      void this.resumeFromInterruption()
+      return
+    }
+    if (this.textPlaybackQueue) {
+      const queue = this.textPlaybackQueue
+      const nextIdx = queue.currentIdx + 1
+      if (nextIdx < queue.chunks.length) {
+        queue.currentIdx = nextIdx
+        void this.playTextQueueChunk(nextIdx, queue.token)
+        return
+      } else {
+        this.stopSpeaking()
+        return
+      }
+    }
     if (this.docId == null || this.page == null || !this.pageAudio) {
+      this.speakingMessageId = null
       this.stop()
       return
     }
@@ -1009,9 +1083,260 @@ class TtsEngine {
     }
   }
 
-  /** Seek within direct audio (podcast/summary) playback. */
+  /** Estimated total duration across all speech chunks in the chat response. */
+  private estimatedTextQueueDuration(): number {
+    if (!this.textPlaybackQueue) return 0
+    const queue = this.textPlaybackQueue
+    const chunks = queue.chunks
+    let knownChars = 0
+    let knownDuration = 0
+    for (let i = 0; i < chunks.length; i++) {
+      const d = queue.chunkDurations.get(i)
+      if (d != null && d > 0) {
+        knownDuration += d
+        knownChars += chunks[i].length
+      }
+    }
+    const rate = knownChars > 0 ? knownDuration / knownChars : 0.058
+    let totalEst = 0
+    for (let i = 0; i < chunks.length; i++) {
+      const d = queue.chunkDurations.get(i)
+      totalEst += d != null && d > 0 ? d : chunks[i].length * rate
+    }
+    return Math.max(totalEst, 1)
+  }
+
+  /** Continuous elapsed playback time across all speech chunks in the response. */
+  private textQueueElapsed(): number {
+    if (!this.textPlaybackQueue || !this.audio) return 0
+    const queue = this.textPlaybackQueue
+    const currentIdx = queue.currentIdx
+    const chunks = queue.chunks
+    let knownChars = 0
+    let knownDuration = 0
+    for (let i = 0; i < chunks.length; i++) {
+      const d = queue.chunkDurations.get(i)
+      if (d != null && d > 0) {
+        knownDuration += d
+        knownChars += chunks[i].length
+      }
+    }
+    const rate = knownChars > 0 ? knownDuration / knownChars : 0.058
+
+    let completed = 0
+    for (let i = 0; i < currentIdx; i++) {
+      const d = queue.chunkDurations.get(i)
+      completed += d != null && d > 0 ? d : chunks[i].length * rate
+    }
+    const chunkCurrent = this.audio.currentTime || 0
+    return Math.min(completed + chunkCurrent, this.estimatedTextQueueDuration())
+  }
+
+  /** Play an arbitrary text string out loud using chunked streaming (<0.5s time-to-first-sound). */
+  async speakText(text: string, messageId?: number | string): Promise<void> {
+    const currentStatus = useReader.getState().tts.status
+    if (
+      messageId != null &&
+      this.speakingMessageId === messageId &&
+      (currentStatus === "playing" || currentStatus === "preparing")
+    ) {
+      this.stopSpeaking()
+      return
+    }
+
+    const chunks = splitTextIntoSpeechChunks(text)
+    if (chunks.length === 0) return
+
+    const token = this.bumpGeneration()
+    this.speakingMessageId = messageId ?? null
+    const audio = this.ensureAudio()
+    audio.pause()
+    this.docId = null
+    this.page = null
+    this.pageAudio = null
+    this.chunkStarts = []
+    this.directAudioSource = { kind: "summary", id: String(messageId ?? "chat") }
+
+    useReader.setState((state) => ({
+      activeReading: null,
+      expandedReading: false,
+      narrationSentences: [],
+      tts: {
+        ...state.tts,
+        status: "preparing",
+        docId: null,
+        page: null,
+        sentenceIndex: 0,
+        sentenceCount: chunks.length,
+        currentTime: 0,
+        duration: 0,
+      },
+    }))
+
+    const prefetches = new Map<number, Promise<TtsStreamResult>>()
+    const chunkDurations = new Map<number, number>()
+    this.textPlaybackQueue = {
+      chunks,
+      currentIdx: 0,
+      token,
+      messageId,
+      prefetches,
+      chunkDurations,
+    }
+
+    // Prefetch chunk 0 immediately
+    prefetches.set(0, streamTts(chunks[0], this.voice, 1.0, undefined, this.sessionId))
+    // Prefetch chunk 1 in parallel immediately
+    if (chunks.length > 1) {
+      prefetches.set(1, streamTts(chunks[1], this.voice, 1.0, undefined, this.sessionId))
+    }
+
+    await this.playTextQueueChunk(0, token)
+  }
+
+  private async playTextQueueChunk(index: number, token: number, startOffsetInChunk: number = 0): Promise<void> {
+    if (token !== this.playToken || !this.textPlaybackQueue) return
+    const queue = this.textPlaybackQueue
+    const chunks = queue.chunks
+    if (index >= chunks.length) {
+      this.stopSpeaking()
+      return
+    }
+
+    const audio = this.ensureAudio()
+    let prepPromise = queue.prefetches.get(index)
+    if (!prepPromise) {
+      prepPromise = streamTts(chunks[index], this.voice, 1.0, undefined, this.sessionId)
+      queue.prefetches.set(index, prepPromise)
+    }
+
+    try {
+      const prep = await prepPromise
+      if (token !== this.playToken || !this.textPlaybackQueue) {
+        URL.revokeObjectURL(prep.blobUrl)
+        return
+      }
+
+      if (this.summaryBlobUrl) URL.revokeObjectURL(this.summaryBlobUrl)
+      this.summaryBlobUrl = prep.blobUrl
+      audio.src = prep.blobUrl
+      audio.playbackRate = useReader.getState().tts.speed
+      audio.muted = useReader.getState().tts.muted
+
+      await new Promise<void>((resolve, reject) => {
+        if (audio.readyState >= 1) {
+          resolve()
+          return
+        }
+        const timer = setTimeout(() => resolve(), 3000)
+        audio.onloadedmetadata = () => {
+          clearTimeout(timer)
+          resolve()
+        }
+        audio.onerror = () => {
+          clearTimeout(timer)
+          reject(new Error("Audio chunk failed to load"))
+        }
+      })
+
+      if (token !== this.playToken || !this.textPlaybackQueue) return
+
+      if (prep.duration && prep.duration > 0) {
+        queue.chunkDurations.set(index, prep.duration)
+      } else if (audio.duration && !Number.isNaN(audio.duration)) {
+        queue.chunkDurations.set(index, audio.duration)
+      }
+
+      if (startOffsetInChunk > 0) {
+        try {
+          audio.currentTime = Math.min(startOffsetInChunk, Math.max(0, (audio.duration || 10) - 0.1))
+        } catch {
+          // Ignore early seek exception
+        }
+      }
+
+      try {
+        await audio.play()
+      } catch (playErr) {
+        console.warn("audio.play() in playTextQueueChunk was blocked:", playErr)
+      }
+
+      if (token !== this.playToken || !this.textPlaybackQueue) return
+
+      const totalDuration = this.estimatedTextQueueDuration()
+      const currentElapsed = this.textQueueElapsed()
+      this.set({ status: "playing", duration: totalDuration, currentTime: currentElapsed })
+
+      // Maintain background prefetch for subsequent chunks
+      const nextIndex = index + 1
+      if (nextIndex < chunks.length && !queue.prefetches.has(nextIndex)) {
+        queue.prefetches.set(nextIndex, streamTts(chunks[nextIndex], this.voice, 1.0, undefined, this.sessionId))
+      }
+      const nextNext = index + 2
+      if (nextNext < chunks.length && !queue.prefetches.has(nextNext)) {
+        queue.prefetches.set(nextNext, streamTts(chunks[nextNext], this.voice, 1.0, undefined, this.sessionId))
+      }
+    } catch (err) {
+      if (token === this.playToken) {
+        console.error("playTextQueueChunk failed:", err)
+        this.stopSpeaking()
+      }
+    }
+  }
+
+  stopSpeaking(): void {
+    this.speakingMessageId = null
+    this.stop()
+  }
+
+  getSpeakingMessageId(): number | string | null {
+    return this.speakingMessageId
+  }
+
+  /** Seek within direct audio (podcast/summary/streamed text) playback across the entire message. */
   seekTo(seconds: number) {
-    if (!this.audio || this.pageAudio) return
+    if (this.pageAudio) return
+
+    if (this.textPlaybackQueue) {
+      const queue = this.textPlaybackQueue
+      const total = this.estimatedTextQueueDuration()
+      const targetTime = Math.max(0, Math.min(seconds, total - 0.1))
+
+      let knownChars = 0
+      let knownDuration = 0
+      for (let i = 0; i < queue.chunks.length; i++) {
+        const d = queue.chunkDurations.get(i)
+        if (d != null && d > 0) {
+          knownDuration += d
+          knownChars += queue.chunks[i].length
+        }
+      }
+      const rate = knownChars > 0 ? knownDuration / knownChars : 0.058
+
+      let acc = 0
+      let targetChunkIdx = 0
+      let offsetInChunk = 0
+      for (let i = 0; i < queue.chunks.length; i++) {
+        const dur = queue.chunkDurations.get(i) || queue.chunks[i].length * rate
+        if (targetTime < acc + dur || i === queue.chunks.length - 1) {
+          targetChunkIdx = i
+          offsetInChunk = targetTime - acc
+          break
+        }
+        acc += dur
+      }
+
+      if (targetChunkIdx === queue.currentIdx && this.audio) {
+        this.audio.currentTime = Math.max(0, offsetInChunk)
+        this.set({ currentTime: targetTime })
+      } else {
+        queue.currentIdx = targetChunkIdx
+        void this.playTextQueueChunk(targetChunkIdx, queue.token, offsetInChunk)
+      }
+      return
+    }
+
+    if (!this.audio) return
     const duration = this.audio.duration
     if (!duration) return
     this.audio.currentTime = Math.max(0, Math.min(seconds, duration - 0.1))
@@ -1019,12 +1344,164 @@ class TtsEngine {
   }
 
   skipSeconds(delta: number) {
+    if (this.textPlaybackQueue) {
+      const current = this.textQueueElapsed()
+      this.seekTo(current + delta)
+      return
+    }
     if (!this.audio || this.pageAudio) return
     this.seekTo(this.audio.currentTime + delta)
   }
 
+  // ------------------------------------------------------------------
+  // Interruption management
+
+  /** Pause podcast playback for listener question/interruption. */
+  pauseForInterruption(rewindStartTime?: number): { savedTime: number; podcast: Podcast } | null {
+    if (this.interruptionState) {
+      return {
+        savedTime: this.interruptionState.savedTime,
+        podcast: this.interruptionState.podcast,
+      }
+    }
+    const podcast = useReader.getState().activePodcast
+    if (!podcast) return null
+
+    const audio = this.ensureAudio()
+    const savedTime = rewindStartTime != null ? Math.max(0, rewindStartTime) : audio.currentTime
+    const wasPlaying = useReader.getState().tts.status === "playing"
+    audio.pause()
+
+    const podcastBlobUrl = this.summaryBlobUrl || audio.src || getPodcastAudioUrl(podcast.id)
+
+    this.interruptionState = {
+      podcast,
+      savedTime,
+      wasPlaying,
+      podcastBlobUrl,
+      answerBlobUrl: null,
+    }
+
+    this.set({ status: "paused" })
+    return { savedTime, podcast }
+  }
+
+  /** Play generated interruption answer without wiping active podcast context. */
+  async playInterruptionAnswer(answerUrl: string, onFinished?: () => void): Promise<void> {
+    const audio = this.ensureAudio()
+    audio.pause()
+
+    const currentPodcast = useReader.getState().activePodcast
+    if (!this.interruptionState && currentPodcast) {
+      this.interruptionState = {
+        podcast: currentPodcast,
+        savedTime: audio.currentTime,
+        wasPlaying: false,
+        podcastBlobUrl: this.summaryBlobUrl || audio.src || getPodcastAudioUrl(currentPodcast.id),
+      }
+    }
+
+    const blobUrl = await fetchAudioBlobUrl(answerUrl)
+
+    if (this.interruptionState) {
+      if (this.interruptionState.answerBlobUrl) {
+        URL.revokeObjectURL(this.interruptionState.answerBlobUrl)
+      }
+      this.interruptionState.answerBlobUrl = blobUrl
+      this.interruptionState.onFinished = onFinished
+    }
+
+    audio.src = blobUrl
+    audio.playbackRate = useReader.getState().tts.speed
+    audio.muted = useReader.getState().tts.muted
+
+    await new Promise<void>((resolve, reject) => {
+      audio.onloadedmetadata = () => resolve()
+      audio.onerror = () => reject(new Error("Interruption answer audio failed to load"))
+    })
+
+    try {
+      await audio.play()
+    } catch (err) {
+      console.warn("Autoplay was blocked for interruption answer:", err)
+    }
+
+    this.set({
+      status: "playing",
+      currentTime: 0,
+      duration: audio.duration || 0,
+    })
+  }
+
+  /** Restore original podcast playback after interruption. */
+  async resumeFromInterruption(customResumeTime?: number): Promise<void> {
+    const state = this.interruptionState
+    if (!state || !this.audio) return
+
+    const audio = this.audio
+    audio.pause()
+
+    if (state.answerBlobUrl) {
+      URL.revokeObjectURL(state.answerBlobUrl)
+    }
+
+    if (state.podcastBlobUrl && audio.src !== state.podcastBlobUrl) {
+      audio.src = state.podcastBlobUrl
+      await new Promise<void>((resolve) => {
+        const onLoaded = () => {
+          audio.removeEventListener("loadedmetadata", onLoaded)
+          audio.removeEventListener("error", onLoaded)
+          resolve()
+        }
+        audio.addEventListener("loadedmetadata", onLoaded)
+        audio.addEventListener("error", onLoaded)
+      })
+    }
+
+    const targetTime = customResumeTime != null ? Math.max(0, customResumeTime) : state.savedTime
+    try {
+      audio.currentTime = targetTime
+    } catch {
+      // Ignore seek error if metadata not yet ready
+    }
+
+    const finishedCb = state.onFinished
+    const wasPlaying = state.wasPlaying
+    this.interruptionState = null
+
+    if (wasPlaying) {
+      try {
+        await audio.play()
+        this.set({
+          status: "playing",
+          currentTime: targetTime,
+          duration: audio.duration || state.podcast.duration || 0,
+        })
+      } catch {
+        this.set({ status: "paused", currentTime: targetTime })
+      }
+    } else {
+      this.set({ status: "paused", currentTime: targetTime })
+    }
+
+    finishedCb?.()
+  }
+
+  cancelInterruption(): Promise<void> {
+    return this.resumeFromInterruption()
+  }
+
+  isInterrupted(): boolean {
+    return this.interruptionState !== null
+  }
+
+  getInterruptionState() {
+    return this.interruptionState
+  }
+
   /** True when the engine is playing a standalone file (podcast/summary). */
   isDirectAudio(): boolean {
+
     return this.pageAudio == null
   }
 
@@ -1137,6 +1614,10 @@ class TtsEngine {
     this.clickDebouncePending = null
 
     this.bumpGeneration()
+    if (this.interruptionState?.answerBlobUrl) {
+      URL.revokeObjectURL(this.interruptionState.answerBlobUrl)
+    }
+    this.interruptionState = null
     if (this.audio) {
       this.audio.pause()
       this.audio.removeAttribute("src")
@@ -1146,6 +1627,17 @@ class TtsEngine {
       URL.revokeObjectURL(this.summaryBlobUrl)
       this.summaryBlobUrl = null
     }
+    if (this.textPlaybackQueue) {
+      this.textPlaybackQueue.prefetches.forEach((promise) => {
+        void promise
+          .then((res) => {
+            if (res?.blobUrl) URL.revokeObjectURL(res.blobUrl)
+          })
+          .catch(() => {})
+      })
+      this.textPlaybackQueue = null
+    }
+    this.speakingMessageId = null
     this.pageAudio = null
     this.stopHeartbeat()
     this.chunkStarts = []

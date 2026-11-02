@@ -18,7 +18,10 @@ import {
 } from "@/services/api"
 import { streamMessage } from "@/services/chatStream"
 import { useReader } from "@/stores/reader"
-import { Send, Trash2, Sparkles, FileText, ChevronsUpDown, Cpu, BookOpen, Globe, Network, Search, XCircle, X, Loader2, AlertTriangle } from "lucide-react"
+import { Send, Trash2, Sparkles, FileText, ChevronsUpDown, Cpu, BookOpen, Globe, Network, Search, XCircle, X, Loader2, AlertTriangle, Mic, Volume2, Square, Copy, Check } from "lucide-react"
+import { startRecording, ActiveRecording } from "@/lib/audioRecorder"
+import { transcribeChatAudio } from "@/services/api"
+import { ttsEngine } from "@/services/ttsEngine"
 import { getKgStatus, buildKg, KgStatus } from "@/services/kgApi"
 import CitationPopup from "@/components/chat/CitationPopup"
 import ModelPicker from "@/components/chat/ModelPicker"
@@ -35,6 +38,20 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
+  const [isRecording, setIsRecording] = useState(false)
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
+  const [isTranscribing, setIsTranscribing] = useState(false)
+  const activeRecorderRef = useRef<ActiveRecording | null>(null)
+  const [speakingMsgId, setSpeakingMsgId] = useState<number | string | null>(null)
+  const [copiedMsgId, setCopiedMsgId] = useState<number | string | null>(null)
+  const ttsStatus = useReader((s) => s.tts.status)
+
+  // Reset active speaking message when audio engine stops
+  useEffect(() => {
+    if (ttsStatus === "idle") {
+      setSpeakingMsgId(null)
+    }
+  }, [ttsStatus])
   const [citationMsg, setCitationMsg] = useState<Message | null>(null)
   const jumpToCitation = useReader((s) => s.jumpToCitation)
   const handleJump = (citation: Citation) => {
@@ -244,9 +261,96 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
     setMessages([])
   }
 
-  const handleSend = async () => {
-    if (!input.trim() || sending) return
-    const question = input
+  // Clean up recording on unmount
+  useEffect(() => {
+    return () => {
+      if (activeRecorderRef.current) {
+        void activeRecorderRef.current.cancel()
+        activeRecorderRef.current = null
+      }
+    }
+  }, [])
+
+  // Recording timer
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | null = null
+    if (isRecording) {
+      interval = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1)
+      }, 1000)
+    } else {
+      setRecordingSeconds(0)
+    }
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [isRecording])
+
+  const handleStartRecording = async () => {
+    try {
+      const rec = await startRecording()
+      activeRecorderRef.current = rec
+      setIsRecording(true)
+    } catch (err) {
+      console.error("Failed to start mic recording:", err)
+      alert("Microphone access was denied or is not supported.")
+    }
+  }
+
+  const handleStopRecording = async () => {
+    if (!activeRecorderRef.current) return
+    setIsRecording(false)
+    setIsTranscribing(true)
+    try {
+      const wavBlob = await activeRecorderRef.current.stop()
+      activeRecorderRef.current = null
+      const res = await transcribeChatAudio(wavBlob)
+      if (res.transcript && res.transcript.trim()) {
+        setInput(res.transcript.trim())
+        void handleSend(res.transcript.trim())
+      }
+    } catch (err) {
+      console.error("Voice transcription failed:", err)
+      alert("Voice transcription failed. You can still type your question.")
+    } finally {
+      setIsTranscribing(false)
+      activeRecorderRef.current = null
+    }
+  }
+
+  const handleToggleSpeak = async (msg: Message) => {
+    if (speakingMsgId === msg.id && (ttsStatus === "playing" || ttsStatus === "preparing")) {
+      ttsEngine.stopSpeaking()
+      setSpeakingMsgId(null)
+    } else {
+      setSpeakingMsgId(msg.id)
+      try {
+        await ttsEngine.speakText(msg.content, msg.id)
+      } catch (err) {
+        console.error("Failed to read message out loud:", err)
+        setSpeakingMsgId(null)
+      }
+    }
+  }
+
+  const handleCopy = async (msg: Message) => {
+    const cleanContent = msg.content
+      .replace(/\[\d+(?:\s*,\s*\d+)*\]/g, "")
+      .trim()
+    try {
+      await navigator.clipboard.writeText(cleanContent)
+      setCopiedMsgId(msg.id)
+      setTimeout(() => {
+        setCopiedMsgId((curr) => (curr === msg.id ? null : curr))
+      }, 2000)
+    } catch (err) {
+      console.error("Failed to copy message:", err)
+    }
+  }
+
+  const handleSend = async (questionOverride?: string) => {
+    const question = (questionOverride !== undefined ? questionOverride : input).trim()
+    if (!question || sending) return
     const sendDocId = docId
     setSending(true)
     const controller = new AbortController()
@@ -268,7 +372,7 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
         token_count: 0,
       }
       setMessages((prev) => [...prev, userMessage])
-      setInput("")
+      if (questionOverride === undefined) setInput("")
       const aiMessage = await streamMessage(
         activeConvId,
         question,
@@ -308,9 +412,9 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
       if (docIdRef.current !== sendDocId) return
       setMessages((prev) => {
         if (!assistantDraftAdded) return [...prev, aiMessage]
-        return prev.map((msg) => msg.id === assistantDraftId ? aiMessage : msg)
+        return prev.map((msg) => (msg.id === assistantDraftId ? aiMessage : msg))
       })
-    } catch (err) {
+    } catch (err: unknown) {
       // A user-initiated Stop leaves the persisted user message and discards
       // the assistant draft, which the server saves only after completion.
       if (controller.signal.aborted) {
@@ -319,14 +423,22 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
       }
       if (docIdRef.current !== sendDocId) return
       console.error("Failed to send message:", err)
-      const detail = err instanceof Error ? err.message : undefined
-      const errorContent = detail || "Something went wrong sending that message. Please try again."
+      let errorContent =
+        "Sorry, I ran into an error while generating a response. Please try again."
+      if (err && typeof err === "object" && "response" in err) {
+        const responseData = (err as { response?: { data?: { detail?: string } } }).response?.data
+        if (responseData?.detail) {
+          errorContent = responseData.detail
+        }
+      } else if (err instanceof Error && err.message) {
+        errorContent = err.message
+      }
       setMessages((prev) => {
         const existing = prev.find((msg) => msg.id === assistantDraftId)
         if (existing) {
           return prev.map((msg) =>
             msg.id === assistantDraftId
-              ? { ...msg, content: `${msg.content}\n\n${errorContent}` }
+              ? { ...msg, content: errorContent }
               : msg,
           )
         }
@@ -404,6 +516,45 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
                     <FileText className="h-3 w-3" />
                     {msg.citations.length} source{msg.citations.length > 1 ? "s" : ""}
                   </button>
+                )}
+                {msg.role === "assistant" && (
+                  <div className="mt-1.5 flex items-center gap-1 text-cream-dim">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSpeak(msg)}
+                      title={
+                        speakingMsgId === msg.id && (ttsStatus === "playing" || ttsStatus === "preparing")
+                          ? "Stop reading"
+                          : "Read aloud"
+                      }
+                      className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${
+                        speakingMsgId === msg.id
+                          ? "bg-indigo/20 text-indigo"
+                          : "hover:bg-white/10 hover:text-cream"
+                      }`}
+                    >
+                      {speakingMsgId === msg.id && ttsStatus === "playing" ? (
+                        <Square className="h-3 w-3 fill-current text-indigo animate-pulse" />
+                      ) : speakingMsgId === msg.id && ttsStatus === "preparing" ? (
+                        <Loader2 className="h-3 w-3 animate-spin text-indigo" />
+                      ) : (
+                        <Volume2 className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(msg)}
+                      title={copiedMsgId === msg.id ? "Copied!" : "Copy message"}
+                      className="flex h-6 w-6 items-center justify-center rounded-md transition-colors hover:bg-white/10 hover:text-cream"
+                    >
+                      {copiedMsgId === msg.id ? (
+                        <Check className="h-3.5 w-3.5 text-emerald-400" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
@@ -603,13 +754,53 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={useDoc ? "Ask about this document…" : "Ask anything…"}
-            disabled={sending}
-            className="min-w-0 flex-1 rounded-lg border border-surface bg-void px-3 py-2 text-[13px] text-cream placeholder:text-cream-dim focus:border-indigo/60 focus:outline-none"
+            placeholder={
+              isRecording
+                ? `Recording speech (${recordingSeconds}s)...`
+                : isTranscribing
+                  ? "Transcribing with Meta Muse..."
+                  : useDoc
+                    ? "Ask about this document…"
+                    : "Ask anything…"
+            }
+            disabled={sending || isRecording || isTranscribing}
+            className={`min-w-0 flex-1 rounded-lg border bg-void px-3 py-2 text-[13px] text-cream placeholder:text-cream-dim focus:border-indigo/60 focus:outline-none ${
+              isRecording ? "border-rose-500/80 bg-rose-500/10" : "border-surface"
+            }`}
           />
+
+          {isRecording ? (
+            <button
+              type="button"
+              onClick={handleStopRecording}
+              title="Stop recording and transcribe"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-rose-500 text-white shadow-lg animate-pulse hover:bg-rose-600 transition-colors"
+            >
+              <Square className="h-3.5 w-3.5" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleStartRecording}
+              disabled={sending || isTranscribing}
+              title="Voice input via Meta Muse Voice Transcribe"
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors ${
+                isTranscribing
+                  ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                  : "border-surface text-cream-dim hover:border-indigo/40 hover:text-cream"
+              }`}
+            >
+              {isTranscribing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Mic className="h-3.5 w-3.5" />
+              )}
+            </button>
+          )}
+
           <button
             type="submit"
-            disabled={!input.trim() || sending}
+            disabled={!input.trim() || sending || isRecording || isTranscribing}
             title="Send"
             className="gradient-primary flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white shadow-glow transition-transform hover:scale-105 disabled:opacity-40"
           >

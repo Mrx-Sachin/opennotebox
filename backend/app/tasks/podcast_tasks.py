@@ -168,16 +168,18 @@ def _synthesize_line(text: str, voice: str) -> bytes:
     return response.content
 
 
-def _stitch_wavs(wav_bytes_list: List[bytes], output_path: str) -> float:
+def _stitch_wavs(wav_bytes_list: List[bytes], output_path: str) -> tuple[float, List[dict]]:
     """Concatenate WAV clips with a short silence gap between them.
 
     Assumes all clips share the same sample format (true for Piper output
-    across voices in this deployment). Returns total duration in seconds.
+    across voices in this deployment). Returns total duration in seconds and
+    line timing metadata.
     """
     tmp_paths = []
     try:
         params = None
         frame_chunks = []
+        clip_frame_counts = []
 
         for data in wav_bytes_list:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -194,7 +196,9 @@ def _stitch_wavs(wav_bytes_list: List[bytes], output_path: str) -> float:
                         "Podcast line audio params differ from first clip "
                         f"({this_params} vs {params}); stitching anyway"
                     )
-                frame_chunks.append(wf.readframes(wf.getnframes()))
+                clip_frames = wf.getnframes()
+                frame_chunks.append(wf.readframes(clip_frames))
+                clip_frame_counts.append(clip_frames)
 
         if params is None:
             raise ValueError("No audio clips to stitch")
@@ -213,8 +217,25 @@ def _stitch_wavs(wav_bytes_list: List[bytes], output_path: str) -> float:
 
         with wave.open(output_path, "rb") as out:
             total_frames = out.getnframes()
-            duration = total_frames / float(out.getframerate())
-        return duration
+            total_duration = total_frames / float(out.getframerate())
+
+        line_timings: List[dict] = []
+        previous_end_time = 0.0
+        for i, clip_frames in enumerate(clip_frame_counts):
+            clip_duration = clip_frames / float(params.framerate)
+            if i == 0:
+                start_time = 0.0
+            else:
+                start_time = previous_end_time + SILENCE_SECONDS
+            end_time = start_time + clip_duration
+            line_timings.append({
+                "start_time": start_time,
+                "end_time": end_time,
+                "duration": clip_duration,
+            })
+            previous_end_time = end_time
+
+        return total_duration, line_timings
     finally:
         for p in tmp_paths:
             try:
@@ -389,14 +410,30 @@ def generate_podcast(self, podcast_id: int) -> dict:
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, f"{podcast_id}.wav")
 
-        duration = _stitch_wavs(wav_clips, output_path)
+        stitch_result = _stitch_wavs(wav_clips, output_path)
+        if isinstance(stitch_result, tuple):
+            duration, line_timings = stitch_result
+        else:
+            duration, line_timings = stitch_result, []
+
+        enriched_lines = [
+            {
+                "speaker": l["speaker"],
+                "text": l["text"],
+                "start_time": round(t["start_time"], 3),
+                "end_time": round(t["end_time"], 3),
+                "duration": round(t["duration"], 3),
+            }
+            for l, t in zip(cleaned_lines, line_timings)
+        ] if line_timings else cleaned_lines
 
         podcast.status = "completed"
         podcast.audio_path = output_path
         podcast.duration = duration
         podcast.transcript = {
+            "version": 2,
             "title": title or document_title,
-            "lines": cleaned_lines,
+            "lines": enriched_lines,
             # Kept for QA on dialogue quality, not shown in the player UI.
             "scratchpad": scratchpad,
         }

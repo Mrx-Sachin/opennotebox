@@ -59,7 +59,7 @@ def _seed_backends() -> list[dict]:
     Extra backends can still be added from Settings; they are just not
     pre-seeded anymore.
     """
-    return [
+    backends = [
         {
             "name": "omniroute",
             "base_url": settings.vllm_base_url,
@@ -67,6 +67,14 @@ def _seed_backends() -> list[dict]:
             "api_key": settings.vllm_api_key or "not-needed",
         },
     ]
+    if settings.effective_meta_api_key:
+        backends.append({
+            "name": "meta",
+            "base_url": "https://api.meta.ai/v1",
+            "model": "muse-spark-1.3",
+            "api_key": settings.effective_meta_api_key,
+        })
+    return backends
 
 
 # Kokoro's top-graded voice. Markedly more natural than the Piper voices, and

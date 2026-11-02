@@ -593,35 +593,25 @@
   position: fixed;
   inset: 0;
   z-index: 90;
-  background: rgba(5, 5, 8, 0.88);
-  backdrop-filter: blur(12px);
+  background: rgba(5, 5, 8, 0.96);
+  backdrop-filter: blur(16px);
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-  box-sizing: border-box;
-}
-.podcast-modal-overlay.is-fullscreen-mode {
+  align-items: stretch;
+  justify-content: stretch;
   padding: 0;
+  box-sizing: border-box;
 }
 .podcast-modal-container {
   display: flex;
   flex-direction: column;
-  width: min(960px, 100%);
-  height: min(720px, calc(100dvh - 36px));
-  background: #13121d;
-  border: 1px solid #323145;
-  border-radius: 14px;
-  box-shadow: 0 25px 70px rgba(0, 0, 0, 0.75);
-  overflow: hidden;
-  box-sizing: border-box;
-}
-.podcast-modal-container.is-fullscreen-container {
   width: 100vw;
   height: 100dvh;
-  max-height: none;
-  border-radius: 0;
+  background: #0d0c15;
   border: none;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 .podcast-modal-header {
   display: flex;

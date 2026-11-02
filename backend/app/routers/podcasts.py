@@ -2,7 +2,7 @@
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from loguru import logger
 from sqlalchemy import or_
@@ -11,13 +11,20 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models import User, Summary, Podcast, Document, LibraryEntry
-from app.schemas import PodcastCreate, PodcastResponse
+from app.schemas import (
+    PodcastCreate,
+    PodcastInterruptRequest,
+    PodcastInterruptResponse,
+    PodcastResponse,
+    PodcastTranscribeResponse,
+)
 from app.routers.auth import get_current_user_from_token
 from app.tasks.podcast_tasks import generate_podcast as generate_podcast_task
 from app.services.library_access import (
     get_document_for_user,
     visible_document_title,
 )
+from app.services import podcast_interaction
 
 router = APIRouter(prefix="/api/podcasts", tags=["podcasts"])
 
@@ -221,3 +228,85 @@ def delete_podcast(
             )
 
     return {"detail": "Deleted"}
+
+
+@router.post("/{podcast_id}/interrupt", response_model=PodcastInterruptResponse)
+async def interrupt_podcast(
+    podcast_id: int,
+    body: PodcastInterruptRequest,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Handle listener interruption by answering a question and bridging back."""
+    podcast = db.query(Podcast).filter(
+        Podcast.id == podcast_id,
+        Podcast.user_id == user.id,
+    ).first()
+    if not podcast or not get_document_for_user(db, user.id, podcast.document_id):
+        raise HTTPException(status_code=404, detail="Podcast not found")
+
+    if podcast.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail="Podcast is not yet completed",
+        )
+
+    return await podcast_interaction.process_interruption(
+        db=db,
+        podcast=podcast,
+        user_id=user.id,
+        question=body.question,
+        current_time=body.current_time,
+        line_index=body.line_index,
+        history=body.history,
+    )
+
+
+@router.post("/{podcast_id}/transcribe", response_model=PodcastTranscribeResponse)
+async def transcribe_podcast_question(
+    podcast_id: int,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Transcribe spoken question audio for podcast interruption."""
+    podcast = db.query(Podcast).filter(
+        Podcast.id == podcast_id,
+        Podcast.user_id == user.id,
+    ).first()
+    if not podcast or not get_document_for_user(db, user.id, podcast.document_id):
+        raise HTTPException(status_code=404, detail="Podcast not found")
+
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+
+    transcript = await podcast_interaction.transcribe_question(
+        audio_bytes=audio_bytes,
+        filename=file.filename or "question.wav",
+    )
+    return PodcastTranscribeResponse(transcript=transcript)
+
+
+@router.get("/{podcast_id}/interrupts/{interrupt_id}/audio")
+def get_podcast_interrupt_audio(
+    podcast_id: int,
+    interrupt_id: str,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Stream the generated podcast interruption WAV file."""
+    podcast = db.query(Podcast).filter(
+        Podcast.id == podcast_id,
+        Podcast.user_id == user.id,
+    ).first()
+    if not podcast or not get_document_for_user(db, user.id, podcast.document_id):
+        raise HTTPException(status_code=404, detail="Podcast not found")
+
+    safe_interrupt_id = os.path.basename(interrupt_id)
+    audio_path = os.path.join(
+        settings.data_dir, "podcast_interrupts", f"{safe_interrupt_id}.wav"
+    )
+    if not os.path.exists(audio_path):
+        raise HTTPException(status_code=404, detail="Audio file missing")
+    return FileResponse(audio_path, media_type="audio/wav")

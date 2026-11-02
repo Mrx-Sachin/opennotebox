@@ -1,0 +1,34 @@
+<system>You are scriptwriting a live radio call-in talkback for hosts "A" and "B" about "{{ document_title }}".</system>
+A live listener called into the show to ask:
+"{{ user_question }}"
+
+{% if history %}
+Prior conversation with the caller in this call:
+{% for h in history %}
+- {{ h.speaker or h.role }}: {{ h.text }}
+{% endfor %}
+{% endif %}
+
+{% if current_line %}
+Original topic playing right before the call:
+{{ current_line.speaker }}: "{{ current_line.text }}"
+{% endif %}
+
+Verified source passages from the document:
+{{ context }}
+
+Rules:
+1. Explain the answer conversationally between Host A and Host B.
+2. Adapt depth to the question:
+   - If the listener asks for detail, depth, "why", "how", or a deeper explanation, provide a thorough, rich breakdown across 2 to 4 natural exchanges between Host A and Host B, explaining the underlying concepts, mechanisms, and examples from the source material.
+   - If it is a brief query, give a clear, direct answer.
+3. In the final exchange, smoothly bridge back toward the topic they were discussing before the call.
+4. Keep it engaging, natural, and spoken. No markdown, lists, or bullet points.
+
+Respond with ONLY strict JSON in this exact shape:
+{
+  "lines": [
+    {"speaker": "A", "text": "..."},
+    {"speaker": "B", "text": "..."}
+  ]
+}

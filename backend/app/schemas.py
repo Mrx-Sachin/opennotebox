@@ -348,6 +348,25 @@ class PodcastResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PodcastInterruptRequest(BaseModel):
+    question: str
+    current_time: float
+    line_index: Optional[int] = None
+    history: Optional[List[dict]] = None
+
+class PodcastInterruptResponse(BaseModel):
+    interrupt_id: str
+    audio_url: str
+    duration: float
+    lines: List[dict]
+    current_line: Optional[dict] = None
+    next_line: Optional[dict] = None
+    resume_time: float
+    citations: Optional[List[dict]] = None
+
+class PodcastTranscribeResponse(BaseModel):
+    transcript: str
+
 class FlashcardGenerateRequest(BaseModel):
     document_id: int
 

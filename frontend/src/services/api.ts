@@ -470,6 +470,29 @@ export const fetchAudioBlobUrl = (url: string) =>
 export const getFileUrl = (docId: number) => apiUrl(`/api/documents/${docId}/file`)
 
 // Podcasts
+export interface PodcastLine {
+  speaker: string
+  text: string
+  start_time?: number
+  end_time?: number
+  duration?: number
+}
+
+export interface PodcastInterruptResponse {
+  interrupt_id: string
+  audio_url: string
+  duration: number
+  lines: PodcastLine[]
+  current_line?: PodcastLine | null
+  next_line?: PodcastLine | null
+  resume_time: number
+  citations?: { page?: number; text?: string }[] | null
+}
+
+export interface PodcastTranscribeResponse {
+  transcript: string
+}
+
 export interface Podcast {
   id: number
   document_id: number
@@ -480,7 +503,8 @@ export interface Podcast {
   duration?: number | null
   transcript?: {
     title: string
-    lines: { speaker: string; text: string }[]
+    version?: number
+    lines: PodcastLine[]
     scratchpad?: string | null
   } | null
   created_at: string
@@ -517,6 +541,48 @@ export const deletePodcast = (id: number) =>
   api.delete(`/api/podcasts/${id}`).then((r) => r.data)
 
 export const getPodcastAudioUrl = (id: number) => apiUrl(`/api/podcasts/${id}/audio`)
+
+export const interruptPodcast = (
+  podcastId: number,
+  data: {
+    question: string
+    current_time: number
+    line_index?: number | null
+    history?: { speaker: string; text: string }[] | null
+  }
+) =>
+  api
+    .post<PodcastInterruptResponse>(`/api/podcasts/${podcastId}/interrupt`, data, { timeout: 120000 })
+    .then((r) => r.data)
+
+export const transcribeChatAudio = (
+  audioBlob: Blob,
+  filename = "chat_audio.wav"
+) => {
+  const formData = new FormData()
+  formData.append("file", audioBlob, filename)
+  return api
+    .post<{ transcript: string }>("/api/chat/transcribe", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 60000,
+    })
+    .then((r) => r.data)
+}
+
+export const transcribePodcastAudio = (
+  podcastId: number,
+  audioBlob: Blob,
+  filename = "question.wav"
+) => {
+  const formData = new FormData()
+  formData.append("file", audioBlob, filename)
+  return api
+    .post<PodcastTranscribeResponse>(`/api/podcasts/${podcastId}/transcribe`, formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 60000,
+    })
+    .then((r) => r.data)
+}
 
 // Bookmarks
 export interface Bookmark {

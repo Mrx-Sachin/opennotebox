@@ -433,3 +433,22 @@ def delete_conversation(
     db.delete(conv)
     db.commit()
     return {"detail": "Deleted"}
+
+from fastapi import File, UploadFile
+from app.services import podcast_interaction
+
+@router.post("/transcribe")
+async def transcribe_chat_audio(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user_from_token),
+):
+    """Transcribe user voice recording for chat input using Meta Muse Voice Transcribe."""
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+
+    transcript = await podcast_interaction.transcribe_question(
+        audio_bytes=audio_bytes,
+        filename=file.filename or "chat_audio.wav",
+    )
+    return {"transcript": transcript}

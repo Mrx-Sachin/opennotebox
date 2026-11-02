@@ -28,7 +28,7 @@ celery_app.conf.update(
     # 786432 KiB (768MB) leaves headroom for a legitimate few-hundred-MB PDF
     # parse to finish without self-recycling mid-task, while still capping
     # any single child well below the multi-GB blowups we measured.
-    worker_max_memory_per_child=786432,
+    worker_max_memory_per_child=1887436,
     task_soft_time_limit=600,
     task_time_limit=900,
     task_default_retry_delay=60,

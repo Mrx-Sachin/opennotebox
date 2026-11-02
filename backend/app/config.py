@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     vllm_model: str = "antigravity/gemini-3.8-flash-tiered"
     vllm_api_key: str = "not-needed"
 
+    # Meta Model API / Muse Voice Transcribe
+    meta_api_key: str = ""
+    meta_asr_url: str = "https://api.meta.ai/v1/asr/transcribe"
+    meta_asr_model: str = "muse-voice-transcribe-1.0"
+
     # JWT
     jwt_secret: str = "CHANGE_ME"
     jwt_expiry_hours: int = 24
@@ -62,8 +67,8 @@ class Settings(BaseSettings):
     # Per-PROCESS pool limits. Several processes (API, Celery prefork children,
     # beat) each build their own pool, so the deployment-wide connection count
     # is a multiple of these - see the note in database.py before raising them.
-    db_pool_size: int = 5
-    db_max_overflow: int = 5
+    db_pool_size: int = 20
+    db_max_overflow: int = 15
 
     # Storage
     upload_max_size_mb: int = 200
@@ -128,6 +133,11 @@ class Settings(BaseSettings):
     llm_admission_key_prefix: str = "opennotebox:llm-admission"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+
+    @property
+    def effective_meta_api_key(self) -> str:
+        import os
+        return self.meta_api_key or os.environ.get("MODEL_API_KEY", "") or os.environ.get("META_API_KEY", "")
 
     @property
     def cors_origin_regex(self) -> Optional[str]:

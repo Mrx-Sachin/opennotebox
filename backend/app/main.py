@@ -54,7 +54,7 @@ class SecurityHeadersMiddleware:
                 if b"referrer-policy" not in header_names:
                     response_headers.append((b"referrer-policy", b"strict-origin-when-cross-origin"))
                 if b"permissions-policy" not in header_names:
-                    response_headers.append((b"permissions-policy", b"camera=(), microphone=(), geolocation=()"))
+                    response_headers.append((b"permissions-policy", b"camera=(), microphone=(self), geolocation=()"))
                 message["headers"] = response_headers
             await send(message)
 
