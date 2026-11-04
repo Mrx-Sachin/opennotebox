@@ -79,6 +79,7 @@ def test_parse_pdf_end_to_end_with_narration_exclusions(narration_pdf_fixture: P
     """Verify full parse_pdf flow correctly excludes non-narratable elements."""
     parser = PDFParserService()
     result = parser.parse_pdf(str(narration_pdf_fixture), use_ocr=False)
+    parser._enrich_with_docling_regions(str(narration_pdf_fixture), result)
 
     assert result is not None
     assert result["num_pages"] == 3

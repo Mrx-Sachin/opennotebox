@@ -45,7 +45,14 @@ from app.services.extraction_repair import (
     compute_file_sha256,
     repair_legacy_pdf_extraction,
 )
-from scripts.repair_legacy_pdf_extraction import main as cli_main
+import sys
+from pathlib import Path  # noqa: F811
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from scripts.repair_legacy_pdf_extraction import main as cli_main  # noqa: E402
 
 
 def _create_sample_pdf(file_path: Path, pages_text: list[list[str]]) -> None:

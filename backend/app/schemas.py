@@ -637,11 +637,13 @@ class NoteResponse(BaseModel):
 class NoteColorCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=40)
     hex: str = Field(..., min_length=4, max_length=7)
+    hint: Optional[str] = Field(None, max_length=60)
 
 
 class NoteColorUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=40)
     hex: Optional[str] = Field(None, min_length=4, max_length=7)
+    hint: Optional[str] = Field(None, max_length=60)
 
 
 class NoteColorResponse(BaseModel):
