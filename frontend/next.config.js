@@ -38,7 +38,15 @@ const nextConfig = {
       bodySizeLimit: "50mb",
     },
   },
-  async headers() {
+    async rewrites() {
+    return [
+      {
+        source: "/api/:path*",
+        destination: "http://127.0.0.1:8001/api/:path*",
+      },
+    ]
+  },
+async headers() {
     return [
       {
         source: "/:path*",

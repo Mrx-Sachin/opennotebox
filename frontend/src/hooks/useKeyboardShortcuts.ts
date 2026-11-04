@@ -14,7 +14,9 @@ export function useKeyboardShortcuts() {
       if (
         target.tagName === "INPUT" ||
         target.tagName === "TEXTAREA" ||
-        target.isContentEditable
+        target.isContentEditable ||
+        document.querySelector("[data-flashcard-manager]") ||
+        document.querySelector("[data-flashcard-editor]")
       ) {
         return
       }

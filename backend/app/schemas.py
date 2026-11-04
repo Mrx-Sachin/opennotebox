@@ -195,6 +195,7 @@ class NotebookResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+
 class UnfiledNotebookResponse(BaseModel):
     name: str = "Unfiled"
     description: Optional[str] = "Documents waiting for a notebook."
@@ -212,7 +213,6 @@ class UnfiledNotebookUpdate(BaseModel):
         if not value:
             raise ValueError("Name must not be blank")
         return value
-
 
 class NotebookMoveDocumentsRequest(BaseModel):
     document_ids: list[Annotated[int, Field(ge=1)]] = Field(..., min_length=1, max_length=200)
@@ -396,6 +396,7 @@ class FlashcardResponse(BaseModel):
     card_type: str
     question: str
     answer: str
+    hint: Optional[str] = None
     cloze_text: Optional[str] = None
     cloze_index: Optional[int] = None
     group_id: Optional[int] = None
@@ -428,6 +429,7 @@ class FlashcardCreate(BaseModel):
     # {{c1::...}} markup) instead.
     question: Optional[str] = None
     answer: Optional[str] = None
+    hint: Optional[str] = None
     cloze_text: Optional[str] = None
     page_number: Optional[int] = None
 
@@ -435,6 +437,7 @@ class FlashcardCreate(BaseModel):
 class FlashcardUpdate(BaseModel):
     question: Optional[str] = None
     answer: Optional[str] = None
+    hint: Optional[str] = None
     cloze_text: Optional[str] = None
     page_number: Optional[int] = None
 
@@ -634,13 +637,11 @@ class NoteResponse(BaseModel):
 class NoteColorCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=40)
     hex: str = Field(..., min_length=4, max_length=7)
-    hint: Optional[str] = Field(None, max_length=60)
 
 
 class NoteColorUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=40)
     hex: Optional[str] = Field(None, min_length=4, max_length=7)
-    hint: Optional[str] = Field(None, max_length=60)
 
 
 class NoteColorResponse(BaseModel):

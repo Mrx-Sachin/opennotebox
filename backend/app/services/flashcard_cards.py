@@ -13,7 +13,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 
 from app.models import Flashcard
-from app.services.cloze import cloze_indices, render_cloze
+from app.services.cloze import cloze_indices, parse_cloze_spans, render_cloze
 
 
 def _grouped(db: Session, cards: List[Flashcard]) -> List[Flashcard]:
@@ -32,6 +32,7 @@ def create_basic_card(
     document_id: int,
     question: str,
     answer: str,
+    hint: Optional[str] = None,
     page_number: Optional[int] = None,
     source: str = "manual",
     source_note_id: Optional[int] = None,
@@ -42,6 +43,7 @@ def create_basic_card(
         card_type="basic",
         question=question.strip(),
         answer=answer.strip(),
+        hint=hint.strip() if hint else None,
         page_number=page_number,
         source=source,
         source_note_id=source_note_id,
@@ -56,21 +58,33 @@ def create_reversed_pair(
     document_id: int,
     front: str,
     back: str,
+    hint: Optional[str] = None,
     page_number: Optional[int] = None,
     source: str = "manual",
 ) -> List[Flashcard]:
     """Anki's "Basic and Reversed Card" type, minus the note abstraction:
     two independent basic cards, front->back and back->front, sharing a
     group_id so the UI can offer to edit/delete both together."""
+    card_hint = hint.strip() if hint else None
     forward = Flashcard(
-        user_id=user_id, document_id=document_id, card_type="basic",
-        question=front.strip(), answer=back.strip(),
-        page_number=page_number, source=source,
+        user_id=user_id,
+        document_id=document_id,
+        card_type="basic",
+        question=front.strip(),
+        answer=back.strip(),
+        hint=card_hint,
+        page_number=page_number,
+        source=source,
     )
     backward = Flashcard(
-        user_id=user_id, document_id=document_id, card_type="basic",
-        question=back.strip(), answer=front.strip(),
-        page_number=page_number, source=source,
+        user_id=user_id,
+        document_id=document_id,
+        card_type="basic",
+        question=back.strip(),
+        answer=front.strip(),
+        hint=card_hint,
+        page_number=page_number,
+        source=source,
     )
     return _grouped(db, [forward, backward])
 
@@ -87,12 +101,23 @@ def create_cloze_cards(
     """One Flashcard per distinct {{cN::...}} index in cloze_text, matching
     Anki's cloze note -> multiple cards behavior."""
     indices = cloze_indices(cloze_text)
+    spans = parse_cloze_spans(cloze_text)
     cards = []
     for idx in indices:
         question, answer = render_cloze(cloze_text, idx)
-        cards.append(Flashcard(
-            user_id=user_id, document_id=document_id, card_type="cloze",
-            question=question, answer=answer, cloze_text=cloze_text,
-            cloze_index=idx, page_number=page_number, source=source,
-        ))
+        span_hint = next((s.hint for s in spans if s.index == idx and s.hint), None)
+        cards.append(
+            Flashcard(
+                user_id=user_id,
+                document_id=document_id,
+                card_type="cloze",
+                question=question,
+                answer=answer,
+                hint=span_hint,
+                cloze_text=cloze_text,
+                cloze_index=idx,
+                page_number=page_number,
+                source=source,
+            )
+        )
     return _grouped(db, cards)

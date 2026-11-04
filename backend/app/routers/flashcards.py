@@ -28,7 +28,7 @@ from app.schemas import (
     FlashcardUpdate,
 )
 from app.routers.auth import get_current_user_from_token
-from app.services.cloze import cloze_indices, render_cloze
+from app.services.cloze import cloze_indices, parse_cloze_spans, render_cloze
 from app.services.flashcard_cards import create_basic_card, create_cloze_cards, create_reversed_pair
 from app.services.fsrs_scheduler import apply_review, preview_intervals
 from app.tasks.flashcard_tasks import generate_flashcards as generate_flashcards_task
@@ -76,6 +76,35 @@ def generate_flashcards(
 
 # --- listing / queue / stats / settings (literal paths - see module docstring) ---
 
+
+
+def _resolve_hint(card: Flashcard) -> Optional[str]:
+    """Extract hint: prefer card.hint, fallback to parsing cloze markup if cloze card."""
+    if card.hint:
+        return card.hint
+    if card.card_type == "cloze" and card.cloze_text:
+        try:
+            spans = parse_cloze_spans(card.cloze_text)
+            return next((s.hint for s in spans if s.index == card.cloze_index and s.hint), None)
+        except Exception:
+            return None
+    return None
+
+
+def _to_card_response(card: Flashcard) -> FlashcardResponse:
+    resp = FlashcardResponse.model_validate(card)
+    if not resp.hint:
+        resp.hint = _resolve_hint(card)
+    return resp
+
+
+def _to_queue_item(card: Flashcard) -> FlashcardQueueItem:
+    item = FlashcardQueueItem.model_validate(card)
+    if not item.hint:
+        item.hint = _resolve_hint(card)
+    item.preview_intervals = preview_intervals(card)
+    return item
+
 @router.get("", response_model=List[FlashcardResponse])
 def list_flashcards(
     document_id: Optional[int] = None,
@@ -96,7 +125,8 @@ def list_flashcards(
                 accessible_document_query(db, user.id).with_entities(Document.id).subquery()
             )
         )
-    return q.order_by(Flashcard.id).offset(offset).limit(limit).all()
+    cards = q.order_by(Flashcard.id).offset(offset).limit(limit).all()
+    return [_to_card_response(card) for card in cards]
 
 
 def _scope(db: Session, user_id: int, document_id: Optional[int]):
@@ -214,18 +244,28 @@ def get_flashcard_stats(
 def get_review_queue(
     document_id: Optional[int] = None,
     limit: int = Query(default=200, ge=1, le=500),
+    mode: str = Query(default="due", pattern="^(due|all)$"),
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
-    """Cards ready to review right now: due cards (learning/relearning/
-    review, ordered soonest-due-first) followed by new cards (creation
-    order), each capped by today's remaining quota. This is a
-    session-length simplification of Anki's queue - within-session
-    re-queuing of an "Again" learning step is skipped since FSRS reschedules
-    it minutes into the future anyway, past the length of one sitting."""
+    """Cards ready to review right now.
+
+    When mode == "all", returns all flashcards for the scope as queue items
+    (ordered by due, id), computing preview_intervals for each.
+    When mode == "due" (default), maintains the due and new quota logic.
+    """
+    base = _scope(db, user.id, document_id)
+
+    if mode == "all":
+        cards = (
+            base.order_by(Flashcard.due, Flashcard.id)
+            .limit(limit)
+            .all()
+        )
+        return [_to_queue_item(card) for card in cards]
+
     now = datetime.now(timezone.utc)
     today_start = _today_start(now)
-    base = _scope(db, user.id, document_id)
     settings_row = _get_flashcard_settings(db, user.id)
 
     review_remaining = max(
@@ -249,12 +289,30 @@ def get_review_queue(
     )
 
     queue = (due_cards + new_cards)[:limit]
-    items = []
-    for card in queue:
-        item = FlashcardQueueItem.model_validate(card)
-        item.preview_intervals = preview_intervals(card)
-        items.append(item)
-    return items
+    return [_to_queue_item(card) for card in queue]
+
+
+@router.post("/reset")
+def reset_deck(
+    document_id: Optional[int] = Query(default=None),
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Reset the scheduling state for all flashcards of the user (or filtered by document_id)."""
+    cards = _scope(db, user.id, document_id).all()
+    now = datetime.now(timezone.utc)
+    for card in cards:
+        card.reps = 0
+        card.lapses = 0
+        card.fsrs_state = 1
+        card.fsrs_step = None
+        card.stability = None
+        card.difficulty = None
+        card.due = now
+        card.last_review = None
+        card.introduced_at = None
+    db.commit()
+    return {"message": "Deck reset successfully", "count": len(cards)}
 
 
 # --- manual authoring --------------------------------------------------------
@@ -276,28 +334,50 @@ def create_flashcard(
                 detail="Cloze cards need at least one {{c1::...}} span",
             )
         cards = create_cloze_cards(
-            db, user_id=user.id, document_id=doc.id, cloze_text=body.cloze_text,
-            page_number=body.page_number, source="manual",
+            db,
+            user_id=user.id,
+            document_id=doc.id,
+            cloze_text=body.cloze_text,
+            page_number=body.page_number,
+            source="manual",
         )
+        if body.hint:
+            for card in cards:
+                if not card.hint:
+                    card.hint = body.hint.strip()
     elif body.card_type == "reversed":
         if not body.question or not body.answer:
             raise HTTPException(status_code=400, detail="Reversed cards need both question and answer")
         cards = create_reversed_pair(
-            db, user_id=user.id, document_id=doc.id, front=body.question, back=body.answer,
-            page_number=body.page_number, source="manual",
+            db,
+            user_id=user.id,
+            document_id=doc.id,
+            front=body.question,
+            back=body.answer,
+            hint=body.hint,
+            page_number=body.page_number,
+            source="manual",
         )
     else:
         if not body.question or not body.answer:
             raise HTTPException(status_code=400, detail="Basic cards need both question and answer")
-        cards = [create_basic_card(
-            db, user_id=user.id, document_id=doc.id, question=body.question, answer=body.answer,
-            page_number=body.page_number, source="manual",
-        )]
+        cards = [
+            create_basic_card(
+                db,
+                user_id=user.id,
+                document_id=doc.id,
+                question=body.question,
+                answer=body.answer,
+                hint=body.hint,
+                page_number=body.page_number,
+                source="manual",
+            )
+        ]
 
     db.commit()
     for card in cards:
         db.refresh(card)
-    return cards
+    return [_to_card_response(card) for card in cards]
 
 
 @router.put("/{flashcard_id}", response_model=FlashcardResponse)
@@ -323,11 +403,16 @@ def update_flashcard(
         card.cloze_text = body.cloze_text
         card.question = question
         card.answer = answer
+        spans = parse_cloze_spans(body.cloze_text)
+        card.hint = next((s.hint for s in spans if s.index == card.cloze_index and s.hint), None)
     else:
         if body.question is not None:
             card.question = body.question.strip()
         if body.answer is not None:
             card.answer = body.answer.strip()
+
+    if body.hint is not None:
+        card.hint = body.hint.strip() if body.hint else None
 
     if body.page_number is not None:
         card.page_number = body.page_number
@@ -335,7 +420,7 @@ def update_flashcard(
     card.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(card)
-    return card
+    return _to_card_response(card)
 
 
 @router.delete("/{flashcard_id}")
@@ -362,6 +447,28 @@ def delete_flashcard(
 
 # --- review -------------------------------------------------------------
 
+@router.post("/{flashcard_id}/reset", response_model=FlashcardResponse)
+def reset_flashcard(
+    flashcard_id: int,
+    user: User = Depends(get_current_user_from_token),
+    db: Session = Depends(get_db),
+):
+    """Reset a single flashcard's scheduling state to new/due."""
+    card = _owned_flashcard(db, user.id, flashcard_id)
+    card.reps = 0
+    card.lapses = 0
+    card.fsrs_state = 1
+    card.fsrs_step = None
+    card.stability = None
+    card.difficulty = None
+    card.due = datetime.now(timezone.utc)
+    card.last_review = None
+    card.introduced_at = None
+    db.commit()
+    db.refresh(card)
+    return _to_card_response(card)
+
+
 @router.post("/{flashcard_id}/review", response_model=FlashcardResponse)
 def review_flashcard(
     flashcard_id: int,
@@ -378,4 +485,4 @@ def review_flashcard(
     db.add(log)
     db.commit()
     db.refresh(card)
-    return card
+    return _to_card_response(card)

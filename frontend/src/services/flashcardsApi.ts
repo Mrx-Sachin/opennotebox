@@ -18,6 +18,7 @@ export interface Flashcard {
   cloze_text?: string | null
   cloze_index?: number | null
   group_id?: number | null
+  hint?: string | null
   source: CardSource
   page_number?: number | null
   fsrs_state: FsrsState
@@ -63,6 +64,7 @@ export interface FlashcardCreatePayload {
   question?: string
   answer?: string
   cloze_text?: string
+  hint?: string | null
   page_number?: number | null
 }
 
@@ -70,6 +72,7 @@ export interface FlashcardUpdatePayload {
   question?: string
   answer?: string
   cloze_text?: string
+  hint?: string | null
   page_number?: number | null
 }
 
@@ -91,15 +94,29 @@ export const updateFlashcard = (id: number, payload: FlashcardUpdatePayload) =>
 export const deleteFlashcard = (id: number, group = false) =>
   api.delete(`/api/flashcards/${id}${group ? "?group=true" : ""}`).then((r) => r.data)
 
-export const getFlashcardQueue = (documentId: number, limit = 200) =>
+export const getFlashcardQueue = (
+  documentId: number,
+  limit = 200,
+  mode: "due" | "all" = "due"
+) =>
   api
-    .get<FlashcardQueueItem[]>(`/api/flashcards/queue?document_id=${documentId}&limit=${limit}`)
+    .get<FlashcardQueueItem[]>(
+      `/api/flashcards/queue?document_id=${documentId}&limit=${limit}&mode=${mode}`
+    )
     .then((r) => r.data)
 
 export const reviewFlashcard = (id: number, rating: Rating, durationMs?: number) =>
   api
     .post<Flashcard>(`/api/flashcards/${id}/review`, { rating, duration_ms: durationMs ?? null })
     .then((r) => r.data)
+
+export const resetFlashcardDeck = (documentId?: number) => {
+  const query = documentId !== undefined ? `?document_id=${documentId}` : ""
+  return api.post(`/api/flashcards/reset${query}`).then((r) => r.data)
+}
+
+export const resetFlashcard = (cardId: number) =>
+  api.post(`/api/flashcards/${cardId}/reset`).then((r) => r.data)
 
 export const getFlashcardStats = (documentId: number) =>
   api.get<FlashcardStats>(`/api/flashcards/stats?document_id=${documentId}`).then((r) => r.data)

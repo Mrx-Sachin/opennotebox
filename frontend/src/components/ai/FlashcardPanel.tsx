@@ -1,8 +1,13 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { Layers, Loader2, RefreshCw, BookOpenCheck } from "lucide-react"
-import { FlashcardStats, generateFlashcards, getFlashcardStats, getFlashcards } from "@/services/flashcardsApi"
+import { Layers, Loader2, RefreshCw, BookOpenCheck, Sparkles, FolderOpen, Plus } from "lucide-react"
+import {
+  FlashcardStats,
+  generateFlashcards,
+  getFlashcardStats,
+  getFlashcards,
+} from "@/services/flashcardsApi"
 import FlashcardManager from "./FlashcardManager"
 
 interface FlashcardPanelProps {
@@ -24,15 +29,13 @@ export default function FlashcardPanel({ docId }: FlashcardPanelProps) {
     refresh()
   }, [refresh])
 
-  // Re-check stats/count whenever the manager overlay closes, so a card
-  // created/deleted/reviewed there is reflected in this launcher immediately.
+  // Re-check stats and count whenever the manager overlay closes, so a card
+  // created, deleted, or reviewed is reflected immediately.
   useEffect(() => {
     if (manager === null) refresh()
   }, [manager, refresh])
 
   // Poll while a generation is pending (cards appear when the task finishes).
-  // Baseline is the card count at click time, not 0 - manual cards survive
-  // a regenerate, so "any cards at all" is not a reliable "done" signal.
   useEffect(() => {
     if (!generating) return
     const baseline = cardCount ?? 0
@@ -48,115 +51,114 @@ export default function FlashcardPanel({ docId }: FlashcardPanelProps) {
       clearInterval(interval)
       clearTimeout(timeout)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [generating, docId])
+  }, [generating, cardCount, docId])
 
   const handleGenerate = async () => {
-    setGenerating(true)
     try {
+      setGenerating(true)
       await generateFlashcards(docId)
-    } catch (err) {
-      console.error("Failed to generate flashcards:", err)
+    } catch {
       setGenerating(false)
     }
   }
 
-  const hasCards = (cardCount ?? 0) > 0
   const dueCount = stats?.due ?? 0
 
   return (
     <div className="rounded-xl border border-surface bg-void/40 p-4 space-y-3.5 shadow-sm">
-      <div className="flex items-center gap-2">
-        <div className="flex h-6 w-6 items-center justify-center rounded-md border border-emerald-500/30 bg-emerald-950/40 text-emerald-300 shadow-sm">
-          <Layers className="h-3.5 w-3.5" />
+      <div className="mb-2.5 flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <Layers className="h-3.5 w-3.5 text-indigo" />
+          <span className="font-display text-xs font-semibold text-cream">Flashcards</span>
         </div>
-        <div>
-          <h3 className="text-xs font-semibold text-cream">Flashcard Deck</h3>
-          <p className="text-[10px] text-cream-dim">Active recall & spaced repetition review</p>
-        </div>
+
+        {cardCount !== null && cardCount > 0 && (
+          <div className="flex items-center gap-1.5">
+            <span className="rounded-md border border-surface bg-void px-2 py-0.5 text-[10px] text-cream-dim">
+              {cardCount} {cardCount === 1 ? "card" : "cards"}
+            </span>
+            {dueCount > 0 ? (
+              <span className="rounded-md border border-rust/40 bg-rust/10 px-2 py-0.5 text-[10px] font-medium text-rust">
+                {dueCount} due
+              </span>
+            ) : (
+              <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-400">
+                Caught up
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
-      {hasCards ? (
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-2 text-center">
-            <div className="rounded-lg border border-surface/60 bg-panel/60 p-2.5">
-              <div className="text-lg font-bold text-cream">{cardCount ?? 0}</div>
-              <div className="text-[10px] text-cream-dim">Total Cards</div>
-            </div>
-            <div className="rounded-lg border border-surface/60 bg-panel/60 p-2.5">
-              <div
-                className={`text-lg font-bold ${
-                  dueCount > 0 ? "text-emerald-400" : "text-cream-dim"
-                }`}
-              >
-                {dueCount}
-              </div>
-              <div className="text-[10px] text-cream-dim">Due for Review</div>
-            </div>
-          </div>
-
+      {cardCount === null ? (
+        <div className="flex items-center justify-center py-3 text-xs text-cream-dim">
+          <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin text-indigo" />
+          Loading flashcards...
+        </div>
+      ) : cardCount === 0 ? (
+        <div className="space-y-2.5">
+          <p className="text-xs leading-relaxed text-cream-dim">
+            No flashcards yet for this document. Generate them automatically with AI or create custom cards.
+          </p>
           <div className="flex items-center gap-2">
             <button
-              type="button"
-              onClick={() => setManager(dueCount > 0 ? "review" : "browse")}
-              className="gradient-primary flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium text-white shadow-glow transition-transform hover:scale-[1.01]"
+              onClick={handleGenerate}
+              disabled={generating}
+              className="gradient-primary flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1.5 px-3 text-xs font-medium text-white shadow-glow transition-all hover:opacity-95 disabled:opacity-50"
             >
-              {dueCount > 0 ? (
+              {generating ? (
                 <>
-                  <BookOpenCheck className="h-3.5 w-3.5" />
-                  <span>Review ({dueCount} due)</span>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Generating...
                 </>
               ) : (
                 <>
-                  <Layers className="h-3.5 w-3.5" />
-                  <span>Browse Deck</span>
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Generate Flashcards
                 </>
               )}
             </button>
-            {dueCount > 0 && (
-              <button
-                type="button"
-                onClick={() => setManager("browse")}
-                title="Browse all flashcards"
-                className="flex h-8 items-center justify-center rounded-lg border border-surface bg-panel px-2.5 text-xs text-cream-dim transition-[border-color,color] duration-150 hover:border-indigo/40 hover:text-cream"
-              >
-                Browse
-              </button>
-            )}
             <button
-              type="button"
-              onClick={handleGenerate}
-              disabled={generating}
-              title="Generate more flashcards"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-surface bg-panel text-cream-dim transition-[border-color,color] duration-150 hover:border-indigo/40 hover:text-cream disabled:opacity-40"
+              onClick={() => setManager("browse")}
+              title="Create card manually"
+              className="flex items-center gap-1.5 rounded-lg border border-surface bg-surface/30 px-3 py-1.5 text-xs font-medium text-cream-dim transition-colors hover:border-indigo/30 hover:bg-surface/60 hover:text-cream"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${generating ? "animate-spin text-indigo" : ""}`} />
+              <Plus className="h-3.5 w-3.5 text-indigo" />
+              Manual
             </button>
           </div>
         </div>
       ) : (
-        <div className="space-y-3 py-1">
-          <p className="text-xs text-cream-dim">
-            No flashcards yet for this document. Generate questions and answers automatically using AI.
-          </p>
-          <button
-            type="button"
-            onClick={handleGenerate}
-            disabled={generating}
-            className="gradient-primary flex w-full items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium text-white shadow-glow transition-transform hover:scale-[1.01] disabled:opacity-60"
-          >
-            {generating ? (
-              <>
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                <span>Writing questions...</span>
-              </>
-            ) : (
-              <>
-                <Layers className="h-3.5 w-3.5" />
-                <span>Generate flashcards</span>
-              </>
-            )}
-          </button>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setManager("review")}
+              className="gradient-primary flex flex-1 items-center justify-center gap-2 rounded-lg py-2 px-3 text-xs font-medium text-white shadow-glow transition-all hover:opacity-95"
+            >
+              <BookOpenCheck className="h-3.5 w-3.5" />
+              {dueCount > 0 ? `Study Cards (${dueCount} due)` : `Study Cards (${cardCount} cards)`}
+            </button>
+            <button
+              onClick={() => setManager("browse")}
+              title="Browse deck and manage cards"
+              className="flex items-center gap-1.5 rounded-lg border border-surface bg-surface/30 px-3 py-2 text-xs font-medium text-cream-dim transition-colors hover:border-indigo/30 hover:bg-surface/60 hover:text-cream"
+            >
+              <FolderOpen className="h-3.5 w-3.5 text-indigo" />
+              Deck
+            </button>
+            <button
+              onClick={handleGenerate}
+              disabled={generating}
+              title="Generate more flashcards with AI"
+              className="rounded-lg border border-surface bg-surface/30 p-2 text-cream-dim transition-colors hover:border-indigo/30 hover:bg-surface/60 hover:text-cream disabled:opacity-50"
+            >
+              {generating ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )}
+            </button>
+          </div>
         </div>
       )}
 
