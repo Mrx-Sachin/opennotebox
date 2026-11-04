@@ -50,3 +50,4 @@ frontend/public/proof/
 tools/monitor_stack.py
 tools/test_concurrency_capacity.py
 e2e/tests/verify-notes-ui.spec.ts
+e2e/tests/voice-transcription-stage-progression.spec.ts
