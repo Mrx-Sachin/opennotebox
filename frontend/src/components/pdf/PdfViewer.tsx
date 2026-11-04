@@ -938,6 +938,8 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
   const isIntersectingRef = useRef(false)
   const lastRenderedScaleRef = useRef<number | null>(null)
   const renderTaskRef = useRef<{ cancel: () => void } | null>(null)
+  const textLayerTaskRef = useRef<{ cancel: () => void } | null>(null)
+  const renderIdRef = useRef(0)
   const scaleRef = useRef(scale)
   scaleRef.current = scale
   const ensureRenderedRef = useRef<() => Promise<void>>(async () => {})
@@ -985,6 +987,14 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
       }
       renderTaskRef.current = null
     }
+    if (textLayerTaskRef.current) {
+      try {
+        textLayerTaskRef.current.cancel()
+      } catch {
+        /* already finished */
+      }
+      textLayerTaskRef.current = null
+    }
     setRendered(false)
     setTextReady(false)
     lastRenderedScaleRef.current = null
@@ -1010,7 +1020,16 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
       }
       renderTaskRef.current = null
     }
+    if (textLayerTaskRef.current) {
+      try {
+        textLayerTaskRef.current.cancel()
+      } catch {
+        /* already finished */
+      }
+      textLayerTaskRef.current = null
+    }
 
+    const renderId = ++renderIdRef.current
     const genScale = scale
     renderInFlightRef.current = true
     // Keep the previous bitmap on screen while the new scale renders so zoom
@@ -1019,7 +1038,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
     try {
       const pdfjs = await import("pdfjs-dist")
       const page = await pdfDoc.getPage(pageNum)
-      if (genScale !== scaleRef.current) return
+      if (genScale !== scaleRef.current || renderId !== renderIdRef.current) return
       // Two viewports, and conflating them was a real bug: `viewport` is the
       // page's CSS box, `renderViewport` is the canvas backing store, drawn at
       // SUPERSAMPLE times the size so text stays crisp. The old code sized the
@@ -1044,7 +1063,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
       renderTaskRef.current = task
       await task.promise
       renderTaskRef.current = null
-      if (genScale !== scaleRef.current) return
+      if (genScale !== scaleRef.current || renderId !== renderIdRef.current) return
 
       canvas.width = offscreen.width
       canvas.height = offscreen.height
@@ -1062,8 +1081,15 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
           container: staging,
           viewport,
         })
-        await textLayer.render()
-        if (genScale !== scaleRef.current) return
+        textLayerTaskRef.current = textLayer
+        try {
+          await textLayer.render()
+        } finally {
+          if (textLayerTaskRef.current === textLayer) {
+            textLayerTaskRef.current = null
+          }
+        }
+        if (genScale !== scaleRef.current || renderId !== renderIdRef.current) return
         disableNonReadingHits(staging)
         ensureEndOfContent(staging)
         layerDiv.style.setProperty("--scale-factor", String(viewport.scale))
@@ -1094,7 +1120,7 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
       // drop straight into CSS with no further scaling.
       try {
         const annotations = await page.getAnnotations({ intent: "display" })
-        if (genScale !== scaleRef.current) return
+        if (genScale !== scaleRef.current || renderId !== renderIdRef.current) return
         setLinks(
           annotations
             .filter((a: any) => a.subtype === "Link" && (a.url || a.dest))
@@ -1115,15 +1141,27 @@ function PdfPage({ pdfDoc, docId, pageNum, scale, onNavigate, fallbackSize, sele
         // A page without an annotation dictionary just has no links.
       }
 
+      if (renderId !== renderIdRef.current) return
       lastRenderedScaleRef.current = genScale
       setTextReady(true)
-    } catch (err) {
-      const name = (err as { name?: string } | null)?.name
-      if (name === "RenderingCancelledException" || name === "AbortException") return
+    } catch (err: any) {
+      if (renderId !== renderIdRef.current) return
+      const name = err?.name
+      const msg = err?.message || String(err)
+      if (
+        name === "RenderingCancelledException" ||
+        name === "AbortException" ||
+        msg.includes("Worker task was terminated") ||
+        msg.includes("TextLayer task cancelled")
+      ) {
+        // Normal cancellation when zoom/scroll/unmount interrupted the render.
+        // Canvas already drawn stays visible so the user does not see a blank page.
+        return
+      }
       console.error("Render failed for page:", pageNum, err)
       tearDown()
     } finally {
-      if (genScale === scaleRef.current) renderInFlightRef.current = false
+      if (renderId === renderIdRef.current) renderInFlightRef.current = false
     }
   }, [pdfDoc, pageNum, scale, textReady, tearDown])
 
