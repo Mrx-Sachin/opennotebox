@@ -216,3 +216,15 @@ const dupMatch = findCitationEvidenceRange(dupDoc, "Repeated phrase here.")
 assert(dupMatch.status === "ambiguous", "duplicate evidence must return ambiguous")
 
 console.log("citation evidence matching: OK")
+
+// 4. Citation evidence matching with symbols and interspan whitespace (X→en, 10×, brackets, parentheses)
+const layerSym = "performance on the X → en subset of CoVoST2 is roughly 10 × higher in [ 1 ] with ( CY ) outlier."
+const needleSym = "performance on the X→en subset of CoVoST2 is roughly 10× higher in [1] with (CY) outlier."
+const matchSym = findCitationEvidenceRange(layerSym, needleSym)
+assert(matchSym.status === "matched", "citation evidence matching handles symbols and interspan padding")
+if (matchSym.status === "matched") {
+  assert(
+    layerSym.slice(matchSym.start, matchSym.end) === "performance on the X → en subset of CoVoST2 is roughly 10 × higher in [ 1 ] with ( CY ) outlier.",
+    "symbol slice matches original layer text"
+  )
+}

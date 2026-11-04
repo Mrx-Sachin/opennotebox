@@ -20,7 +20,7 @@ function isDash(ch: string): boolean {
   return c === 0x2d || c === 0xad || c === 0x2212 || (c >= 0x2010 && c <= 0x2015)
 }
 function isTightSymbol(ch: string): boolean {
-  return ch === "\u00d7" || ch === "\u2192"
+  return ch === "\u00d7" || ch === "\u2192" || ch === "\u2190" || ch === "\u2194" || ch === "\u21d2"
 }
 
 export function normalizeWithMap(original: string): NormalizedText {
@@ -330,6 +330,7 @@ export function normalizeCitationWithMap(original: string): NormalizedText {
   const map: number[] = []
   let pendingSpace = false
   let spaceIndex = -1
+  let lastNonSpaceChar = ""
 
   for (let i = 0; i < original.length; i++) {
     const code = original.charCodeAt(i)
@@ -339,7 +340,7 @@ export function normalizeCitationWithMap(original: string): NormalizedText {
 
     // De-hyphenate letter-to-letter wraps:
     // letter before hyphen, followed by whitespace (newline or space between PDF text spans), then letter.
-    if ((ch === "-" || ch === "\u00ad" || ch === "\u2010") && i > 0 && isLetter(original[i - 1])) {
+    if ((ch === "-" || ch === "\u00ad" || ch === "\u2010" || ch === "\u2013" || ch === "\u2014") && i > 0 && isLetter(original[i - 1])) {
       let j = i + 1
       while (j < original.length && /\s/.test(original[j])) {
         j++
@@ -361,10 +362,22 @@ export function normalizeCitationWithMap(original: string): NormalizedText {
     }
 
     if (pendingSpace) {
-      norm += " "
-      map.push(spaceIndex >= 0 ? spaceIndex : i)
+      const suppress =
+        lastNonSpaceChar === "(" ||
+        ch === ")" ||
+        lastNonSpaceChar === "[" ||
+        ch === "]" ||
+        isTightSymbol(lastNonSpaceChar) ||
+        isTightSymbol(ch)
+      if (!suppress) {
+        norm += " "
+        map.push(spaceIndex >= 0 ? spaceIndex : i)
+      }
       pendingSpace = false
+      spaceIndex = -1
     }
+
+    lastNonSpaceChar = ch
 
     const lig = CITATION_LIGATURES[ch]
     if (lig) {
@@ -402,15 +415,10 @@ export type CitationMatchResult =
  * Match exact citation evidence against the PDF text layer.
  * Requires a unique complete normalized match.
  */
-export function findCitationEvidenceRange(
-  layerText: string,
-  exactEvidence: string
+function matchSingleNeedle(
+  haystack: NormalizedText,
+  needleNorm: string
 ): CitationMatchResult {
-  const cleanNeedle = exactEvidence.trim()
-  if (!cleanNeedle) return { status: "not_found" }
-
-  const haystack = normalizeCitationWithMap(layerText)
-  const needleNorm = normalizeCitationNeedle(cleanNeedle)
   if (!needleNorm || !haystack.norm) return { status: "not_found" }
 
   let matchCount = 0
@@ -434,4 +442,42 @@ export function findCitationEvidenceRange(
   const endNormIdx = firstIdx + needleNorm.length - 1
   const end = haystack.map[Math.min(endNormIdx, haystack.map.length - 1)] + 1
   return { status: "matched", start, end }
+}
+
+/**
+ * Match exact citation evidence against the PDF text layer.
+ * Requires a unique complete normalized match, with sentence-level
+ * resolution for multi-sentence passages with minor layout artifacts.
+ */
+export function findCitationEvidenceRange(
+  layerText: string,
+  exactEvidence: string
+): CitationMatchResult {
+  const cleanNeedle = exactEvidence.trim()
+  if (!cleanNeedle) return { status: "not_found" }
+
+  const haystack = normalizeCitationWithMap(layerText)
+  const fullNeedleNorm = normalizeCitationNeedle(cleanNeedle)
+
+  const fullMatch = matchSingleNeedle(haystack, fullNeedleNorm)
+  if (fullMatch.status === "matched" || fullMatch.status === "ambiguous") {
+    return fullMatch
+  }
+
+  // If full passage fails due to inter-sentence artifacts, try constituent
+  // clauses (separated by sentence punctuation or newlines) of sufficient length.
+  const clauses = cleanNeedle
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 35)
+
+  for (const clause of clauses) {
+    const clauseNorm = normalizeCitationNeedle(clause)
+    const m = matchSingleNeedle(haystack, clauseNorm)
+    if (m.status === "matched") {
+      return m
+    }
+  }
+
+  return { status: "not_found" }
 }
