@@ -425,6 +425,7 @@ class Flashcard(Base):
     # creation/edit time (see render_cloze in services/cloze.py).
     question = Column(Text, nullable=False)
     answer = Column(Text, nullable=False)
+    hint = Column(Text, nullable=True)
 
     # Only set for cloze cards: the original {{c1::text::hint}} markup, kept
     # so an edit can be re-rendered consistently, plus which index (1, 2, ...)

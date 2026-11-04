@@ -87,3 +87,38 @@ test("picker excludes documents already filed and select-page retains other-page
   await page.getByRole("button", { name: "Select this page", exact: true }).click()
   await expect(page.getByText("27 selected", { exact: true })).toBeVisible()
 })
+
+test("edit the name and description of Unfiled collection", async ({ page }) => {
+  await mockLibrary(page)
+  await page.goto("/dashboard")
+  await expect(page.getByRole("link", { name: "Open Unfiled documents", exact: true })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Unfiled", exact: true })).toBeVisible()
+
+  // Click edit button on the Unfiled card
+  await page.getByRole("button", { name: "Edit Unfiled", exact: true }).click()
+  await expect(page.getByRole("heading", { name: "Edit Unfiled", exact: true })).toBeVisible()
+  await expect(page.getByText("Personalize the default collection for documents waiting for a notebook.")).toBeVisible()
+
+  // Fill in new name and description
+  await page.getByLabel("Collection name", { exact: true }).fill("Inbox")
+  await page.getByLabel("Description (optional)").fill("Papers waiting to be sorted")
+  await page.getByRole("button", { name: "Save changes", exact: true }).click()
+
+  // Verify updated on the card
+  await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible()
+  await expect(page.getByText("Papers waiting to be sorted")).toBeVisible()
+  await expect(page.getByRole("link", { name: "Open Inbox documents", exact: true })).toBeVisible()
+
+  // Navigate into Inbox
+  await page.getByRole("link", { name: "Open Inbox documents", exact: true }).click()
+  await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Edit Inbox", exact: true })).toBeVisible()
+
+  // Edit from the header inside Inbox
+  await page.getByRole("button", { name: "Edit Inbox", exact: true }).click()
+  await expect(page.getByRole("heading", { name: "Edit Inbox", exact: true })).toBeVisible()
+  await page.getByLabel("Collection name", { exact: true }).fill("Read Later")
+  await page.getByRole("button", { name: "Save changes", exact: true }).click()
+
+  await expect(page.getByRole("heading", { name: "Read Later", exact: true })).toBeVisible()
+})

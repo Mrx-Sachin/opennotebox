@@ -204,8 +204,8 @@ async def generate_interruption_dialogue(
             base_url=active["base_url"],
             model=active["model"],
             api_key=active["api_key"] or "not-needed",
-            timeout=45,
-            max_tokens=1500,
+            timeout=90,
+            max_tokens=6144,
         )
         response = await model.ainvoke([HumanMessage(content=prompt)])
         raw_content = response.content if hasattr(response, "content") else str(response)
@@ -247,14 +247,17 @@ async def generate_interruption_dialogue(
                 cleaned_lines.append({"speaker": spk, "text": txt})
 
     if not cleaned_lines:
+        logger.warning(
+            f"Interruption dialogue fallback invoked for question: {user_question[:100]!r}"
+        )
         cleaned_lines = [
             {
                 "speaker": "A",
-                "text": "That is an interesting question about what we are discussing.",
+                "text": f"That is a great question on {document_title}. Let us break down how that connects to what we were just exploring.",
             },
             {
                 "speaker": "B",
-                "text": "Let us dive right back into where we left off.",
+                "text": f"Exactly, and in the context of {document_title}, that leads us right back to our discussion.",
             },
         ]
 

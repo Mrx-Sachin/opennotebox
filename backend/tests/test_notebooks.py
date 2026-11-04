@@ -268,3 +268,71 @@ async def test_reader_document_list_scope_and_ownership(client, auth_header, sec
     assert response.status_code == 404
     response = await client.get(f"/api/documents?notebook_id={notebook.id}&unfiled=true", headers=auth_header)
     assert response.status_code == 422
+
+
+async def test_unfiled_notebook_get_rename_and_conflicts(client, auth_header, second_user, db):
+    # 1. Default get
+    response = await client.get("/api/notebooks/unfiled", headers=auth_header)
+    assert response.status_code == 200
+    assert response.json() == {
+        "name": "Unfiled",
+        "description": "Documents waiting for a notebook.",
+    }
+
+    # 2. Existing notebook creation
+    existing = await client.post(
+        "/api/notebooks",
+        headers=auth_header,
+        json={"name": "Research Papers"},
+    )
+    assert existing.status_code == 201
+
+    # 3. Conflict: cannot rename unfiled to match an existing notebook name
+    conflict_rename = await client.patch(
+        "/api/notebooks/unfiled",
+        headers=auth_header,
+        json={"name": "research papers"},
+    )
+    assert conflict_rename.status_code == 409
+
+    # 4. Valid rename with whitespace trimming
+    renamed = await client.patch(
+        "/api/notebooks/unfiled",
+        headers=auth_header,
+        json={"name": "  Inbox  ", "description": "Incoming reading list"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json() == {
+        "name": "Inbox",
+        "description": "Incoming reading list",
+    }
+
+    # 5. Persisted read
+    after_rename = await client.get("/api/notebooks/unfiled", headers=auth_header)
+    assert after_rename.json() == {
+        "name": "Inbox",
+        "description": "Incoming reading list",
+    }
+
+    # 6. Conflict: cannot create a regular notebook matching unfiled's new name
+    conflict_create = await client.post(
+        "/api/notebooks",
+        headers=auth_header,
+        json={"name": "inbox"},
+    )
+    assert conflict_create.status_code == 409
+
+    # 7. Blank name rejection
+    blank = await client.patch(
+        "/api/notebooks/unfiled",
+        headers=auth_header,
+        json={"name": "   "},
+    )
+    assert blank.status_code == 422
+
+    # 8. Tenant isolation: second user still has default "Unfiled"
+    from app.routers.auth import create_access_token
+    second_header = {"Authorization": f"Bearer {create_access_token({'sub': str(second_user.id)})}"}
+    second_unfiled = await client.get("/api/notebooks/unfiled", headers=second_header)
+    assert second_unfiled.status_code == 200
+    assert second_unfiled.json()["name"] == "Unfiled"

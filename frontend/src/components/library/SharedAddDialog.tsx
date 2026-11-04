@@ -19,12 +19,14 @@ export default function SharedAddDialog({
   documents,
   notebooks,
   defaultNotebookId,
+  unfiledName = "Unfiled",
   onClose,
   onAdded,
 }: {
   documents: SharedDocument[]
   notebooks: Notebook[]
   defaultNotebookId: number | null
+  unfiledName?: string
   onClose: () => void
   onAdded: (result: { added: number; alreadyAdded: number }) => void
 }) {
@@ -62,7 +64,7 @@ export default function SharedAddDialog({
           <form onSubmit={(event) => void add(event)}>
             <label htmlFor="shared-destination">Choose a destination</label>
             <select id="shared-destination" value={destination} onChange={(event) => setDestination(event.target.value)} disabled={busy}>
-              <option value="">Unfiled</option>
+              <option value="">{unfiledName}</option>
               {notebooks.map((notebook) => <option key={notebook.id} value={notebook.id}>{notebook.name}</option>)}
             </select>
             {error && <p role="alert" className="notebook-dialog-error">{error}</p>}

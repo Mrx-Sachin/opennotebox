@@ -23,6 +23,7 @@ import { useReader } from "@/stores/reader"
 import { useViewport } from "@/hooks/useViewport"
 import { useAuth } from "@/stores/auth"
 import PanelToggles from "@/components/layout/PanelToggles"
+import { getUnfiledNotebook } from "@/services/notebookApi"
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts"
 import { useReadingProgress } from "@/hooks/useReadingProgress"
 import { ttsEngine } from "@/services/ttsEngine"
@@ -71,6 +72,13 @@ export default function ReaderPage() {
   const documents = documentsQuery.data ?? []
   const loading = documentsQuery.isPending
   const libraryHref = notebookId ? `/dashboard?notebook=${notebookId}` : "/dashboard?unfiled=true"
+  const unfiledQuery = useQuery({
+    queryKey: ["unfiled-notebook", user?.id],
+    queryFn: ({ signal }) => getUnfiledNotebook(signal),
+    enabled: user != null && notebookId == null,
+    staleTime: 60_000,
+  })
+  const unfiledName = unfiledQuery.data?.name || "Unfiled"
 
   useEffect(() => {
     if (selectedDoc && useReader.getState().selectedDocId !== selectedDoc.id) {
@@ -234,7 +242,7 @@ export default function ReaderPage() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-void text-cream" style={{ paddingBottom: "var(--podcast-player-height, 0px)" }}>
-      {!focusMode && <TopBar libraryHref={libraryHref} libraryLabel={notebookId ? "Notebook" : "Unfiled"} />}
+      {!focusMode && <TopBar libraryHref={libraryHref} libraryLabel={notebookId ? "Notebook" : unfiledName} />}
       {focusMode && (
         <button
           onClick={() => useReader.getState().toggleFocusMode()}

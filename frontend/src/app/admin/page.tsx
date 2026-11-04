@@ -27,7 +27,7 @@ import { getUserStats, deleteUser, updateUser, adminCreateUser, getMe, UserStats
 import { useAuth } from "@/stores/auth"
 
 function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B"
+  if (!bytes || bytes === 0 || isNaN(bytes)) return "0 B"
   const units = ["B", "KB", "MB", "GB"]
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
   const value = bytes / Math.pow(1024, i)
@@ -284,6 +284,7 @@ export default function AdminPage() {
   const authUser = useAuth((s) => s.user)
   const [users, setUsers] = useState<UserStats[]>([])
   const [loading, setLoading] = useState(true)
+  const [authChecking, setAuthChecking] = useState(true)
   const [processingUser, setProcessingUser] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -296,19 +297,24 @@ export default function AdminPage() {
     }
     if (!authUser) {
       getMe()
-        .then((u) => useAuth.getState().setUser(u))
-        .catch(() => {})
+        .then((u) => {
+          useAuth.getState().setUser(u)
+          setAuthChecking(false)
+        })
+        .catch(() => {
+          setAuthChecking(false)
+          router.push("/login")
+        })
+    } else {
+      setAuthChecking(false)
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [authUser, router])
 
   useEffect(() => {
-    if (!authUser) return
-    if (!authUser.is_admin) {
-      router.push("/dashboard")
-      return
-    }
+    if (authChecking || !authUser) return
+    if (!authUser.is_admin) return
     fetchStats()
-  }, [authUser, router]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [authUser, authChecking])
 
   const fetchStats = async () => {
     try {
@@ -371,7 +377,36 @@ export default function AdminPage() {
     window.location.href = "/login"
   }
 
-  if (!authUser?.is_admin) return null
+  if (authChecking) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-void text-cream">
+        <Loader2 className="h-8 w-8 animate-spin text-indigo" />
+      </div>
+    )
+  }
+
+  if (!authUser?.is_admin) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center bg-void px-4 text-center text-cream">
+        <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-rust/10 text-rust">
+          <Shield className="h-8 w-8" />
+        </div>
+        <h1 className="font-display text-xl font-bold tracking-tight sm:text-2xl">Access Denied</h1>
+        <p className="mt-2 max-w-sm text-sm text-cream-dim">
+          Admin privileges are required to view the Admin Panel. Signed in as <strong>{authUser?.username || "user"}</strong>.
+        </p>
+        <div className="mt-6 flex items-center gap-3">
+          <Link
+            href="/dashboard"
+            className="flex items-center gap-2 rounded-lg bg-indigo/15 px-4 py-2 text-sm font-medium text-indigo hover:bg-indigo/25"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Back to Library
+          </Link>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-screen flex-col bg-void text-cream">
@@ -383,7 +418,7 @@ export default function AdminPage() {
               <BookOpen className="h-4 w-4 text-white" />
             </div>
             <span className="hidden font-display text-base font-bold tracking-tight text-cream sm:inline">
-              DocMind
+              OpenNoteBox
             </span>
           </div>
           <div className="min-w-0 flex-1" />

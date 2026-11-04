@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     meta_api_key: str = ""
     meta_asr_url: str = "https://api.meta.ai/v1/asr/transcribe"
     meta_asr_model: str = "muse-voice-transcribe-1.0"
+    meta_llm_model: str = "muse-spark-1.3-contributor"
 
     # JWT
     jwt_secret: str = "CHANGE_ME"

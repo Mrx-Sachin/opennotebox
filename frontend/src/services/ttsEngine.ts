@@ -1010,7 +1010,7 @@ class TtsEngine {
   // Direct audio playback (podcasts, summaries): one file, seekable
 
   /** Play an already-generated audio endpoint through the bottom player. */
-  async playPodcast(podcast: Podcast): Promise<void> {
+  async playPodcast(podcast: Podcast, startTime?: number): Promise<void> {
     const currentExpanded = useReader.getState().expandedPodcast
     useReader.setState({
       activeReading: null,
@@ -1019,10 +1019,10 @@ class TtsEngine {
       activePodcast: podcast,
       ...(currentExpanded && currentExpanded.id !== podcast.id ? { expandedPodcast: podcast } : {}),
     })
-    await this.playAudioUrl(getPodcastAudioUrl(podcast.id))
+    await this.playAudioUrl(getPodcastAudioUrl(podcast.id), startTime)
   }
 
-  async playAudioUrl(url: string): Promise<void> {
+  async playAudioUrl(url: string, startTime?: number): Promise<void> {
     const token = this.bumpGeneration()
     const audio = this.ensureAudio()
     audio.pause()
@@ -1071,9 +1071,12 @@ class TtsEngine {
         audio.onerror = () => reject(new Error("Audio failed to load"))
       })
       if (token !== this.playToken) return
+      if (startTime != null && startTime > 0 && isFinite(startTime)) {
+        audio.currentTime = Math.min(startTime, audio.duration || startTime)
+      }
       await audio.play()
       if (token !== this.playToken) return
-      this.set({ status: "playing", duration: audio.duration, currentTime: 0 })
+      this.set({ status: "playing", duration: audio.duration, currentTime: audio.currentTime })
     } catch (error) {
       if (token === this.playToken) {
         console.error("TTS audio playback failed:", error)

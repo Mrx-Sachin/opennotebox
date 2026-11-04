@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import Link from "next/link"
 import {
   X,
   Check,
@@ -86,6 +87,13 @@ const ENDPOINT_PRESETS = [
   { id: "ollama", label: "Ollama", name: "Ollama", base_url: "http://host.docker.internal:11434/v1" },
   { id: "custom", label: "Custom", name: "", base_url: "" },
 ] as const
+const MUSE_MODELS = [
+  { id: "muse-spark-1.3-contributor", label: "muse-spark-1.3-contributor (Default)" },
+  { id: "muse-spark-1.3", label: "muse-spark-1.3" },
+  { id: "muse-spark-1.2-contributor", label: "muse-spark-1.2-contributor" },
+  { id: "muse-spark-1.2", label: "muse-spark-1.2" },
+  { id: "muse-wonder-1.0", label: "muse-wonder-1.0" },
+] as const
 
 export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -118,6 +126,10 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [exportToggling, setExportToggling] = useState(false)
   const [exportRunning, setExportRunning] = useState(false)
   const [exportMessage, setExportMessage] = useState<{ text: string; error: boolean } | null>(null)
+  const [isCustomMeta, setIsCustomMeta] = useState(false)
+  const [customModelText, setCustomModelText] = useState("")
+  const [otherModelInputs, setOtherModelInputs] = useState<Record<string, string>>({})
+  const [savingModel, setSavingModel] = useState(false)
 
   useEffect(() => {
     if (!open) return
@@ -130,6 +142,14 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
         setVoices(v.voices)
         // Remember the saved voice for the engine; does not interrupt playback.
         ttsEngine.syncVoice(s.tts.default_voice)
+        const activeB = s.llm.backends.find((b) => b.name === s.llm.active)
+        if (activeB) {
+          const cur = activeB.effective_model || activeB.model || ""
+          setCustomModelText(cur)
+          if (activeB.name.toLowerCase() === "meta" || activeB.name.toLowerCase().includes("muse")) {
+            setIsCustomMeta(!MUSE_MODELS.some((m) => m.id === cur))
+          }
+        }
       })
       .catch(() => setLoadError(true))
       .finally(() => setLoading(false))
@@ -230,12 +250,58 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
     setTimeout(() => setSaved(false), 1500)
   }
 
+  const changeBackendModel = async (backendName: string, newModel: string) => {
+    if (!settings || !newModel.trim()) return
+    const trimmed = newModel.trim()
+    const prev = settings
+    setSavingModel(true)
+    const updatedBackends = settings.llm.backends.map((b) =>
+      b.name === backendName ? { ...b, effective_model: trimmed } : b,
+    )
+    setSettings({
+      ...settings,
+      llm: {
+        ...settings.llm,
+        backends: updatedBackends,
+      },
+    })
+    try {
+      const updated = await updateSettings({
+        llm: {
+          active: settings.llm.active,
+          model_overrides: { [backendName]: trimmed },
+        },
+      })
+      if (updated) {
+        setSettings(updated)
+      }
+      flashSaved()
+    } catch {
+      setSettings(prev)
+      setSaveError("Couldn't update model. Please check the backend connection.")
+    } finally {
+      setSavingModel(false)
+    }
+  }
+
   const selectBackend = async (name: string) => {
     if (!settings) return
     const prev = settings
     setSettings({ ...settings, llm: { ...settings.llm, active: name } })
+    setIsCustomMeta(false)
+    const activeB = settings.llm.backends.find((b) => b.name === name)
+    if (activeB) {
+      const cur = activeB.effective_model || activeB.model || ""
+      setCustomModelText(cur)
+      if (name.toLowerCase() === "meta" || name.toLowerCase().includes("muse")) {
+        setIsCustomMeta(!MUSE_MODELS.some((m) => m.id === cur))
+      }
+    }
     try {
-      await updateSettings({ llm: { active: name } })
+      const updated = await updateSettings({ llm: { active: name } })
+      if (updated) {
+        setSettings(updated)
+      }
       flashSaved()
     } catch {
       setSettings(prev)
@@ -457,7 +523,8 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
 
   if (!open) return null
 
-  const currentCat = CATEGORIES.find((c) => c.key === activeCategory)!
+  const availableCategories = CATEGORIES.filter((c) => c.key !== "admin" || isAdmin)
+  const currentCat = availableCategories.find((c) => c.key === activeCategory) || availableCategories[0]
 
   return (
     <div
@@ -503,7 +570,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
 
         {/* Category Tabs */}
         <div className="flex overflow-x-auto border-b border-surface px-3">
-          {CATEGORIES.map((cat) => {
+          {availableCategories.map((cat) => {
             const Icon = cat.icon
             const isActive = activeCategory === cat.key
             return (
@@ -568,268 +635,470 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
               {/* AI Model Category */}
               {activeCategory === "ai" && (
                 <div className="space-y-5">
-                  <div className="space-y-2">
-                    <p className="text-xs font-medium text-cream">Use a subscription you already have</p>
-                    <p className="text-xs text-cream-dim">
-                      Run this once on your machine - it auto-detects whichever of these CLIs you already
-                      have installed and logged in, and nothing else needs any setup below.
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <code className="flex-1 overflow-x-auto whitespace-nowrap rounded-md bg-void px-2.5 py-1.5 text-[11px] text-cream">
-                        {LAUNCHER_COMMAND}
-                      </code>
-                      <button
-                        onClick={copyLauncherCommand}
-                        className="shrink-0 rounded-md p-1.5 text-cream-dim hover:bg-surface hover:text-cream"
-                      >
-                        {copiedLauncher ? (
-                          <Check className="h-3.5 w-3.5 text-[#4ade80]" />
-                        ) : (
-                          <Copy className="h-3.5 w-3.5" />
-                        )}
-                      </button>
+                  {/* Active Provider & Models at the TOP */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-medium text-cream">Active Provider & Models</p>
+                        <p className="text-[11px] text-cream-dim mt-0.5">
+                          Select your primary AI backend and configure the model in use.
+                        </p>
+                      </div>
+                      {settings.llm.backends.length > 1 && (
+                        <p className="text-[11px] text-cream-dim">
+                          {settings.llm.backends.length} configured
+                        </p>
+                      )}
                     </div>
+
                     <div className="space-y-2">
-                      {CLI_PRESETS.map((preset) => {
-                        const existing = settings.llm.backends.find((b) => b.name === preset.label)
-                        const isActive = !!existing && existing.name === settings.llm.active
-                        const isDetected = !!detected[preset.id]
+                      {settings.llm.backends.map((b) => {
+                        const active = b.name === settings.llm.active
+                        const isMeta =
+                          b.name.toLowerCase() === "meta" ||
+                          b.name.toLowerCase().includes("muse")
+                        const effectiveModel =
+                          b.effective_model ||
+                          b.model ||
+                          (isMeta ? "muse-spark-1.3-contributor" : "")
+
                         return (
                           <div
-                            key={preset.id}
-                            className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors ${
-                              isActive ? "border-indigo/40 bg-indigo/10" : "border-surface"
+                            key={b.name}
+                            className={`rounded-lg border px-3 py-2.5 transition-[border-color,background-color] duration-150 ${
+                              active
+                                ? "border-indigo/40 bg-indigo/10 shadow-sm"
+                                : "border-surface cursor-pointer hover:border-surface/80 hover:bg-surface/20"
                             }`}
+                            onClick={() => !active && selectBackend(b.name)}
                           >
-                            <Terminal className="h-4 w-4 shrink-0 text-cream-dim" />
-                            <div className="min-w-0 flex-1">
-                              <p className={`truncate text-sm font-medium ${isActive ? "text-indigo" : "text-cream"}`}>
-                                {preset.label}
-                              </p>
-                              <p className="truncate text-xs text-cream-dim">
-                                {existing
-                                  ? isDetected
-                                    ? isActive
-                                      ? "Connected · active"
-                                      : "Connected"
-                                    : isActive
-                                      ? "Offline · active - start the launcher"
-                                      : "Offline - start the launcher"
-                                  : isDetected
-                                    ? "Detected - ready to connect"
-                                    : "Not running - waiting for the launcher"}
-                              </p>
-                            </div>
-                            {existing ? (
-                              <div className="flex shrink-0 items-center gap-1">
-                                {isActive ? (
-                                  <>
-                                    <CheckCircle2 className="h-4 w-4 text-indigo" />
-                                    {/* The only way to repair a stored bridge
-                                        key that has gone stale on the backend
-                                        that is already active. */}
-                                    <button
-                                      onClick={() => connectPreset(preset)}
-                                      disabled={!isDetected || connectingPreset === preset.id}
-                                      title="Re-fetch this bridge's key"
-                                      className="rounded p-1 text-cream-dim/40 transition-colors hover:bg-indigo/10 hover:text-indigo disabled:opacity-30 disabled:hover:bg-transparent"
-                                    >
-                                      <RefreshCw
-                                        className={`h-3.5 w-3.5 ${connectingPreset === preset.id ? "animate-spin" : ""}`}
-                                      />
-                                    </button>
-                                  </>
-                                ) : (
-                                  <button
-                                    onClick={() => connectPreset(preset)}
-                                    className="rounded-md px-2.5 py-1 text-xs font-medium text-indigo hover:bg-indigo/10"
-                                  >
-                                    Use
-                                  </button>
+                            <div className="flex items-center gap-3">
+                              <span
+                                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                                  active
+                                    ? "border-indigo bg-indigo"
+                                    : "border-cream-dim/40"
+                                }`}
+                              >
+                                {active && (
+                                  <span className="h-1.5 w-1.5 rounded-full bg-white" />
                                 )}
-                                {settings.llm.backends.length > 1 && (
-                                  <button
-                                    onClick={() => deleteBackend(existing.name)}
-                                    title="Disconnect"
-                                    className="rounded p-1 text-cream-dim/40 hover:bg-[#ef4444]/10 hover:text-[#ef4444]"
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <p
+                                    className={`truncate text-sm font-medium ${
+                                      active ? "text-indigo font-semibold" : "text-cream"
+                                    }`}
                                   >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </button>
+                                    {b.name}
+                                  </p>
+                                  {active && (
+                                    <span className="rounded bg-indigo/20 px-1.5 py-0.5 text-[10px] font-medium text-indigo">
+                                      Active
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="truncate text-xs text-cream-dim mt-0.5">
+                                  Model:{" "}
+                                  <span className="font-medium text-cream">
+                                    {effectiveModel}
+                                  </span>
+                                </p>
+                              </div>
+                              {settings.llm.backends.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    deleteBackend(b.name)
+                                  }}
+                                  title={`Remove ${b.name}`}
+                                  className="shrink-0 rounded p-1 text-cream-dim/40 transition-[background-color,color] duration-150 hover:bg-[#ef4444]/10 hover:text-[#ef4444]"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Model Selector for active backend */}
+                            {active && isMeta && (
+                              <div
+                                className="mt-3 border-t border-surface/50 pt-2.5 space-y-2"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <label
+                                    htmlFor="meta-model-select"
+                                    className="text-[11px] font-medium text-cream-dim"
+                                  >
+                                    Select Muse Model:
+                                  </label>
+                                  <span className="text-[10px] text-cream-dim/70">
+                                    Active: {effectiveModel}
+                                  </span>
+                                </div>
+                                <select
+                                  id="meta-model-select"
+                                  value={
+                                    isCustomMeta ||
+                                    !MUSE_MODELS.some((m) => m.id === effectiveModel)
+                                      ? "__custom__"
+                                      : effectiveModel
+                                  }
+                                  onChange={(e) => {
+                                    const val = e.target.value
+                                    if (val === "__custom__") {
+                                      setIsCustomMeta(true)
+                                      setCustomModelText(effectiveModel)
+                                    } else {
+                                      setIsCustomMeta(false)
+                                      changeBackendModel(b.name, val)
+                                    }
+                                  }}
+                                  className="w-full rounded-md border border-surface bg-void px-2.5 py-1.5 text-xs text-cream focus:border-indigo focus:outline-none"
+                                >
+                                  {MUSE_MODELS.map((m) => (
+                                    <option key={m.id} value={m.id}>
+                                      {m.label}
+                                    </option>
+                                  ))}
+                                  <option value="__custom__">Custom model input...</option>
+                                </select>
+
+                                {(isCustomMeta ||
+                                  !MUSE_MODELS.some((m) => m.id === effectiveModel)) && (
+                                  <div className="flex items-center gap-2 pt-1">
+                                    <input
+                                      type="text"
+                                      value={customModelText}
+                                      onChange={(e) => setCustomModelText(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          e.preventDefault()
+                                          if (customModelText.trim()) {
+                                            changeBackendModel(b.name, customModelText.trim())
+                                          }
+                                        }
+                                      }}
+                                      placeholder="e.g. muse-wonder-1.0"
+                                      className="flex-1 rounded-md border border-surface bg-void px-2.5 py-1.5 text-xs text-cream focus:border-indigo focus:outline-none"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (customModelText.trim()) {
+                                          changeBackendModel(b.name, customModelText.trim())
+                                        }
+                                      }}
+                                      disabled={
+                                        savingModel ||
+                                        !customModelText.trim() ||
+                                        customModelText.trim() === effectiveModel
+                                      }
+                                      className="rounded-md bg-indigo/20 px-3 py-1.5 text-xs font-medium text-indigo transition-[background-color] duration-150 hover:bg-indigo/30 disabled:opacity-50"
+                                    >
+                                      {savingModel ? "Saving..." : "Apply"}
+                                    </button>
+                                  </div>
                                 )}
                               </div>
-                            ) : (
-                              <button
-                                onClick={() => connectPreset(preset)}
-                                disabled={!isAdmin || !isDetected || connectingPreset === preset.id}
-                                title={
-                                  !isAdmin
-                                    ? "An admin account is required to add this backend"
-                                    : undefined
-                                }
-                                className="shrink-0 rounded-md px-2.5 py-1 text-xs font-medium text-indigo hover:bg-indigo/10 disabled:opacity-30 disabled:hover:bg-transparent"
+                            )}
+
+                            {active && !isMeta && (
+                              <div
+                                className="mt-3 border-t border-surface/50 pt-2.5 space-y-2"
+                                onClick={(e) => e.stopPropagation()}
                               >
-                                {connectingPreset === preset.id ? "Connecting…" : "Connect"}
-                              </button>
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[11px] font-medium text-cream-dim">
+                                    Model Name:
+                                  </span>
+                                  <span className="text-[10px] text-cream-dim/70">
+                                    Active: {effectiveModel}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="text"
+                                    value={otherModelInputs[b.name] ?? effectiveModel}
+                                    onChange={(e) =>
+                                      setOtherModelInputs((prev) => ({
+                                        ...prev,
+                                        [b.name]: e.target.value,
+                                      }))
+                                    }
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        e.preventDefault()
+                                        const val = (
+                                          otherModelInputs[b.name] ?? effectiveModel
+                                        ).trim()
+                                        if (val) changeBackendModel(b.name, val)
+                                      }
+                                    }}
+                                    placeholder="Enter model name"
+                                    className="flex-1 rounded-md border border-surface bg-void px-2.5 py-1.5 text-xs text-cream focus:border-indigo focus:outline-none"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const val = (
+                                        otherModelInputs[b.name] ?? effectiveModel
+                                      ).trim()
+                                      if (val) changeBackendModel(b.name, val)
+                                    }}
+                                    disabled={
+                                      savingModel ||
+                                      !(
+                                        otherModelInputs[b.name] ?? effectiveModel
+                                      ).trim() ||
+                                      (
+                                        otherModelInputs[b.name] ?? effectiveModel
+                                      ).trim() === effectiveModel
+                                    }
+                                    className="rounded-md bg-indigo/20 px-3 py-1.5 text-xs font-medium text-indigo transition-[background-color] duration-150 hover:bg-indigo/30 disabled:opacity-50"
+                                  >
+                                    {savingModel ? "Saving..." : "Save"}
+                                  </button>
+                                </div>
+                              </div>
                             )}
                           </div>
                         )
                       })}
                     </div>
-                  </div>
 
-                  <div className="space-y-3">
-                    <p className="text-xs font-medium text-cream">Self-hosted & custom endpoints</p>
-                    {settings.llm.backends.filter((b) => !CLI_PRESET_NAMES.has(b.name)).length > 1 && (
-                      <p className="text-xs text-cream-dim">
-                        {settings.llm.backends.filter((b) => !CLI_PRESET_NAMES.has(b.name)).length} endpoints configured
-                      </p>
-                    )}
-                  {settings.llm.backends.filter((b) => !CLI_PRESET_NAMES.has(b.name)).map((b) => {
-                    const active = b.name === settings.llm.active
-                    return (
-                      <div
-                        key={b.name}
-                        onClick={() => !active && selectBackend(b.name)}
-                        className={`flex items-center gap-3 rounded-lg px-3 py-2.5 border transition-colors ${
-                          active
-                            ? "border-indigo/40 bg-indigo/10"
-                            : "border-surface cursor-pointer hover:border-surface/80"
-                        }`}
-                      >
-                        <span
-                          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
-                            active ? "border-indigo bg-indigo" : "border-cream-dim/40"
-                          }`}
-                        >
-                          {active && <span className="h-1.5 w-1.5 rounded-full bg-white" />}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <p className={`truncate text-sm font-medium ${active ? "text-indigo" : "text-cream"}`}>
-                            {b.name}
-                          </p>
-                          <p className="truncate text-xs text-cream-dim">{b.model}</p>
+                    {showAddForm ? (
+                      <div className="mt-3 space-y-2 rounded-lg border border-surface p-3">
+                        <p className="text-xs font-medium text-cream">Add endpoint</p>
+                        <p className="text-[11px] text-cream-dim">
+                          Pick a provider, load its models, then save - same idea as connecting Grok.
+                        </p>
+                        <div className="flex flex-wrap gap-1">
+                          {ENDPOINT_PRESETS.map((preset) => (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              onClick={() => pickEndpointPreset(preset.id)}
+                              className={`rounded-md px-2 py-1 text-[11px] transition-[background-color,color] duration-150 ${
+                                endpointPreset === preset.id
+                                  ? "bg-indigo/15 text-indigo"
+                                  : "text-cream-dim hover:bg-surface hover:text-cream"
+                              }`}
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
                         </div>
-                        {settings.llm.backends.length > 1 && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); deleteBackend(b.name) }}
-                            className="shrink-0 rounded p-1 text-cream-dim/40 hover:text-[#ef4444] hover:bg-[#ef4444]/10"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    )
-                  })}
-
-                  {showAddForm ? (
-                    <div className="mt-3 space-y-2 rounded-lg border border-surface p-3">
-                      <p className="text-xs font-medium text-cream">Add endpoint</p>
-                      <p className="text-[11px] text-cream-dim">
-                        Pick a provider, load its models, then save - same idea as connecting Grok.
-                      </p>
-                      <div className="flex flex-wrap gap-1">
-                        {ENDPOINT_PRESETS.map((preset) => (
-                          <button
-                            key={preset.id}
-                            type="button"
-                            onClick={() => pickEndpointPreset(preset.id)}
-                            className={`rounded-md px-2 py-1 text-[11px] ${
-                              endpointPreset === preset.id
-                                ? "bg-indigo/15 text-indigo"
-                                : "text-cream-dim hover:bg-surface hover:text-cream"
-                            }`}
-                          >
-                            {preset.label}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <input
-                          value={newBackend.name}
-                          onChange={(e) => setNewBackend((n) => ({ ...n, name: e.target.value }))}
-                          placeholder="Name"
-                          className="rounded-md bg-void px-3 py-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo/30"
-                        />
-                        {probedModels.length > 0 ? (
-                          <select
-                            value={newBackend.model}
-                            onChange={(e) => setNewBackend((n) => ({ ...n, model: e.target.value }))}
-                            className="rounded-md bg-void px-3 py-2 text-xs text-cream focus:outline-none focus:ring-1 focus:ring-indigo/30"
-                          >
-                            {probedModels.map((m) => (
-                              <option key={m} value={m}>
-                                {m}
-                              </option>
-                            ))}
-                            {newBackend.model && !probedModels.includes(newBackend.model) && (
-                              <option value={newBackend.model}>{newBackend.model}</option>
-                            )}
-                          </select>
-                        ) : (
+                        <div className="grid grid-cols-2 gap-2">
                           <input
-                            value={newBackend.model}
-                            onChange={(e) => setNewBackend((n) => ({ ...n, model: e.target.value }))}
-                            placeholder="Model"
+                            value={newBackend.name}
+                            onChange={(e) => setNewBackend((n) => ({ ...n, name: e.target.value }))}
+                            placeholder="Name"
                             className="rounded-md bg-void px-3 py-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo/30"
                           />
+                          {probedModels.length > 0 ? (
+                            <select
+                              value={newBackend.model}
+                              onChange={(e) => setNewBackend((n) => ({ ...n, model: e.target.value }))}
+                              className="rounded-md bg-void px-3 py-2 text-xs text-cream focus:outline-none focus:ring-1 focus:ring-indigo/30"
+                            >
+                              {probedModels.map((m) => (
+                                <option key={m} value={m}>
+                                  {m}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              value={newBackend.model}
+                              onChange={(e) => setNewBackend((n) => ({ ...n, model: e.target.value }))}
+                              placeholder="Model name"
+                              className="rounded-md bg-void px-3 py-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo/30"
+                            />
+                          )}
+                        </div>
+                        <input
+                          value={newBackend.base_url}
+                          onChange={(e) => setNewBackend((n) => ({ ...n, base_url: e.target.value }))}
+                          placeholder="Base URL (e.g. https://api.openai.com/v1)"
+                          className="w-full rounded-md bg-void px-3 py-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo/30"
+                        />
+                        <input
+                          type="password"
+                          value={newBackend.api_key}
+                          onChange={(e) => setNewBackend((n) => ({ ...n, api_key: e.target.value }))}
+                          placeholder="API key (optional for local models)"
+                          className="w-full rounded-md bg-void px-3 py-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo/30"
+                        />
+                        {probeError && (
+                          <p className="text-[11px] text-[#f87171]">{probeError}</p>
                         )}
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={loadEndpointModels}
+                            disabled={probingModels || !newBackend.base_url.trim()}
+                            className="rounded-md border border-surface px-3 py-1.5 text-xs text-cream-dim transition-[background-color,color] duration-150 hover:bg-surface hover:text-cream disabled:opacity-40"
+                          >
+                            {probingModels ? "Loading models…" : "Load models"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={addBackend}
+                            disabled={adding || !newBackend.name.trim() || !newBackend.base_url.trim() || !newBackend.model.trim()}
+                            className="gradient-primary rounded-md px-3 py-1.5 text-xs font-medium text-white transition-[opacity] duration-150 disabled:opacity-50"
+                          >
+                            {adding ? "Saving..." : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={resetAddForm}
+                            className="rounded-md px-3 py-1.5 text-xs text-cream-dim transition-[color] duration-150 hover:text-cream"
+                          >
+                            Cancel
+                          </button>
+                        </div>
                       </div>
-                      <input
-                        value={newBackend.base_url}
-                        onChange={(e) => {
-                          setNewBackend((n) => ({ ...n, base_url: e.target.value }))
-                          setProbedModels([])
-                        }}
-                        placeholder="Base URL"
-                        className="w-full rounded-md bg-void px-3 py-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo/30"
-                      />
-                      <input
-                        type="password"
-                        value={newBackend.api_key}
-                        onChange={(e) => setNewBackend((n) => ({ ...n, api_key: e.target.value }))}
-                        placeholder="API key (optional)"
-                        className="w-full rounded-md bg-void px-3 py-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo/30"
-                      />
-                      {probeError && <p className="text-[11px] text-[#f87171]">{probeError}</p>}
-                      <div className="flex items-center gap-2 pt-1">
+                    ) : isAdmin ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowAddForm(true)}
+                        className="flex items-center gap-1.5 text-xs text-cream-dim transition-[color] duration-150 hover:text-cream"
+                      >
+                        <Plus className="h-3 w-3" />
+                        Add endpoint
+                      </button>
+                    ) : (
+                      <p className="text-[11px] text-cream-dim">
+                        An admin can add OpenAI-compatible endpoints here. You can still pick a model
+                        on any endpoint already connected.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Collapsible Local CLI Bridges Section */}
+                  <details className="group rounded-lg border border-surface bg-void/30 overflow-hidden">
+                    <summary className="flex cursor-pointer items-center justify-between p-3 text-xs font-medium text-cream select-none transition-[background-color] duration-150 hover:bg-surface/30">
+                      <div className="flex items-center gap-2">
+                        <Terminal className="h-4 w-4 text-indigo shrink-0" />
+                        <span>Terminal Local CLI Bridges (Claude, Codex, Grok)</span>
+                      </div>
+                      <span className="text-[11px] text-cream-dim transition-[transform] duration-200 group-open:rotate-180">
+                        ▾
+                      </span>
+                    </summary>
+                    <div className="p-3 pt-0 space-y-3 border-t border-surface/50 mt-1">
+                      <div className="space-y-1.5 pt-2">
+                        <p className="text-xs font-medium text-cream">Use a subscription you already have</p>
+                        <p className="text-xs text-cream-dim leading-relaxed">
+                          Run this once on your machine - it auto-detects whichever of these CLIs you already
+                          have installed and logged in, and nothing else needs any setup below.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <code className="flex-1 overflow-x-auto whitespace-nowrap rounded-md bg-void px-2.5 py-1.5 text-[11px] text-cream">
+                          {LAUNCHER_COMMAND}
+                        </code>
                         <button
                           type="button"
-                          onClick={loadEndpointModels}
-                          disabled={probingModels || !newBackend.base_url.trim()}
-                          className="rounded-md px-3 py-1.5 text-xs font-medium text-indigo hover:bg-indigo/10 disabled:opacity-50"
+                          onClick={copyLauncherCommand}
+                          className="shrink-0 rounded-md p-1.5 text-cream-dim transition-[background-color,color] duration-150 hover:bg-surface hover:text-cream"
+                          title="Copy command"
                         >
-                          {probingModels ? "Loading models…" : "Load models"}
-                        </button>
-                        <button
-                          onClick={addBackend}
-                          disabled={adding || !newBackend.name.trim() || !newBackend.base_url.trim() || !newBackend.model.trim()}
-                          className="gradient-primary rounded-md px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
-                        >
-                          {adding ? "Saving..." : "Save"}
-                        </button>
-                        <button
-                          onClick={resetAddForm}
-                          className="rounded-md px-3 py-1.5 text-xs text-cream-dim hover:text-cream"
-                        >
-                          Cancel
+                          {copiedLauncher ? (
+                            <Check className="h-3.5 w-3.5 text-[#4ade80]" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5" />
+                          )}
                         </button>
                       </div>
+                      <div className="space-y-2">
+                        {CLI_PRESETS.map((preset) => {
+                          const existing = settings.llm.backends.find((b) => b.name === preset.label)
+                          const isActive = !!existing && existing.name === settings.llm.active
+                          const isDetected = !!detected[preset.id]
+                          return (
+                            <div
+                              key={preset.id}
+                              className={`flex items-center gap-3 rounded-lg border px-3 py-2 text-xs transition-[border-color,background-color] duration-150 ${
+                                isActive
+                                  ? "border-indigo/40 bg-indigo/10"
+                                  : "border-surface bg-surface/30"
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <p className="font-medium text-cream">{preset.label}</p>
+                                  {isDetected ? (
+                                    <span className="flex items-center gap-1 text-[11px] text-[#4ade80]">
+                                      <span className="h-1.5 w-1.5 rounded-full bg-[#4ade80]" />
+                                      Ready
+                                    </span>
+                                  ) : (
+                                    <span className="text-[11px] text-cream-dim/60">Not detected</span>
+                                  )}
+                                </div>
+                                <p className="truncate text-[11px] text-cream-dim">127.0.0.1:{preset.port}</p>
+                              </div>
+                              {existing ? (
+                                <div className="flex items-center gap-1.5">
+                                  {isActive ? (
+                                    <>
+                                      <span className="rounded bg-indigo/20 px-2 py-0.5 text-[11px] font-medium text-indigo">
+                                        Active
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => connectPreset(preset)}
+                                        title="Refresh bridge key and model"
+                                        className="rounded p-1 text-cream-dim/60 transition-[background-color,color] duration-150 hover:bg-surface hover:text-cream"
+                                      >
+                                        <RefreshCw className="h-3.5 w-3.5" />
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => connectPreset(preset)}
+                                      className="rounded-md px-2.5 py-1 text-xs font-medium text-indigo transition-[background-color] duration-150 hover:bg-indigo/10"
+                                    >
+                                      Use
+                                    </button>
+                                  )}
+                                  {settings.llm.backends.length > 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => deleteBackend(existing.name)}
+                                      title="Disconnect"
+                                      className="rounded p-1 text-cream-dim/40 transition-[background-color,color] duration-150 hover:bg-[#ef4444]/10 hover:text-[#ef4444]"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => connectPreset(preset)}
+                                  disabled={!isAdmin || !isDetected || connectingPreset === preset.id}
+                                  title={
+                                    !isAdmin
+                                      ? "An admin account is required to add this backend"
+                                      : undefined
+                                  }
+                                  className="shrink-0 rounded-md px-2.5 py-1 text-xs font-medium text-indigo transition-[background-color] duration-150 hover:bg-indigo/10 disabled:opacity-30 disabled:hover:bg-transparent"
+                                >
+                                  {connectingPreset === preset.id ? "Connecting…" : "Connect"}
+                                </button>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
                     </div>
-                  ) : isAdmin ? (
-                    <button
-                      onClick={() => setShowAddForm(true)}
-                      className="flex items-center gap-1.5 text-xs text-cream-dim hover:text-cream transition-colors"
-                    >
-                      <Plus className="h-3 w-3" />
-                      Add endpoint
-                    </button>
-                  ) : (
-                    <p className="text-[11px] text-cream-dim">
-                      An admin can add OpenAI-compatible endpoints here. You can still pick a model
-                      on any endpoint already connected.
-                    </p>
-                  )}
-                  </div>
+                  </details>
                 </div>
               )}
 
@@ -954,8 +1223,9 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                     </div>
                   </div>
 
-                  <a
+                  <Link
                     href="/admin"
+                    onClick={onClose}
                     className="block w-full rounded-lg border border-surface bg-panel px-4 py-3 text-left transition-colors hover:border-indigo/40 hover:bg-indigo/5"
                   >
                     <div className="flex items-center justify-between">
@@ -967,7 +1237,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                       </div>
                       <Shield className="h-5 w-5 text-indigo" />
                     </div>
-                  </a>
+                  </Link>
                 </div>
               )}
 

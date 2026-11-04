@@ -58,9 +58,9 @@ export default function PodcastPanel({ docId, docTitle }: PodcastPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docId])
 
-  // Poll while anything is generating
   useEffect(() => {
-    if (!podcasts.some((p) => p.status === "generating")) return
+    const hasGenerating = podcasts.some((p) => p.status === "generating")
+    if (!hasGenerating) return
     const interval = setInterval(refresh, 3000)
     return () => clearInterval(interval)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -106,27 +106,40 @@ export default function PodcastPanel({ docId, docTitle }: PodcastPanelProps) {
   }
 
   return (
-    <div className="border-b border-surface bg-void/40 p-3">
-      <div className="mb-2 space-y-2">
-        <div className="flex gap-1 rounded-lg bg-void p-1">
+    <div className="rounded-xl border border-surface bg-void/40 p-4 space-y-3.5 shadow-sm">
+      <div className="flex items-center gap-2">
+        <div className="flex h-6 w-6 items-center justify-center rounded-md border border-purple-500/30 bg-purple-950/40 text-purple-300 shadow-sm">
+          <Mic className="h-3.5 w-3.5" />
+        </div>
+        <div>
+          <h3 className="text-xs font-semibold text-cream">Podcast Studio</h3>
+          <p className="text-[10px] text-cream-dim">Generate audio discussions from your document</p>
+        </div>
+      </div>
+
+      <div className="space-y-2.5">
+        <div className="flex gap-1 rounded-lg border border-surface/50 bg-void p-1">
           <button
+            type="button"
             onClick={() => setScope("full")}
-            className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+            className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-[background-color,color] duration-150 ${
               scope === "full" ? "gradient-primary text-white" : "text-cream-dim hover:text-cream"
             }`}
           >
             Entire doc
           </button>
           <button
+            type="button"
             onClick={() => setScope("section")}
             disabled={sections.length === 0}
-            className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors disabled:opacity-40 ${
+            className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-[background-color,color] duration-150 disabled:opacity-40 ${
               scope === "section" ? "gradient-primary text-white" : "text-cream-dim hover:text-cream"
             }`}
           >
             Chapter
           </button>
         </div>
+
         {scope === "section" && (
           <select
             value={sectionTitle}
@@ -140,13 +153,15 @@ export default function PodcastPanel({ docId, docTitle }: PodcastPanelProps) {
             ))}
           </select>
         )}
-        <div className="flex gap-1 rounded-lg bg-void p-1" title="Podcast length">
+
+        <div className="flex gap-1 rounded-lg border border-surface/50 bg-void p-1" title="Podcast length">
           {LENGTHS.map((l) => (
             <button
               key={l.value}
+              type="button"
               onClick={() => setLength(l.value)}
               title={`${l.value} podcast`}
-              className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+              className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-[background-color,color] duration-150 ${
                 length === l.value ? "bg-indigo/20 text-indigo" : "text-cream-dim hover:text-cream"
               }`}
             >
@@ -154,70 +169,81 @@ export default function PodcastPanel({ docId, docTitle }: PodcastPanelProps) {
             </button>
           ))}
         </div>
+
         <button
+          type="button"
           onClick={handleCreate}
           disabled={creating || (scope === "section" && !sectionTitle)}
-          className="gradient-primary flex w-full items-center justify-center gap-2 rounded-lg py-1.5 text-xs font-medium text-white shadow-glow transition-transform hover:scale-[1.01] disabled:opacity-50"
+          className="gradient-primary flex w-full items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium text-white shadow-glow transition-transform hover:scale-[1.01] disabled:opacity-50"
         >
-          {creating ? <Loader2 className="h-3 w-3 animate-spin" /> : <Mic className="h-3 w-3" />}
-          Generate podcast
+          {creating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mic className="h-3.5 w-3.5" />}
+          <span>Generate podcast</span>
         </button>
       </div>
 
       {podcasts.length > 0 && (
-        <ul className="reader-scroll max-h-40 space-y-1 overflow-y-auto">
-          {podcasts.map((p) => (
-            <li
-              key={p.id}
-              className="group flex items-center gap-2 rounded-lg border border-surface bg-panel px-2 py-1.5"
-            >
-              {p.status === "generating" ? (
-                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-indigo" />
-              ) : p.status === "failed" ? (
-                <AlertCircle className="h-3.5 w-3.5 shrink-0 text-[#ef4444]" />
-              ) : (
-                <button
-                  onClick={() => handlePlay(p)}
-                  disabled={loadingId === p.id}
-                  className="shrink-0 rounded-full p-1 text-indigo transition-colors hover:bg-indigo/15"
-                  title={
-                    playingId === p.id && ttsStatus === "playing"
-                      ? "Pause"
-                      : "Play in the bottom player"
-                  }
-                >
-                  {loadingId === p.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : playingId === p.id && ttsStatus === "playing" ? (
-                    <Pause className="h-3.5 w-3.5" />
-                  ) : (
-                    <Play className="h-3.5 w-3.5" />
-                  )}
-                </button>
-              )}
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[11px] text-cream">
-                  {p.transcript?.title ||
-                    (p.scope === "section" ? p.section_title : docTitle)}
-                </p>
-                <p className="text-[10px] text-cream-dim">
-                  {p.status === "generating"
-                    ? "Writing script & recording…"
-                    : p.status === "failed"
-                      ? p.error || "Generation failed"
-                      : fmt(p.duration)}
-                </p>
-              </div>
-              <button
-                onClick={() => handleDelete(p.id)}
-                title="Delete podcast"
-                className="hidden shrink-0 rounded p-1 text-cream-dim hover:text-[#ef4444] group-hover:block"
+        <div className="space-y-2 border-t border-surface/60 pt-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-medium uppercase tracking-wider text-cream-dim">
+              Episodes ({podcasts.length})
+            </span>
+          </div>
+          <ul className="reader-scroll max-h-80 space-y-1.5 overflow-y-auto pr-0.5">
+            {podcasts.map((p) => (
+              <li
+                key={p.id}
+                className="group flex items-center gap-2.5 rounded-lg border border-surface bg-panel px-2.5 py-2 transition-[border-color,background-color] duration-150 hover:border-surface/80"
               >
-                <Trash2 className="h-3 w-3" />
-              </button>
-            </li>
-          ))}
-        </ul>
+                {p.status === "generating" ? (
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-indigo" />
+                ) : p.status === "failed" ? (
+                  <AlertCircle className="h-4 w-4 shrink-0 text-[#ef4444]" />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handlePlay(p)}
+                    disabled={loadingId === p.id}
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-indigo/10 text-indigo transition-[background-color,color] duration-150 hover:bg-indigo/20 disabled:opacity-50"
+                    title={
+                      playingId === p.id && ttsStatus === "playing"
+                        ? "Pause"
+                        : "Play in the bottom player"
+                    }
+                  >
+                    {loadingId === p.id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : playingId === p.id && ttsStatus === "playing" ? (
+                      <Pause className="h-3.5 w-3.5" />
+                    ) : (
+                      <Play className="h-3.5 w-3.5 ml-0.5" />
+                    )}
+                  </button>
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-medium text-cream">
+                    {p.transcript?.title ||
+                      (p.scope === "section" ? p.section_title : docTitle)}
+                  </p>
+                  <p className="text-[10px] text-cream-dim">
+                    {p.status === "generating"
+                      ? "Writing script & recording..."
+                      : p.status === "failed"
+                        ? p.error || "Generation failed"
+                        : fmt(p.duration)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleDelete(p.id)}
+                  title="Delete podcast"
+                  className="hidden shrink-0 rounded p-1 text-cream-dim transition-colors hover:text-[#ef4444] group-hover:block"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   )

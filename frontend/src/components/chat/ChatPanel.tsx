@@ -10,27 +10,30 @@ import {
   deleteConversation,
   getSettings,
   getLlmHealth,
-  updateSettings,
   Settings,
   LlmBackendHealth,
-  LlmBackend,
   RagMode,
 } from "@/services/api"
 import { streamMessage } from "@/services/chatStream"
 import { useReader } from "@/stores/reader"
-import { Send, Trash2, Sparkles, FileText, ChevronsUpDown, Cpu, BookOpen, Globe, Network, Search, XCircle, X, Loader2, AlertTriangle, Mic, Volume2, Square, Copy, Check } from "lucide-react"
+import { Send, Trash2, Sparkles, FileText, BookOpen, Globe, Network, Search, XCircle, Loader2, AlertTriangle, Mic, Volume2, Square, Copy, Check } from "lucide-react"
 import { startRecording, ActiveRecording } from "@/lib/audioRecorder"
 import { transcribeChatAudio } from "@/services/api"
 import { ttsEngine } from "@/services/ttsEngine"
 import { getKgStatus, buildKg, KgStatus } from "@/services/kgApi"
 import CitationPopup from "@/components/chat/CitationPopup"
-import ModelPicker from "@/components/chat/ModelPicker"
 import MessageBody from "@/components/chat/MessageBody"
 
 interface ChatPanelProps {
   docId: number
 }
 
+
+const PROMPT_STARTERS = [
+  "Summarize key ideas",
+  "Explain main conclusions",
+  "What are the core concepts?",
+]
 
 export default function ChatPanel({ docId }: ChatPanelProps) {
   const router = useRouter()
@@ -66,12 +69,6 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
   // handlers to detect that the user switched away mid-flight.
   const docIdRef = useRef(docId)
   const [settings, setSettings] = useState<Settings | null>(null)
-  const [pickerOpen, setPickerOpen] = useState(false)
-  const [switching, setSwitching] = useState(false)
-  // The model picker's PUT failing used to be invisible (console only) -
-  // the button quietly reverted to the old backend and nothing told the
-  // user their switch didn't take.
-  const [switchError, setSwitchError] = useState<string | null>(null)
   // Live reachability of the active backend, from the API-side probe. This
   // is what tells the user "your backend is down" BEFORE a chat request
   // fails with a 503 - the stored settings row alone can't.
@@ -87,6 +84,18 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
   const [kgStatus, setKgStatus] = useState<KgStatus | null>(null)
   const [kgBuilding, setKgBuilding] = useState(false)
   const activeBackend = settings?.llm.backends.find((b) => b.name === settings.llm.active)
+
+  const currentModelName =
+    activeBackend?.effective_model || activeBackend?.model || settings?.llm.active || "muse-spark-1.3-contributor"
+
+  const displayModelName = (() => {
+    const full =
+      activeBackend?.effective_model || activeBackend?.model || settings?.llm.active
+    if (!full) return "Muse Contributor"
+    if (full === "muse-spark-1.3-contributor") return "Muse Contributor"
+    const parts = full.split("/")
+    return parts[parts.length - 1]
+  })()
 
   useEffect(() => {
     getSettings()
@@ -117,45 +126,6 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
       clearInterval(interval)
     }
   }, [settings?.llm.active])
-
-  /** Switch the active backend, optionally changing which model it runs.
-   *
-   * A CLI bridge exposes several models behind one backend entry, so picking
-   * "Claude Code · haiku" has to say which model as well as which backend.
-   * That goes through `model_overrides`, which is per-user: writing the
-   * backend's own `model` instead would push this choice onto every other
-   * user of the deployment (see HANDOFF_LONGTERM.md 4a). */
-  const selectModel = async (backend: LlmBackend, model?: string) => {
-    if (!settings) return
-    const current = backend.effective_model || backend.model
-    const modelChanged = !!model && model !== current
-    if (backend.name === settings.llm.active && !modelChanged) {
-      setPickerOpen(false)
-      return
-    }
-    const prev = settings
-    const backends = settings.llm.backends.map((b) =>
-      b.name === backend.name && modelChanged ? { ...b, effective_model: model! } : b,
-    )
-    setSettings({ ...settings, llm: { backends, active: backend.name } })
-    setSwitching(true)
-    setSwitchError(null)
-    setPickerOpen(false)
-    try {
-      await updateSettings({
-        llm: {
-          active: backend.name,
-          ...(modelChanged ? { model_overrides: { [backend.name]: model! } } : {}),
-        },
-      })
-    } catch (err) {
-      console.error("Failed to switch model:", err)
-      setSettings(prev)
-      setSwitchError(`Couldn't switch to ${backend.name} - the previous model is still active.`)
-    } finally {
-      setSwitching(false)
-    }
-  }
 
   // Switching documents swaps the whole conversation out from under any
   // request that is still in flight. Without this, the old request kept
@@ -373,11 +343,16 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
       }
       setMessages((prev) => [...prev, userMessage])
       if (questionOverride === undefined) setInput("")
+      const effectiveRagMode: RagMode =
+        useDoc && (kgStatus?.status === "completed" || (kgStatus?.entity_count ?? 0) > 0)
+          ? "hybrid"
+          : "standard"
+
       const aiMessage = await streamMessage(
         activeConvId,
         question,
         useDoc ? [docId] : [],
-        useDoc ? ragMode : undefined,
+        useDoc ? effectiveRagMode : undefined,
         controller.signal,
         {
           onToken: (content) => {
@@ -473,11 +448,35 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
     <div className="flex h-full flex-col">
       <div ref={listRef} className="reader-scroll flex-1 space-y-3 overflow-y-auto p-3">
         {messages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
-            <Sparkles className="h-5 w-5 text-indigo" />
-            <p className="text-xs text-cream-dim">
-              {useDoc ? "Ask anything about this document" : "Ask anything"}
-            </p>
+          <div className="flex h-full flex-col items-center justify-center gap-3.5 p-4 text-center">
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-indigo/20 bg-indigo/10 shadow-glow">
+              <Sparkles className="h-5 w-5 text-indigo" />
+            </div>
+            <div className="space-y-1">
+              <h4 className="font-display text-sm font-semibold text-cream">
+                {useDoc ? "Document Assistant" : "General Assistant"}
+              </h4>
+              <p className="max-w-[240px] text-xs text-cream-dim leading-relaxed">
+                {useDoc
+                  ? "Ask questions, extract key takeaways, or explore concepts grounded in this document."
+                  : "Ask general knowledge questions without document context."}
+              </p>
+            </div>
+            {useDoc && (
+              <div className="mt-2 flex w-full max-w-[260px] flex-col gap-2">
+                {PROMPT_STARTERS.map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    onClick={() => handleSend(prompt)}
+                    className="flex items-center justify-between rounded-lg border border-surface bg-surface/30 px-3 py-2 text-left text-xs text-cream-dim transition-[border-color,background-color,color] duration-150 hover:border-indigo/40 hover:bg-surface/70 hover:text-cream"
+                  >
+                    <span>{prompt}</span>
+                    <Sparkles size={11} className="shrink-0 text-indigo/60" />
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           messages.map((msg) => (
@@ -583,141 +582,57 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
             crammed onto one line: this panel is ~190px wide, so anything
             side-by-side truncates to nothing the moment a model id is long. */}
         <div className="mb-2 space-y-1.5">
-          {/* Scope. A two-segment control, not a single button that swaps its
-              own label - with a toggle you cannot tell whether the label is
-              the current state or the action it would perform. */}
-          <div
-            role="group"
-            aria-label="Answer scope"
-            className="flex rounded-lg border border-surface bg-void p-0.5"
-          >
-            <button
-              type="button"
-              onClick={() => setUseDoc(true)}
-              aria-pressed={useDoc}
-              title="Ground answers in this document, with citations"
-              className={`flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                useDoc ? "bg-surface text-cream" : "text-cream-dim hover:text-cream"
-              }`}
-            >
-              <BookOpen className="h-3 w-3 shrink-0" />
-              Document
-            </button>
-            <button
-              type="button"
-              onClick={() => setUseDoc(false)}
-              aria-pressed={!useDoc}
-              title="Answer from general knowledge, without reading this document"
-              className={`flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                !useDoc ? "bg-surface text-cream" : "text-cream-dim hover:text-cream"
-              }`}
-            >
-              <Globe className="h-3 w-3 shrink-0" />
-              General
-            </button>
-          </div>
-
-          {/* RAG mode. Only shown when document grounding is active -
-              general questions have no retrieval to configure. */}
-          {useDoc && (
+          {/* Top Utility Micro-Bar: Scope on Left, Active Model Badge on Right */}
+          <div className="flex items-center justify-between gap-2 px-0.5">
             <div
               role="group"
-              aria-label="Retrieval mode"
-              className="flex rounded-lg border border-surface bg-void p-0.5"
+              aria-label="Answer scope"
+              className="flex items-center rounded-lg border border-surface bg-void/80 p-0.5"
             >
               <button
                 type="button"
-                onClick={() => setRagMode("standard")}
-                aria-pressed={ragMode === "standard"}
-                title="BM25 + embeddings + LLM reranking"
-                className={`flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                  ragMode === "standard" ? "bg-surface text-cream" : "text-cream-dim hover:text-cream"
+                onClick={() => setUseDoc(true)}
+                aria-pressed={useDoc}
+                title="Ground answers in this document, with citations"
+                className={`flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-[background-color,color] duration-150 ${
+                  useDoc ? "bg-surface text-cream shadow-sm" : "text-cream-dim hover:text-cream"
                 }`}
               >
-                <Search className="h-3 w-3 shrink-0" />
-                Standard
+                <BookOpen size={12} className={useDoc ? "text-indigo" : "text-cream-dim"} />
+                <span>Document</span>
               </button>
               <button
                 type="button"
-                onClick={() => setRagMode("hybrid")}
-                aria-pressed={ragMode === "hybrid"}
-                title="Vector retrieval + knowledge graph"
-                className={`flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                  ragMode === "hybrid" ? "bg-surface text-cream" : "text-cream-dim hover:text-cream"
+                onClick={() => setUseDoc(false)}
+                aria-pressed={!useDoc}
+                title="Answer from general knowledge, without reading this document"
+                className={`flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-[background-color,color] duration-150 ${
+                  !useDoc ? "bg-surface text-cream shadow-sm" : "text-cream-dim hover:text-cream"
                 }`}
               >
-                <Network className="h-3 w-3 shrink-0" />
-                Hybrid
+                <Globe size={12} className={!useDoc ? "text-indigo" : "text-cream-dim"} />
+                <span>General</span>
               </button>
-              <button
-                type="button"
-                onClick={() => setRagMode("graph")}
-                aria-pressed={ragMode === "graph"}
-                title="Knowledge graph only"
-                className={`flex flex-1 items-center justify-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-                  ragMode === "graph" ? "bg-surface text-cream" : "text-cream-dim hover:text-cream"
-                }`}
+            </div>
+
+            {/* Active Model Indicator Badge (Managed in Settings, Default Muse) */}
+            {settings && (
+              <div
+                className="flex items-center gap-1.5 rounded-md border border-surface bg-void/80 px-2 py-1 text-[11px] text-cream-dim"
+                title={`Active model: ${currentModelName} (managed in Settings)`}
               >
-                <Sparkles className="h-3 w-3 shrink-0" />
-                Graph
-              </button>
-            </div>
-          )}
-
-          {/* KG readiness, surfaced before a question can dead-end. Graph
-              mode has nothing to search until the KG exists; Hybrid runs
-              fine but loses its graph half. Both say so here, with a
-              build action, instead of failing after the ask. */}
-          {needsKg && kgStatus && kgStatus.status !== "completed" && (
-            <div className="flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-snug text-amber-300">
-              {kgStatus.status === "extracting" ? (
-                <Loader2 className="mt-px h-3 w-3 shrink-0 animate-spin" />
-              ) : (
-                <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
-              )}
-              <span className="min-w-0 flex-1">
-                {kgStatus.status === "extracting"
-                  ? `Building the knowledge graph (${kgStatus.chunks_processed}/${kgStatus.total_chunks || "…"} chunks)…`
-                  : ragMode === "graph"
-                    ? "No knowledge graph yet - Graph mode has nothing to search until it is built."
-                    : "No knowledge graph yet - Hybrid will answer from the full text only until it is built."}
-              </span>
-              {kgStatus.status !== "extracting" && (
-                <button
-                  type="button"
-                  onClick={handleBuildKg}
-                  disabled={kgBuilding}
-                  className="shrink-0 rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-200 transition-colors hover:bg-amber-500/20 disabled:opacity-40"
-                >
-                  {kgBuilding ? "Starting…" : "Build now"}
-                </button>
-              )}
-            </div>
-          )}
-
-          {settings && (
-            <button
-              type="button"
-              onClick={() => setPickerOpen(true)}
-              aria-haspopup="dialog"
-              title={`${activeBackend?.effective_model || activeBackend?.model || settings.llm.active} · ${settings.llm.active}`}
-              className={`flex w-full items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] font-medium transition-colors ${
-                activeHealth?.status === "unhealthy"
-                  ? "border-[#ef4444]/50 text-[#f87171] hover:border-[#ef4444]/70"
-                  : "border-surface text-cream-dim hover:border-indigo/40 hover:text-cream"
-              }`}
-            >
-              <Cpu className={`h-3 w-3 shrink-0 ${activeHealth?.status === "unhealthy" ? "text-[#f87171]" : "text-indigo"}`} />
-              <span className="min-w-0 flex-1 truncate text-left">
-                {switching
-                  ? "Switching…"
-                  : activeBackend?.effective_model ||
-                    activeBackend?.model ||
-                    settings.llm.active}
-              </span>
-              <ChevronsUpDown className="h-3 w-3 shrink-0" />
-            </button>
-          )}
+                <span
+                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                    activeHealth?.status === "unhealthy"
+                      ? "bg-[#ef4444]"
+                      : "bg-emerald-400"
+                  }`}
+                />
+                <Sparkles size={11} className="text-indigo shrink-0" />
+                <span className="font-medium text-cream truncate max-w-[140px]">{displayModelName}</span>
+              </div>
+            )}
+          </div>
           {activeHealth?.status === "unhealthy" && (
             <p className="flex items-start gap-1.5 rounded-md border border-[#ef4444]/30 bg-[#ef4444]/10 px-2 py-1.5 text-[11px] leading-snug text-[#f87171]">
               <XCircle className="mt-px h-3 w-3 shrink-0" />
@@ -725,20 +640,6 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
                 {settings?.llm.active} is unreachable from the server - messages will not be
                 answered until the bridge is running.
               </span>
-            </p>
-          )}
-          {switchError && (
-            <p className="flex items-start gap-1.5 rounded-md border border-[#ef4444]/30 bg-[#ef4444]/10 px-2 py-1.5 text-[11px] leading-snug text-[#f87171]">
-              <XCircle className="mt-px h-3 w-3 shrink-0" />
-              <span className="min-w-0 flex-1">{switchError}</span>
-              <button
-                type="button"
-                onClick={() => setSwitchError(null)}
-                aria-label="Dismiss"
-                className="shrink-0 rounded p-0.5 transition-colors hover:bg-[#ef4444]/20"
-              >
-                <X className="h-3 w-3" />
-              </button>
             </p>
           )}
         </div>
@@ -818,16 +719,6 @@ export default function ChatPanel({ docId }: ChatPanelProps) {
           )}
         </form>
       </div>
-
-      {settings && (
-        <ModelPicker
-          open={pickerOpen}
-          onClose={() => setPickerOpen(false)}
-          backends={settings.llm.backends}
-          activeName={settings.llm.active}
-          onSelect={selectModel}
-        />
-      )}
 
       {citationMsg && (
         <CitationPopup

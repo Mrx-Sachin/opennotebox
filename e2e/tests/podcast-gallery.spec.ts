@@ -46,8 +46,8 @@ async function setupMockPodcasts(page: Page, options: MockOptions = {}) {
       transcript: {
         title: "Deep Dive into Sample Document",
         lines: [
-          { speaker: "Host A", text: "Welcome to today's discussion." },
-          { speaker: "Host B", text: "Thanks, excited to be here." },
+          { speaker: "Host A", text: "Welcome to today's discussion.", start_time: 0.0, end_time: 15.0, duration: 15.0 },
+          { speaker: "Host B", text: "Thanks, excited to be here.", start_time: 15.3, end_time: 40.0, duration: 24.7 },
         ],
       },
       created_at: "2026-10-09T03:00:00Z",
@@ -1140,4 +1140,27 @@ test("reader keyboard shortcuts yield to expanded podcast modal for space and es
       return audio?.paused ?? true
     })
   }).toBe(false)
+})
+
+test("clicking a transcript line accurately jumps to line start_time and activates that turn", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-expand-101").click()
+
+  const playerModal = page.getByTestId("podcast-player-modal")
+  await expect(playerModal).toBeVisible()
+
+  const line1 = page.getByTestId("transcript-line-1")
+  await line1.click()
+
+  await expect.poll(async () => {
+    return page.evaluate(() => {
+      const audio = (window as unknown as { __capturedAudioElement?: HTMLAudioElement }).__capturedAudioElement
+      return audio?.currentTime ?? 0
+    })
+  }).toBeGreaterThanOrEqual(15.3)
+
+  await expect(line1).toHaveClass(/is-active/)
+  await expect(page.getByTestId("transcript-line-0")).not.toHaveClass(/is-active/)
 })

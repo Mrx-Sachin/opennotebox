@@ -9,8 +9,21 @@ export interface Notebook {
   updated_at: string
 }
 
+export interface UnfiledNotebook {
+  name: string
+  description: string | null
+}
+
 export function getNotebooks(signal?: AbortSignal) {
   return api.get<Notebook[]>("/api/notebooks", { signal }).then((response) => response.data)
+}
+
+export function getUnfiledNotebook(signal?: AbortSignal) {
+  return api.get<UnfiledNotebook>("/api/notebooks/unfiled", { signal }).then((response) => response.data)
+}
+
+export function saveUnfiledNotebook(name: string, description: string) {
+  return api.patch<UnfiledNotebook>("/api/notebooks/unfiled", { name, description }).then((response) => response.data)
 }
 
 export function saveNotebook(notebookId: number | null, name: string, description: string) {

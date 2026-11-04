@@ -43,8 +43,8 @@ interface NotesState {
   create: (body: NoteCreate) => Promise<Note>
   update: (id: number, body: NoteUpdate) => Promise<Note>
   remove: (id: number) => Promise<void>
-  addColor: (name: string, hex: string) => Promise<NoteColor>
-  renameColor: (id: string, name: string, hex?: string) => Promise<void>
+  addColor: (name: string, hex: string, hint?: string) => Promise<NoteColor>
+  renameColor: (id: string, name: string, hex?: string, hint?: string | null) => Promise<void>
   removeColor: (id: string) => Promise<void>
   setSelection: (sel: NoteSelection | null) => void
   focusNote: (id: number | null) => void
@@ -114,14 +114,18 @@ export const useNotes = create<NotesState>((set, get) => ({
     }))
   },
 
-  addColor: async (name, hex) => {
-    const color = await createNoteColor(name, hex)
+  addColor: async (name, hex, hint) => {
+    const color = await createNoteColor(name, hex, hint)
     set((s) => ({ colors: [...s.colors, color] }))
     return color
   },
 
-  renameColor: async (id, name, hex) => {
-    const color = await updateNoteColor(id, { name, ...(hex ? { hex } : {}) })
+  renameColor: async (id, name, hex, hint) => {
+    const color = await updateNoteColor(id, {
+      name,
+      ...(hex ? { hex } : {}),
+      ...(hint !== undefined ? { hint } : {}),
+    })
     set((s) => ({ colors: s.colors.map((c) => (c.id === id ? color : c)) }))
   },
 

@@ -1,8 +1,7 @@
 """Highlight colour palette: three built-in names plus per-user extras.
 
-Built-ins are immutable (id, name, hex) so existing notes keep a stable
-anchor. Custom colours live in UserSettings key="note_colors" as
-``{"custom": [{"id", "name", "hex"}, ...]}``.
+Built-ins keep a stable ID anchor. Their hex and hint (purpose) can be
+customized by the user, while custom colours live in UserSettings key="note_colors".
 """
 from __future__ import annotations
 
@@ -11,9 +10,9 @@ from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models import UserSettings
-
 
 NOTE_COLORS_KEY = "note_colors"
 MAX_CUSTOM_COLORS = 16
@@ -29,13 +28,11 @@ DEFAULT_NOTE_COLORS = (
 _BUILTIN_IDS = {c["id"] for c in DEFAULT_NOTE_COLORS}
 _BUILTIN_NAMES = {c["name"].lower() for c in DEFAULT_NOTE_COLORS}
 
-
 def normalize_hex(value: str) -> str:
     raw = (value or "").strip()
     if HEX_RE.match(raw):
         return raw.lower()
     raise HTTPException(status_code=400, detail="Color must be a 6-digit hex value like #fbbf24")
-
 
 def normalize_name(value: str) -> str:
     name = " ".join((value or "").split())
@@ -45,11 +42,9 @@ def normalize_name(value: str) -> str:
         raise HTTPException(status_code=400, detail="Color name must be 40 characters or fewer")
     return name
 
-
 def _slug(name: str) -> str:
     slug = SLUG_RE.sub("-", name.lower()).strip("-")[:32]
     return slug or "color"
-
 
 def _get_or_create_row(db: Session, user_id: int) -> UserSettings:
     row = (
@@ -63,12 +58,10 @@ def _get_or_create_row(db: Session, user_id: int) -> UserSettings:
         db.flush()
     return row
 
-
 def _custom_list(row: UserSettings) -> list[dict]:
     value = row.value or {}
     custom = value.get("custom")
     return list(custom) if isinstance(custom, list) else []
-
 
 def list_palette(db: Session, user_id: int) -> list[dict]:
     """Built-ins first, then this user's custom colours."""
@@ -78,16 +71,19 @@ def list_palette(db: Session, user_id: int) -> list[dict]:
         .first()
     )
     custom = _custom_list(row) if row is not None else []
-    out = [
-        {
-            "id": c["id"],
-            "name": c["name"],
-            "hex": c["hex"],
-            "built_in": True,
-            "hint": c.get("hint"),
-        }
-        for c in DEFAULT_NOTE_COLORS
-    ]
+    overrides = (row.value or {}).get("builtin_overrides", {}) if row is not None else {}
+    out = []
+    for c in DEFAULT_NOTE_COLORS:
+        ov = overrides.get(c["id"]) or {}
+        out.append(
+            {
+                "id": c["id"],
+                "name": ov.get("name") or c["name"],
+                "hex": ov.get("hex") or c["hex"],
+                "built_in": True,
+                "hint": ov.get("hint") if "hint" in ov else c.get("hint"),
+            }
+        )
     for item in custom:
         cid = item.get("id")
         name = item.get("name")
@@ -100,23 +96,23 @@ def list_palette(db: Session, user_id: int) -> list[dict]:
                 "name": name,
                 "hex": hex_val,
                 "built_in": False,
-                "hint": None,
+                "hint": item.get("hint"),
             }
         )
     return out
 
-
 def known_color_ids(db: Session, user_id: int) -> set[str]:
     return {c["id"] for c in list_palette(db, user_id)}
 
-
-def add_color(db: Session, user_id: int, name: str, hex_value: str) -> dict:
+def add_color(db: Session, user_id: int, name: str, hex_value: str, hint: Optional[str] = None) -> dict:
     name = normalize_name(name)
     hex_value = normalize_hex(hex_value)
+    clean_hint = hint.strip() if hint and hint.strip() else None
     if name.lower() in _BUILTIN_NAMES:
         raise HTTPException(status_code=400, detail="That name is reserved for a default colour")
 
     row = _get_or_create_row(db, user_id)
+    val = dict(row.value or {})
     custom = _custom_list(row)
     if len(custom) >= MAX_CUSTOM_COLORS:
         raise HTTPException(
@@ -135,43 +131,79 @@ def add_color(db: Session, user_id: int, name: str, hex_value: str) -> dict:
         candidate = f"{slug}-{n}"
         n += 1
 
-    entry = {"id": candidate, "name": name, "hex": hex_value}
+    entry = {"id": candidate, "name": name, "hex": hex_value, "hint": clean_hint}
     custom.append(entry)
-    row.value = {"custom": custom}
+    val["custom"] = custom
+    row.value = dict(val)
+    flag_modified(row, "value")
     db.commit()
     db.refresh(row)
-    return {**entry, "built_in": False, "hint": None}
+    return {**entry, "built_in": False, "hint": clean_hint}
 
-
-def update_color(db: Session, user_id: int, color_id: str, name: Optional[str], hex_value: Optional[str]) -> dict:
-    if color_id in _BUILTIN_IDS:
-        raise HTTPException(status_code=400, detail="Default colours cannot be changed")
-
+def update_color(
+    db: Session,
+    user_id: int,
+    color_id: str,
+    name: Optional[str],
+    hex_value: Optional[str],
+    hint: Optional[str] = None,
+) -> dict:
     row = _get_or_create_row(db, user_id)
+    val = dict(row.value or {})
     custom = _custom_list(row)
+    overrides = dict(val.get("builtin_overrides", {}))
+
+    if color_id in _BUILTIN_IDS:
+        target_default = next(c for c in DEFAULT_NOTE_COLORS if c["id"] == color_id)
+        current = dict(overrides.get(color_id) or target_default)
+        if name is not None:
+            norm_name = normalize_name(name)
+            if norm_name.lower() != target_default["name"].lower():
+                raise HTTPException(status_code=400, detail="Default colours cannot be renamed")
+            current["name"] = norm_name
+        if hex_value is not None:
+            current["hex"] = normalize_hex(hex_value)
+        if hint is not None:
+            current["hint"] = hint.strip() if hint.strip() else None
+        overrides[color_id] = current
+        val["builtin_overrides"] = overrides
+        row.value = val
+        db.commit()
+        db.refresh(row)
+        return {
+            "id": color_id,
+            "name": current.get("name") or target_default["name"],
+            "hex": current.get("hex") or target_default["hex"],
+            "built_in": True,
+            "hint": current.get("hint"),
+        }
+
     target = next((c for c in custom if c.get("id") == color_id), None)
     if target is None:
         raise HTTPException(status_code=404, detail="Colour not found")
 
     if name is not None:
-        name = normalize_name(name)
-        if name.lower() in _BUILTIN_NAMES:
+        norm_name = normalize_name(name)
+        if norm_name.lower() in _BUILTIN_NAMES:
             raise HTTPException(status_code=400, detail="That name is reserved for a default colour")
         clash = next(
-            (c for c in custom if c.get("id") != color_id and str(c.get("name", "")).lower() == name.lower()),
+            (c for c in custom if c.get("id") != color_id and str(c.get("name", "")).lower() == norm_name.lower()),
             None,
         )
         if clash:
             raise HTTPException(status_code=400, detail="A colour with that name already exists")
-        target["name"] = name
+        target["name"] = norm_name
     if hex_value is not None:
         target["hex"] = normalize_hex(hex_value)
+    if hint is not None:
+        target["hint"] = hint.strip() if hint.strip() else None
 
-    row.value = {"custom": custom}
+    val["custom"] = custom
+    row.value = dict(val)
+    flag_modified(row, "value")
     db.commit()
     db.refresh(row)
-    return {**target, "built_in": False, "hint": None}
-
+    return {**target, "built_in": False, "hint": target.get("hint")}
 
 def delete_color(db: Session, user_id: int, color_id: str, in_use: bool) -> None:
     if color_id in _BUILTIN_IDS:
@@ -180,9 +212,12 @@ def delete_color(db: Session, user_id: int, color_id: str, in_use: bool) -> None
         raise HTTPException(status_code=400, detail="Colour is used by existing notes")
 
     row = _get_or_create_row(db, user_id)
+    val = dict(row.value or {})
     custom = _custom_list(row)
     next_custom = [c for c in custom if c.get("id") != color_id]
     if len(next_custom) == len(custom):
         raise HTTPException(status_code=404, detail="Colour not found")
-    row.value = {"custom": next_custom}
+    val["custom"] = next_custom
+    row.value = dict(val)
+    flag_modified(row, "value")
     db.commit()

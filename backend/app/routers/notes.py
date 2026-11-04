@@ -184,7 +184,7 @@ def create_color(
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
-    return note_colors.add_color(db, user.id, body.name, body.hex)
+    return note_colors.add_color(db, user.id, body.name, body.hex, body.hint)
 
 
 @router.patch("/colors/{color_id}", response_model=NoteColorResponse)
@@ -194,9 +194,9 @@ def update_color(
     user: User = Depends(get_current_user_from_token),
     db: Session = Depends(get_db),
 ):
-    if body.name is None and body.hex is None:
+    if body.name is None and body.hex is None and body.hint is None:
         raise HTTPException(status_code=400, detail="Nothing to update")
-    return note_colors.update_color(db, user.id, color_id, body.name, body.hex)
+    return note_colors.update_color(db, user.id, color_id, body.name, body.hex, body.hint)
 
 
 @router.delete("/colors/{color_id}")

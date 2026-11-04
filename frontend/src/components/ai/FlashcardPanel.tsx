@@ -65,53 +65,96 @@ export default function FlashcardPanel({ docId }: FlashcardPanelProps) {
   const dueCount = stats?.due ?? 0
 
   return (
-    <div className="border-b border-surface bg-void/40 p-3">
-      {!hasCards ? (
-        <button
-          onClick={handleGenerate}
-          disabled={generating}
-          className="gradient-primary flex w-full items-center justify-center gap-2 rounded-lg py-1.5 text-xs font-medium text-white shadow-glow transition-transform hover:scale-[1.01] disabled:opacity-60"
-        >
-          {generating ? (
-            <>
-              <Loader2 className="h-3 w-3 animate-spin" />
-              Writing questions…
-            </>
-          ) : (
-            <>
-              <Layers className="h-3 w-3" />
-              Generate flashcards
-            </>
-          )}
-        </button>
-      ) : (
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setManager(dueCount > 0 ? "review" : "browse")}
-            className="gradient-primary flex flex-1 items-center justify-center gap-2 rounded-lg py-1.5 text-xs font-medium text-white shadow-glow transition-transform hover:scale-[1.01]"
-          >
-            {dueCount > 0 ? (
-              <>
-                <BookOpenCheck className="h-3 w-3" />
-                Review ({dueCount} due)
-              </>
-            ) : (
-              <>
-                <Layers className="h-3 w-3" />
-                {cardCount} card{cardCount === 1 ? "" : "s"}
-              </>
+    <div className="rounded-xl border border-surface bg-void/40 p-4 space-y-3.5 shadow-sm">
+      <div className="flex items-center gap-2">
+        <div className="flex h-6 w-6 items-center justify-center rounded-md border border-emerald-500/30 bg-emerald-950/40 text-emerald-300 shadow-sm">
+          <Layers className="h-3.5 w-3.5" />
+        </div>
+        <div>
+          <h3 className="text-xs font-semibold text-cream">Flashcard Deck</h3>
+          <p className="text-[10px] text-cream-dim">Active recall & spaced repetition review</p>
+        </div>
+      </div>
+
+      {hasCards ? (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2 text-center">
+            <div className="rounded-lg border border-surface/60 bg-panel/60 p-2.5">
+              <div className="text-lg font-bold text-cream">{cardCount ?? 0}</div>
+              <div className="text-[10px] text-cream-dim">Total Cards</div>
+            </div>
+            <div className="rounded-lg border border-surface/60 bg-panel/60 p-2.5">
+              <div
+                className={`text-lg font-bold ${
+                  dueCount > 0 ? "text-emerald-400" : "text-cream-dim"
+                }`}
+              >
+                {dueCount}
+              </div>
+              <div className="text-[10px] text-cream-dim">Due for Review</div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setManager(dueCount > 0 ? "review" : "browse")}
+              className="gradient-primary flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium text-white shadow-glow transition-transform hover:scale-[1.01]"
+            >
+              {dueCount > 0 ? (
+                <>
+                  <BookOpenCheck className="h-3.5 w-3.5" />
+                  <span>Review ({dueCount} due)</span>
+                </>
+              ) : (
+                <>
+                  <Layers className="h-3.5 w-3.5" />
+                  <span>Browse Deck</span>
+                </>
+              )}
+            </button>
+            {dueCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setManager("browse")}
+                title="Browse all flashcards"
+                className="flex h-8 items-center justify-center rounded-lg border border-surface bg-panel px-2.5 text-xs text-cream-dim transition-[border-color,color] duration-150 hover:border-indigo/40 hover:text-cream"
+              >
+                Browse
+              </button>
             )}
-          </button>
+            <button
+              type="button"
+              onClick={handleGenerate}
+              disabled={generating}
+              title="Generate more flashcards"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-surface bg-panel text-cream-dim transition-[border-color,color] duration-150 hover:border-indigo/40 hover:text-cream disabled:opacity-40"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${generating ? "animate-spin text-indigo" : ""}`} />
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3 py-1">
+          <p className="text-xs text-cream-dim">
+            No flashcards yet for this document. Generate questions and answers automatically using AI.
+          </p>
           <button
+            type="button"
             onClick={handleGenerate}
             disabled={generating}
-            title="Generate more from this document"
-            className="rounded-lg border border-surface p-1.5 text-cream-dim transition-colors hover:text-cream disabled:opacity-50"
+            className="gradient-primary flex w-full items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium text-white shadow-glow transition-transform hover:scale-[1.01] disabled:opacity-60"
           >
             {generating ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <span>Writing questions...</span>
+              </>
             ) : (
-              <RefreshCw className="h-3.5 w-3.5" />
+              <>
+                <Layers className="h-3.5 w-3.5" />
+                <span>Generate flashcards</span>
+              </>
             )}
           </button>
         </div>

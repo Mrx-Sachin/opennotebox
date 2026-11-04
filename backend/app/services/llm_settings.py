@@ -62,21 +62,20 @@ def _seed_backends() -> list[dict]:
     Extra backends can still be added from Settings; they are just not
     pre-seeded anymore.
     """
-    backends = [
-        {
-            "name": "omniroute",
-            "base_url": settings.vllm_base_url,
-            "model": settings.vllm_model,
-            "api_key": settings.vllm_api_key or "not-needed",
-        },
-    ]
+    backends = []
     if settings.effective_meta_api_key:
         backends.append({
             "name": "meta",
             "base_url": "https://api.meta.ai/v1",
-            "model": "muse-spark-1.3",
+            "model": settings.meta_llm_model,
             "api_key": settings.effective_meta_api_key,
         })
+    backends.append({
+        "name": "omniroute",
+        "base_url": settings.vllm_base_url,
+        "model": settings.vllm_model,
+        "api_key": settings.vllm_api_key or "not-needed",
+    })
     return backends
 
 

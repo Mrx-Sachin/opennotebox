@@ -195,6 +195,24 @@ class NotebookResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+class UnfiledNotebookResponse(BaseModel):
+    name: str = "Unfiled"
+    description: Optional[str] = "Documents waiting for a notebook."
+
+class UnfiledNotebookUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=240)
+
+    @field_validator("name")
+    @classmethod
+    def trim_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Name must not be blank")
+        return value
+
 
 class NotebookMoveDocumentsRequest(BaseModel):
     document_ids: list[Annotated[int, Field(ge=1)]] = Field(..., min_length=1, max_length=200)
@@ -616,11 +634,13 @@ class NoteResponse(BaseModel):
 class NoteColorCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=40)
     hex: str = Field(..., min_length=4, max_length=7)
+    hint: Optional[str] = Field(None, max_length=60)
 
 
 class NoteColorUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=40)
     hex: Optional[str] = Field(None, min_length=4, max_length=7)
+    hint: Optional[str] = Field(None, max_length=60)
 
 
 class NoteColorResponse(BaseModel):

@@ -4,6 +4,7 @@ import { useState } from "react"
 import { Pencil, Trash2, X } from "lucide-react"
 import { useNotes } from "@/stores/notes"
 import { colorLabel } from "@/lib/noteColors"
+import { NoteColor } from "@/services/types"
 import AddColorForm from "./AddColorForm"
 
 interface ColorManagerProps {
@@ -16,26 +17,45 @@ export default function ColorManager({ onClose }: ColorManagerProps) {
   const removeColor = useNotes((s) => s.removeColor)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [nameDraft, setNameDraft] = useState("")
+  const [hintDraft, setHintDraft] = useState("")
   const [hexDraft, setHexDraft] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  const [saving, setSaving] = useState(false)
 
-  const startEdit = (id: string, name: string, hex: string) => {
-    setEditingId(id)
-    setNameDraft(name)
-    setHexDraft(hex)
+  const startEdit = (color: NoteColor) => {
+    setEditingId(color.id)
+    setNameDraft(color.name)
+    setHintDraft(color.hint || "")
+    setHexDraft(color.hex)
+    setError(null)
+    setAdding(false)
+  }
+
+  const cancelEdit = () => {
+    setEditingId(null)
     setError(null)
   }
 
   const saveEdit = async () => {
     if (!editingId) return
+    const activeColor = colors.find((c) => c.id === editingId)
+    if (!activeColor) return
+    setSaving(true)
     try {
-      await renameColor(editingId, nameDraft.trim(), hexDraft)
+      await renameColor(
+        editingId,
+        activeColor.built_in ? activeColor.name : nameDraft.trim(),
+        hexDraft,
+        hintDraft.trim() || null
+      )
       setEditingId(null)
       setError(null)
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
       setError(typeof detail === "string" ? detail : "Could not update colour")
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -64,62 +84,85 @@ export default function ColorManager({ onClose }: ColorManagerProps) {
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
-      <ul className="space-y-1.5">
+      <ul className="space-y-2">
         {colors.map((c) => (
-          <li key={c.id} className="flex items-center gap-2 text-xs">
-            <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: c.hex }} />
+          <li key={c.id} className="text-xs">
             {editingId === c.id ? (
-              <>
-                <input
-                  value={nameDraft}
-                  onChange={(e) => setNameDraft(e.target.value)}
-                  className="min-w-0 flex-1 rounded border border-surface bg-panel px-1.5 py-0.5 text-xs text-cream focus:outline-none focus:ring-1 focus:ring-indigo"
-                />
-                <input
-                  type="color"
-                  value={hexDraft}
-                  onChange={(e) => setHexDraft(e.target.value)}
-                  className="h-6 w-7 cursor-pointer rounded border border-surface bg-panel p-0"
-                />
+              <div className="rounded-md border border-surface bg-panel/70 p-2">
+                <div className="mb-2 flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={hexDraft}
+                    onChange={(e) => setHexDraft(e.target.value)}
+                    className="h-6 w-7 cursor-pointer rounded border border-surface bg-void p-0"
+                    title="Pick colour"
+                  />
+                  {!c.built_in && (
+                    <input
+                      value={nameDraft}
+                      onChange={(e) => setNameDraft(e.target.value)}
+                      placeholder="Colour name"
+                      className="w-24 rounded border border-surface bg-void px-1.5 py-0.5 text-xs text-cream focus:outline-none focus:ring-1 focus:ring-indigo"
+                      title="Colour name"
+                    />
+                  )}
+                  <input
+                    value={hintDraft}
+                    onChange={(e) => setHintDraft(e.target.value)}
+                    placeholder="What for? (e.g. claim, facts)"
+                    className="min-w-0 flex-1 rounded border border-surface bg-void px-1.5 py-0.5 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo"
+                    title="What is this colour for?"
+                  />
+                </div>
+                <div className="flex justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={cancelEdit}
+                    className="rounded px-2 py-0.5 text-[10px] text-cream-dim hover:text-cream"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={saving || (!c.built_in && !nameDraft.trim())}
+                    onClick={() => void saveEdit()}
+                    className="rounded bg-indigo/20 px-2 py-0.5 text-[10px] font-medium text-indigo hover:bg-indigo/30 disabled:opacity-50"
+                  >
+                    {saving ? "Saving…" : "Save"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: c.hex }} />
+                <div className="flex min-w-0 flex-1 items-baseline gap-1.5 truncate">
+                  <span className="font-medium text-cream">{c.name}</span>
+                  {c.hint && (
+                    <span className="truncate text-[11px] text-cream-dim">{c.hint}</span>
+                  )}
+                </div>
+                {c.built_in && (
+                  <span className="text-[10px] text-cream-dim">default</span>
+                )}
                 <button
                   type="button"
-                  onClick={() => void saveEdit()}
-                  className="text-[11px] font-medium text-indigo hover:text-cream"
+                  title={`Edit ${colorLabel(c)}`}
+                  onClick={() => startEdit(c)}
+                  className="rounded p-0.5 text-cream-dim hover:text-cream"
                 >
-                  Save
+                  <Pencil className="h-3 w-3" />
                 </button>
-              </>
-            ) : (
-              <>
-                <span className="min-w-0 flex-1 truncate text-cream">
-                  {c.name}
-                  {c.hint && (
-                    <span className="ml-1.5 text-[10px] text-cream-dim">{c.hint}</span>
-                  )}
-                </span>
-                {c.built_in ? (
-                  <span className="text-[10px] text-cream-dim">default</span>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      title={`Rename ${colorLabel(c)}`}
-                      onClick={() => startEdit(c.id, c.name, c.hex)}
-                      className="rounded p-0.5 text-cream-dim hover:text-cream"
-                    >
-                      <Pencil className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      title={`Remove ${c.name}`}
-                      onClick={() => void handleDelete(c.id)}
-                      className="rounded p-0.5 text-cream-dim hover:text-rust"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  </>
+                {!c.built_in && (
+                  <button
+                    type="button"
+                    title={`Remove ${c.name}`}
+                    onClick={() => void handleDelete(c.id)}
+                    className="rounded p-0.5 text-cream-dim hover:text-rust"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
                 )}
-              </>
+              </div>
             )}
           </li>
         ))}
@@ -130,8 +173,11 @@ export default function ColorManager({ onClose }: ColorManagerProps) {
       ) : (
         <button
           type="button"
-          onClick={() => setAdding(true)}
-          className="mt-2 text-[11px] font-medium text-indigo hover:text-cream"
+          onClick={() => {
+            setAdding(true)
+            setEditingId(null)
+          }}
+          className="mt-2.5 text-[11px] font-medium text-indigo hover:text-cream"
         >
           + Add a colour
         </button>

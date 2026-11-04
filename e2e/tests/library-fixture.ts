@@ -18,6 +18,7 @@ export const libraryDocuments = Array.from({ length: 29 }, (_, index) => ({
 export async function mockLibrary(page: Page, options: { empty?: boolean; error?: boolean; notebooks?: boolean } = {}) {
   const documents = options.empty ? [] : libraryDocuments.map((document) => ({ ...document }))
   let notebooks = options.notebooks ? [{ id: 1, name: "Research", description: "Related research papers", created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" }] : []
+  let unfiled = { name: "Unfiled", description: "Documents waiting for a notebook." }
   if (options.notebooks) documents.slice(0, 2).forEach((document) => { document.notebook_id = 1 })
   await page.addInitScript(() => localStorage.setItem("token", "library-test-token"))
   await page.route("**/api/**", async (route) => {
@@ -30,6 +31,13 @@ export async function mockLibrary(page: Page, options: { empty?: boolean; error?
       const body = request.postDataJSON()
       documents.filter((document) => body.document_ids.includes(document.id)).forEach((document) => { document.notebook_id = body.notebook_id })
       return route.fulfill({ json: { moved: body.document_ids.length } })
+    }
+    if (url.pathname === "/api/notebooks/unfiled") {
+      if (request.method() === "PATCH") {
+        Object.assign(unfiled, request.postDataJSON())
+        return route.fulfill({ json: unfiled })
+      }
+      return route.fulfill({ json: unfiled })
     }
     if (url.pathname === "/api/notebooks") {
       if (request.method() === "POST") {

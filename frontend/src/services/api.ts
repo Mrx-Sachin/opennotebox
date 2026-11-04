@@ -644,10 +644,10 @@ export const makeNoteFlashcard = (noteId: number) =>
 export const getNoteColors = () =>
   api.get<NoteColor[]>("/api/notes/colors").then((r) => r.data)
 
-export const createNoteColor = (name: string, hex: string) =>
-  api.post<NoteColor>("/api/notes/colors", { name, hex }).then((r) => r.data)
+export const createNoteColor = (name: string, hex: string, hint?: string) =>
+  api.post<NoteColor>("/api/notes/colors", { name, hex, hint }).then((r) => r.data)
 
-export const updateNoteColor = (id: string, body: { name?: string; hex?: string }) =>
+export const updateNoteColor = (id: string, body: { name?: string; hex?: string; hint?: string | null }) =>
   api.patch<NoteColor>(`/api/notes/colors/${id}`, body).then((r) => r.data)
 
 export const deleteNoteColor = (id: string) =>

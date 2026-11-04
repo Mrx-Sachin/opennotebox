@@ -6,7 +6,7 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import {
   Download,
-  Layers,
+  ListTree,
   Palette,
   Pencil,
   Plus,
@@ -55,7 +55,6 @@ export default function NotesTab({ docId }: NotesTabProps) {
   const [pageError, setPageError] = useState<string | null>(null)
   const [pageSaving, setPageSaving] = useState(false)
   const [query, setQuery] = useState("")
-  const [scopeAll, setScopeAll] = useState(false)
   const [tagFilter, setTagFilter] = useState<string | null>(null)
   const [groupBySection, setGroupBySection] = useState(false)
   const [sections, setSections] = useState<Summary[]>([])
@@ -69,18 +68,17 @@ export default function NotesTab({ docId }: NotesTabProps) {
 
   useEffect(() => {
     const q = query.trim()
-    if (!q && !scopeAll) {
+    if (!q) {
       setHits(null)
       return
     }
-    if (scopeAll && !q) return
     const t = setTimeout(() => {
-      getNotes(scopeAll ? undefined : docId, { q: q || undefined })
+      getNotes(docId, { q: q || undefined })
         .then(setHits)
         .catch(() => setHits([]))
     }, 280)
     return () => clearTimeout(t)
-  }, [query, scopeAll, docId])
+  }, [query, docId])
 
   const savePageNote = async () => {
     const body = pageDraft.trim()
@@ -110,12 +108,12 @@ export default function NotesTab({ docId }: NotesTabProps) {
   const download = async () => {
     setExporting(true)
     try {
-      const md = await exportNotesMarkdown(scopeAll ? undefined : docId)
+      const md = await exportNotesMarkdown(docId)
       const blob = new Blob([md], { type: "text/markdown;charset=utf-8" })
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url
-      a.download = scopeAll ? "notes.md" : `notes-${docId}.md`
+      a.download = `notes-${docId}.md`
       a.click()
       URL.revokeObjectURL(url)
     } finally {
@@ -166,7 +164,7 @@ export default function NotesTab({ docId }: NotesTabProps) {
             title="Group by section"
             className={`rounded p-1 ${groupBySection ? "bg-indigo/15 text-indigo" : "text-cream-dim hover:text-cream"}`}
           >
-            <Layers className="h-3.5 w-3.5" />
+            <ListTree className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
@@ -188,26 +186,14 @@ export default function NotesTab({ docId }: NotesTabProps) {
         </div>
       </div>
 
-      <div className="flex items-center gap-1.5">
-        <div className="relative min-w-0 flex-1">
-          <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-cream-dim" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search notes…"
-            className="w-full rounded-md border border-surface bg-void py-1 pl-6 pr-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo"
-          />
-        </div>
-        <button
-          type="button"
-          onClick={() => setScopeAll((v) => !v)}
-          className={`shrink-0 rounded-md px-2 py-1 text-[10px] font-medium ${
-            scopeAll ? "bg-indigo/20 text-indigo" : "text-cream-dim hover:text-cream"
-          }`}
-          title="Search every document"
-        >
-          {scopeAll ? "All docs" : "This doc"}
-        </button>
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-cream-dim" />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search notes in this document…"
+          className="w-full rounded-md border border-surface bg-void py-1 pl-6 pr-2 text-xs text-cream placeholder:text-cream-dim/50 focus:outline-none focus:ring-1 focus:ring-indigo"
+        />
       </div>
 
       {allTags.length > 0 && (
@@ -293,7 +279,7 @@ export default function NotesTab({ docId }: NotesTabProps) {
                     }
                   )}
                   focused={focusedNoteId === n.id}
-                  showDoc={scopeAll}
+                  showDoc={false}
                 />
               ))}
             </div>

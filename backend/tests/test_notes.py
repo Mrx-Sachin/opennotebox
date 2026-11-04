@@ -461,3 +461,53 @@ class TestFlashcardFromNote:
             )
         assert first.status_code == 200
         assert second.json()["id"] == first.json()["id"]
+
+
+async def test_color_hint_support_and_builtin_override(client, auth_header):
+    # 1. Create with hint
+    created = await client.post(
+        "/api/notes/colors",
+        headers=auth_header,
+        json={"name": "purple", "hex": "#a78bfa", "hint": "facts"},
+    )
+    assert created.status_code == 200
+    color = created.json()
+    assert color["name"] == "purple"
+    assert color["hex"] == "#a78bfa"
+    assert color["hint"] == "facts"
+
+    # 2. Update custom hint and hex
+    updated = await client.patch(
+        f"/api/notes/colors/{color['id']}",
+        headers=auth_header,
+        json={"hint": "evidence", "hex": "#8b5cf6"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["hint"] == "evidence"
+    assert updated.json()["hex"] == "#8b5cf6"
+
+    # 3. Update built-in color hint
+    builtin_updated = await client.patch(
+        "/api/notes/colors/amber",
+        headers=auth_header,
+        json={"hint": "key finding"},
+    )
+    assert builtin_updated.status_code == 200
+    assert builtin_updated.json()["id"] == "amber"
+    assert builtin_updated.json()["name"] == "amber"
+    assert builtin_updated.json()["hint"] == "key finding"
+
+    # 4. Built-in name cannot be changed
+    conflict = await client.patch(
+        "/api/notes/colors/amber",
+        headers=auth_header,
+        json={"name": "yellow"},
+    )
+    assert conflict.status_code == 400
+
+    # 5. List palette reflects both custom hint and builtin override
+    palette = (await client.get("/api/notes/colors", headers=auth_header)).json()
+    amber = next(c for c in palette if c["id"] == "amber")
+    assert amber["hint"] == "key finding"
+    custom_purple = next(c for c in palette if c["id"] == color["id"])
+    assert custom_purple["hint"] == "evidence"

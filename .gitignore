@@ -42,3 +42,11 @@ _temp_tests/
 agent.md
 
 decision.md
+
+# Internal evaluation, benchmarks, and proofs
+prototypes/
+test-results/
+frontend/public/proof/
+tools/monitor_stack.py
+tools/test_concurrency_capacity.py
+e2e/tests/verify-notes-ui.spec.ts

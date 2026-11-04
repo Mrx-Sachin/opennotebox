@@ -4,10 +4,10 @@ import { Suspense, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { AlertCircle, BookOpen, Check, ChevronLeft, ChevronRight, FileText, FolderOpen, Headphones, Loader2, Search, Sparkles, UsersRound, X } from "lucide-react"
+import { AlertCircle, BookOpen, Check, ChevronLeft, ChevronRight, FolderOpen, Headphones, Loader2, Search, Sparkles, UsersRound, X } from "lucide-react"
 import TopBar from "@/components/layout/TopBar"
 import { useAuth } from "@/stores/auth"
-import { getNotebooks } from "@/services/notebookApi"
+import { getNotebooks, getUnfiledNotebook } from "@/services/notebookApi"
 import { getSharedLibrary } from "@/services/sharedLibraryApi"
 import type { SharedDocument } from "@/services/types"
 import SharedAddDialog from "./SharedAddDialog"
@@ -40,6 +40,13 @@ function SharedLibraryContent() {
     enabled: user != null,
     retry: 1,
   })
+  const unfiledQuery = useQuery({
+    queryKey: ["unfiled-notebook", user?.id],
+    queryFn: ({ signal }) => getUnfiledNotebook(signal),
+    enabled: user != null,
+    staleTime: 60_000,
+  })
+  const unfiledName = unfiledQuery.data?.name || "Unfiled"
   const notebooks = notebooksQuery.data ?? []
   const destinationNotebook = notebookId == null ? null : notebooks.find((notebook) => notebook.id === notebookId) ?? null
   const invalidNotebook = notebookParam != null && (!Number.isSafeInteger(notebookId) || Number(notebookId) < 1)
@@ -119,7 +126,6 @@ function SharedLibraryContent() {
             <Link href="/dashboard" className="library-nav-item"><FolderOpen size={17} /><span>Notebooks</span></Link>
             <Link href="/dashboard/shared" aria-current="page" className="library-nav-item is-active"><UsersRound size={17} /><span>Shared library</span></Link>
             <Link href="/dashboard?view=podcasts" className="library-nav-item"><Headphones size={17} /><span>Podcasts</span></Link>
-            <Link href="/dashboard?unfiled=true" className="library-nav-item"><FileText size={17} /><span>Unfiled</span></Link>
           </nav>
           <div className="library-storage-note shared-library-note"><BookOpen size={19} strokeWidth={1.5} /><p>Good papers travel.<br />Your notes stay yours.</p></div>
         </aside>
@@ -133,7 +139,7 @@ function SharedLibraryContent() {
             {destinationNotebook && <div className="shared-destination-note"><span>Suggestions for</span><strong>{destinationNotebook.name}</strong><Link href="/dashboard/shared">Browse the full collection</Link></div>}
           </div>
 
-          {notebooksQuery.isError && <div className="notebook-load-error" role="alert">Your notebooks could not be loaded. You can still add papers to Unfiled.<button type="button" onClick={() => void notebooksQuery.refetch()}>Try again</button></div>}
+          {notebooksQuery.isError && <div className="notebook-load-error" role="alert">Your notebooks could not be loaded. You can still add papers to {unfiledName}.<button type="button" onClick={() => void notebooksQuery.refetch()}>Try again</button></div>}
 
           <section className="shared-catalog" aria-labelledby="shared-catalog-heading">
             <div className="library-section-heading shared-catalog-heading">
@@ -164,7 +170,7 @@ function SharedLibraryContent() {
           </section>
         </main>
       </div>
-      {addOpen && <SharedAddDialog documents={selectedDocuments} notebooks={notebooks} defaultNotebookId={destinationNotebook?.id ?? null} onClose={() => setAddOpen(false)} onAdded={(result) => {
+      {addOpen && <SharedAddDialog documents={selectedDocuments} notebooks={notebooks} defaultNotebookId={destinationNotebook?.id ?? null} unfiledName={unfiledName} onClose={() => setAddOpen(false)} onAdded={(result) => {
         setAddOpen(false)
         setSelected({})
         setNotice(`${result.added} ${result.added === 1 ? "paper added" : "papers added"}${result.alreadyAdded ? `, ${result.alreadyAdded} already in your library` : ""}.`)

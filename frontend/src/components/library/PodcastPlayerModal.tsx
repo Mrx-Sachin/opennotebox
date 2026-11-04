@@ -12,12 +12,15 @@ import {
   Mic,
   Minimize2,
   Pause,
+  PhoneOff,
   Play,
+  Radio,
   RotateCcw,
   RotateCw,
   Send,
   Sparkles,
   Square,
+  User,
   Volume2,
   VolumeX,
   X,
@@ -44,11 +47,66 @@ function formatTime(seconds?: number | null): string {
   return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`
 }
 
+export function isSpeakerHostA(speakerRaw?: string | null): boolean {
+  if (!speakerRaw) return true
+  const s = speakerRaw.trim().toLowerCase()
+  if (
+    s === "a" ||
+    s.startsWith("a:") ||
+    s.startsWith("a -") ||
+    s.startsWith("a –") ||
+    s.includes("host a") ||
+    s.includes("host_a") ||
+    s.includes("host-a") ||
+    s.includes("hosta") ||
+    s.includes("michael") ||
+    s.includes("ryan")
+  ) {
+    return true
+  }
+  if (
+    s === "b" ||
+    s.startsWith("b:") ||
+    s.startsWith("b -") ||
+    s.startsWith("b –") ||
+    s.includes("host b") ||
+    s.includes("host_b") ||
+    s.includes("host-b") ||
+    s.includes("hostb") ||
+    s.includes("bella") ||
+    s.includes("lessac")
+  ) {
+    return false
+  }
+  return true
+}
+
+export function isSpeakerHostB(speakerRaw?: string | null): boolean {
+  if (!speakerRaw) return false
+  return !isSpeakerHostA(speakerRaw)
+}
+
 export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerModalProps) {
   const tts = useReader((state) => state.tts)
   const activePodcast = useReader((state) => state.activePodcast)
-  const isFullscreen = true
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("podcast_modal_fullscreen")
+      if (saved !== null) return saved === "true"
+    }
+    return false
+  })
   const [viewMode, setViewMode] = useState<"both" | "visualizer" | "transcript">("both")
+
+  const toggleFullscreen = () => {
+    setIsFullscreen((prev) => {
+      const next = !prev
+      if (typeof window !== "undefined") {
+        localStorage.setItem("podcast_modal_fullscreen", String(next))
+      }
+      return next
+    })
+  }
   const containerRef = useRef<HTMLDivElement>(null)
 
   const isCurrentActive = activePodcast?.id === podcast.id
@@ -66,11 +124,22 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
 
   const transcriptLines = podcast.transcript?.lines || []
 
+  // Detect host names dynamically from transcript lines if present
+  const hasLegacyNames = transcriptLines.some(
+    (l) =>
+      l.speaker.toLowerCase().includes("ryan") ||
+      l.speaker.toLowerCase().includes("lessac")
+  )
+  const hostAName = hasLegacyNames ? "Ryan" : "Michael"
+  const hostBName = hasLegacyNames ? "Lessac" : "Bella"
+
   // Interruption interactive state
   const [isInterruptionOpen, setIsInterruptionOpen] = useState(false)
   const [savedPlaybackTime, setSavedPlaybackTime] = useState<number>(0)
   const [questionText, setQuestionText] = useState("")
-  const [isAnswering, setIsAnswering] = useState(false)
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [isPlayingAnswer, setIsPlayingAnswer] = useState(false)
+  const isAnswering = isGenerating || isPlayingAnswer
   const [isRecording, setIsRecording] = useState(false)
   const [recordingSeconds, setRecordingSeconds] = useState(0)
   const [isTranscribing, setIsTranscribing] = useState(false)
@@ -107,6 +176,12 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
 
   const activeLine = activeLineIndex >= 0 ? transcriptLines[activeLineIndex] : null
 
+  const isCurrentLineA = activeLine ? isSpeakerHostA(activeLine.speaker) : false
+  const isCurrentLineB = activeLine ? isSpeakerHostB(activeLine.speaker) : false
+
+  const isSpeakingHostA = isPlaying && isCurrentLineA
+  const isSpeakingHostB = isPlaying && isCurrentLineB
+
   const togglePlayback = useCallback(() => {
     if (isCurrentActive) {
       ttsEngine.toggle()
@@ -137,7 +212,8 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
       await ttsEngine.cancelInterruption()
     }
     setIsInterruptionOpen(false)
-    setIsAnswering(false)
+    setIsGenerating(false)
+    setIsPlayingAnswer(false)
     setAnswerResponse(null)
     setInterruptionError(null)
   }, [])
@@ -159,10 +235,10 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
       } else if (event.key === " ") {
         event.preventDefault()
         togglePlayback()
-      } else if (event.key === "ArrowLeft" && isCurrentActive) {
+      } else if (event.key === "ArrowLeft") {
         event.preventDefault()
         ttsEngine.skipSeconds(-15)
-      } else if (event.key === "ArrowRight" && isCurrentActive) {
+      } else if (event.key === "ArrowRight") {
         event.preventDefault()
         ttsEngine.skipSeconds(15)
       }
@@ -171,20 +247,48 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
     return () => window.removeEventListener("keydown", handleKeyDown, true)
   }, [isFullscreen, isInterruptionOpen, isCurrentActive, togglePlayback, handleCloseInterruption, handleModalClose])
 
+  const handleLineClick = async (index: number) => {
+    if (index < 0 || index >= transcriptLines.length) return
+    const line = transcriptLines[index]
+    if (!line) return
 
+    // Calculate target timestamp accurately from line start_time
+    let targetTime: number
+    if (line.start_time != null && isFinite(line.start_time)) {
+      // Add a small 0.05s buffer into the turn so targetTime reliably lands inside this turn
+      // rather than right on the preceding boundary or silence.
+      targetTime = Math.max(0, line.start_time + 0.05)
+    } else if (effectiveDuration > 0 && transcriptLines.length > 0) {
+      targetTime = (index / transcriptLines.length) * effectiveDuration
+    } else {
+      targetTime = 0
+    }
 
-  const handleLineClick = (index: number) => {
-    if (isCurrentActive && transcriptLines.length > 0 && effectiveDuration > 0) {
-      const estimatedFraction = index / transcriptLines.length
-      const targetTime = estimatedFraction * effectiveDuration
-      if (isInterruptionOpen) {
-        setSavedPlaybackTime(targetTime)
-      } else {
-        ttsEngine.seekTo(targetTime)
-      }
+    // If studio call-in is open, update saved resume playback timestamp
+    if (isInterruptionOpen) {
+      setSavedPlaybackTime(targetTime)
+      return
+    }
+
+    // If podcast is already active, seek directly to this line
+    if (isCurrentActive) {
+      ttsEngine.seekTo(targetTime)
+    } else {
+      // Start podcast playback directly from this line
+      await ttsEngine.playPodcast(podcast, targetTime)
     }
   }
 
+  // Scroll active transcript line smoothly into view
+  useEffect(() => {
+    if (activeLineIndex < 0) return
+    const el = document.querySelector(`[data-testid="transcript-line-${activeLineIndex}"]`)
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" })
+    }
+  }, [activeLineIndex])
+
+  // Studio Call-In Interruption flow
   const handleOpenInterruption = async (startVoice = true) => {
     // Rewind to the beginning of the active sentence so resumption sounds natural!
     const lineStartTime = activeLine?.start_time != null ? activeLine.start_time : undefined
@@ -219,7 +323,8 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
     setIsTranscribing(false)
     await ttsEngine.resumeFromInterruption(savedPlaybackTime)
     setIsInterruptionOpen(false)
-    setIsAnswering(false)
+    setIsGenerating(false)
+    setIsPlayingAnswer(false)
     setAnswerResponse(null)
     setQuestionText("")
     setCallHistory([])
@@ -276,6 +381,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
       const audioBlob = await recorder.stop()
       const res = await transcribePodcastAudio(podcast.id, audioBlob)
       const text = res.transcript?.trim()
+      setIsTranscribing(false)
       if (text) {
         setQuestionText(text)
         await handleSubmitQuestion(text)
@@ -284,13 +390,12 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
       }
     } catch (err) {
       console.error("Audio transcription failed:", err)
+      setIsTranscribing(false)
       setInterruptionError(
         err instanceof Error
           ? err.message
           : "Voice transcription failed. You can type your question instead."
       )
-    } finally {
-      setIsTranscribing(false)
     }
   }
 
@@ -305,9 +410,9 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
 
   const handleSubmitQuestion = async (explicitText?: string) => {
     const query = (explicitText ?? questionText).trim()
-    if (!query || isAnswering) return
+    if (!query || isGenerating || isPlayingAnswer) return
 
-    setIsAnswering(true)
+    setIsGenerating(true)
     setActiveQuestion(query)
     setInterruptionError(null)
 
@@ -331,33 +436,26 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
         setSavedPlaybackTime(response.resume_time)
       }
       setQuestionText("")
+      setIsGenerating(false)
 
       if (response.audio_url) {
+        setIsPlayingAnswer(true)
         await ttsEngine.playInterruptionAnswer(response.audio_url, () => {
-          setIsAnswering(false)
+          setIsPlayingAnswer(false)
         })
-      } else {
-        setIsAnswering(false)
       }
     } catch (err) {
       console.error("Podcast interruption failed:", err)
       setInterruptionError(
         err instanceof Error ? err.message : "Failed to obtain answers from podcast hosts."
       )
-      setIsAnswering(false)
+      setIsGenerating(false)
+      setIsPlayingAnswer(false)
     }
   }
 
-  const isSpeakingHostA =
-    isPlaying &&
-    (activeLine?.speaker.toLowerCase().includes("host a") ||
-      activeLine?.speaker.toLowerCase().includes("ryan") ||
-      (!activeLine?.speaker.toLowerCase().includes("host b") &&
-        !activeLine?.speaker.toLowerCase().includes("lessac")))
-  const isSpeakingHostB =
-    isPlaying &&
-    (activeLine?.speaker.toLowerCase().includes("host b") ||
-      activeLine?.speaker.toLowerCase().includes("lessac"))
+  const isHostASpeakingEffective = isSpeakingHostA || (isAnswering && answerResponse != null)
+  const isHostBSpeakingEffective = isSpeakingHostB
 
   return (
     <div
@@ -384,6 +482,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
               className="podcast-modal-book-link"
               onClick={handleModalClose}
               title="Open full document reader"
+              data-testid="podcast-modal-book-link"
             >
               <span>{podcast.document_title || `Doc #${podcast.document_id}`}</span>
             </Link>
@@ -424,20 +523,21 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
             <button
               type="button"
               className="podcast-modal-action-btn"
-              onClick={handleModalClose}
-              aria-label="Minimize player"
-              title="Minimize to bottom player"
-              data-testid="podcast-modal-close"
+              onClick={toggleFullscreen}
+              aria-label={isFullscreen ? "Exit full screen" : "Enter full screen"}
+              title={isFullscreen ? "Exit full screen" : "Full screen"}
+              data-testid="podcast-fullscreen-toggle"
             >
-              <Minimize2 size={18} />
+              {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
             </button>
 
             <button
               type="button"
               className="podcast-modal-action-btn"
               onClick={handleModalClose}
-              aria-label="Close"
-              title="Close player"
+              aria-label="Minimize player"
+              title="Minimize to bottom player"
+              data-testid="podcast-modal-close"
             >
               <X size={18} />
             </button>
@@ -463,57 +563,107 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
             >
               {/* Hosts Row */}
               <div className="podcast-hosts-row">
+                {/* Host A Card */}
                 <div
                   className={`podcast-host-card ${
-                    isSpeakingHostA || (isAnswering && answerResponse != null) ? "is-speaking-host" : ""
+                    isHostASpeakingEffective ? "is-speaking" : ""
                   }`}
                 >
                   <div className="podcast-host-avatar host-a">
                     <span>A</span>
-                    {(isSpeakingHostA || (isPlaying && isInterruptionOpen)) && (
-                      <div className="podcast-speaking-pulse" />
+                    {isHostASpeakingEffective && (
+                      <>
+                        <div className="podcast-speaking-pulse pulse-host-a ring-1" />
+                        <div className="podcast-speaking-pulse pulse-host-a ring-2" />
+                        <div className="podcast-host-live-badge badge-host-a" title="Host A On Air">
+                          <span className="live-bar bar-1" />
+                          <span className="live-bar bar-2" />
+                          <span className="live-bar bar-3" />
+                        </div>
+                      </>
                     )}
                   </div>
                   <div className="podcast-host-meta">
                     <span className="podcast-host-role">Host A</span>
-                    <span className="podcast-host-name">Michael</span>
+                    <span className="podcast-host-name">{hostAName}</span>
                   </div>
                 </div>
 
                 {!isInterruptionOpen ? (
                   <div className="podcast-visualizer-center">
-                    <div className="podcast-wave-bars" aria-hidden="true">
+                    <div
+                      className={`podcast-waveform ${
+                        isSpeakingHostA
+                          ? "speaker-a"
+                          : isSpeakingHostB
+                          ? "speaker-b"
+                          : ""
+                      }`}
+                      data-testid="podcast-waveform"
+                      aria-hidden="true"
+                    >
                       {Array.from({ length: 7 }).map((_, index) => (
                         <span
                           key={index}
-                          className={`podcast-wave-bar ${isPlaying ? "is-animating" : ""}`}
+                          className={`podcast-wave-bar ${
+                            isPreparing
+                              ? "is-preparing"
+                              : isPlaying
+                              ? "is-animating"
+                              : "is-paused"
+                          }`}
                           style={{
                             animationDelay: `${(index % 7) * 0.12}s`,
-                            height: isPlaying ? undefined : `${20 + (index % 5) * 8}%`,
                           }}
                         />
                       ))}
                     </div>
-                    <span className="podcast-visualizer-status">
-                      {isPreparing
-                        ? "Loading episode audio..."
-                        : isPlaying
-                        ? "Now playing"
-                        : "Paused"}
-                    </span>
 
-                    {/* NotebookLM Style 1-Tap Join Conversation Hero */}
-                    <div className="mt-8 flex flex-col items-center gap-3 w-full max-w-sm">
+                    <div className="podcast-visualizer-status-wrap">
+                      <span
+                        className={`podcast-status-dot ${
+                          isPreparing
+                            ? "dot-preparing"
+                            : !isPlaying
+                            ? "dot-paused"
+                            : isSpeakingHostA
+                            ? "dot-host-a"
+                            : isSpeakingHostB
+                            ? "dot-host-b"
+                            : "dot-playing"
+                        }`}
+                      />
+                      <span className="podcast-visualizer-status">
+                        {isPreparing
+                          ? "Loading episode audio..."
+                          : isPlaying
+                          ? isSpeakingHostA
+                            ? `${hostAName} speaking`
+                            : isSpeakingHostB
+                            ? `${hostBName} speaking`
+                            : "Now playing"
+                          : "Paused"}
+                      </span>
+                    </div>
+
+                    {/* Redesigned Clean Studio Call-In Hero */}
+                    <div className="podcast-callin-hero">
                       <button
                         type="button"
                         onClick={() => handleOpenInterruption(true)}
-                        className="w-full flex items-center justify-center gap-2.5 py-3 px-5 rounded-2xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-semibold text-sm shadow-xl shadow-indigo-950/60 hover:shadow-indigo-900/80 hover:scale-[1.02] active:scale-[0.98] transition-all"
+                        className="podcast-callin-btn"
+                        title="Join conversation and talk directly with the hosts"
                       >
-                        <span className="text-lg">✋</span>
-                        <span>Join Conversation (Call In)</span>
+                        <div className="podcast-callin-btn-glow" aria-hidden="true" />
+                        <span className="podcast-callin-icon-wrap">
+                          <Radio size={15} className="podcast-callin-icon" />
+                          <span className="podcast-callin-live-dot" />
+                        </span>
+                        <span className="podcast-callin-text">Join Conversation</span>
+                        <span className="podcast-callin-tag">Studio Call-In</span>
                       </button>
-                      <p className="text-[12px] text-zinc-400 text-center">
-                        Tap to speak directly with the hosts about what you&apos;re hearing
+                      <p className="podcast-callin-hint">
+                        Speak directly with the hosts about what you&apos;re hearing
                       </p>
                     </div>
                   </div>
@@ -527,25 +677,34 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                   </div>
                 )}
 
+                {/* Host B Card */}
                 <div
                   className={`podcast-host-card ${
-                    isSpeakingHostB || (isAnswering && answerResponse != null) ? "is-speaking-host" : ""
+                    isHostBSpeakingEffective ? "is-speaking" : ""
                   }`}
                 >
                   <div className="podcast-host-avatar host-b">
                     <span>B</span>
-                    {(isSpeakingHostB || (isPlaying && isInterruptionOpen)) && (
-                      <div className="podcast-speaking-pulse" />
+                    {isHostBSpeakingEffective && (
+                      <>
+                        <div className="podcast-speaking-pulse pulse-host-b ring-1" />
+                        <div className="podcast-speaking-pulse pulse-host-b ring-2" />
+                        <div className="podcast-host-live-badge badge-host-b" title="Host B On Air">
+                          <span className="live-bar bar-1" />
+                          <span className="live-bar bar-2" />
+                          <span className="live-bar bar-3" />
+                        </div>
+                      </>
                     )}
                   </div>
                   <div className="podcast-host-meta">
                     <span className="podcast-host-role">Host B</span>
-                    <span className="podcast-host-name">Bella</span>
+                    <span className="podcast-host-name">{hostBName}</span>
                   </div>
                 </div>
               </div>
 
-              {/* Interruption UI Body: NotebookLM Live Call-In */}
+              {/* Interruption UI Body: Studio Live Call-In */}
               {isInterruptionOpen && (
                 <div className="w-full max-w-xl flex flex-col gap-3.5 mt-5">
                   {/* Caller Status & Context Header */}
@@ -583,10 +742,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                           line.speaker.toLowerCase().includes("you") ||
                           line.speaker.toLowerCase().includes("caller") ||
                           line.speaker.toLowerCase().includes("listener")
-                        const isHostA =
-                          !isUser &&
-                          (line.speaker.toLowerCase().includes("host a") ||
-                            line.speaker.toLowerCase().includes("ryan"))
+                        const isHostALine = !isUser && isSpeakerHostA(line.speaker)
 
                         if (isUser) {
                           return (
@@ -595,7 +751,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                               className="p-3 rounded-xl border border-purple-500/40 bg-purple-950/40 text-xs flex flex-col gap-1 shadow-sm"
                             >
                               <div className="flex items-center gap-1.5 text-purple-300 font-bold text-[10px] uppercase tracking-wider">
-                                <span>👤</span>
+                                <User size={12} className="text-purple-400" />
                                 <span>You (Caller)</span>
                               </div>
                               <p className="text-purple-100 text-sm font-medium leading-relaxed">
@@ -609,14 +765,14 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                           <div
                             key={idx}
                             className={`p-3.5 rounded-xl border text-xs flex flex-col gap-1 ${
-                              isHostA
+                              isHostALine
                                 ? "bg-indigo-950/30 border-indigo-500/40"
                                 : "bg-emerald-950/30 border-emerald-500/40"
                             }`}
                           >
                             <span
                               className={`font-bold uppercase text-[10px] tracking-wider ${
-                                isHostA ? "text-indigo-400" : "text-emerald-400"
+                                isHostALine ? "text-indigo-400" : "text-emerald-400"
                               }`}
                             >
                               {line.speaker}
@@ -630,7 +786,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                       {isAnswering && activeQuestion && callHistory.every((t) => t.text !== activeQuestion) && (
                         <div className="p-3 rounded-xl border border-purple-500/40 bg-purple-950/40 text-xs flex flex-col gap-1 shadow-sm">
                           <div className="flex items-center gap-1.5 text-purple-300 font-bold text-[10px] uppercase tracking-wider">
-                            <span>👤</span>
+                            <User size={12} className="text-purple-400" />
                             <span>You (Caller)</span>
                           </div>
                           <p className="text-purple-100 text-sm font-medium leading-relaxed">
@@ -641,7 +797,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                     </div>
                   )}
 
-                  {/* UNIFIED ACTIVE STATE AREA: WORKS SEAMLESSLY FOR FIRST QUESTION & FOLLOW-UPS */}
+                  {/* Primary Interaction Area */}
                   {isRecording ? (
                     /* 1. Live Recording State */
                     <div className="p-5 rounded-2xl bg-gradient-to-b from-rose-950/50 to-zinc-900 border border-rose-500/50 flex flex-col items-center gap-3.5 text-center shadow-xl shadow-rose-950/40">
@@ -650,7 +806,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
                           <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-500"></span>
                         </span>
-                        <span>Live on Mic with Hosts — 0:{recordingSeconds.toString().padStart(2, "0")}</span>
+                        <span>Live on Mic with Hosts - 0:{recordingSeconds.toString().padStart(2, "0")}</span>
                       </div>
 
                       <div className="flex items-center gap-1.5 h-10 my-1">
@@ -667,7 +823,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                       </div>
 
                       <p className="text-xs text-zinc-300">
-                        Speak your question or thought — Ryan &amp; Lessac will react live.
+                        Speak your question or thought - {hostAName} &amp; {hostBName} will react live.
                       </p>
 
                       <div className="flex items-center gap-3 mt-1">
@@ -696,13 +852,42 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                         Transcribing voice with Meta Muse...
                       </div>
                     </div>
-                  ) : isAnswering ? (
+                  ) : isGenerating ? (
                     /* 3. Generating Answer */
                     <div className="p-6 rounded-2xl bg-zinc-900/90 border border-zinc-800 flex flex-col items-center justify-center gap-3 text-center">
                       <Loader2 size={26} className="animate-spin text-indigo-400" />
                       <div className="text-sm font-semibold text-zinc-200">
-                        Ryan and Lessac are answering...
+                        {hostAName} and {hostBName} are preparing their response...
                       </div>
+                      <p className="text-xs text-zinc-400">
+                        Consulting source material and preparing dialogue
+                      </p>
+                    </div>
+                  ) : isPlayingAnswer ? (
+                    /* 3b. Playing Answer Audio */
+                    <div className="p-5 rounded-2xl bg-gradient-to-b from-indigo-950/40 to-zinc-900 border border-indigo-500/40 flex flex-col items-center justify-center gap-2.5 text-center shadow-lg">
+                      <div className="flex items-center gap-2 text-indigo-300 text-xs font-bold uppercase tracking-wider">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+                        </span>
+                        <span>{hostAName} &amp; {hostBName} are on the air answering live</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 h-6 my-1">
+                        {Array.from({ length: 9 }).map((_, i) => (
+                          <span
+                            key={i}
+                            className="w-1 rounded-full bg-indigo-400 animate-pulse"
+                            style={{
+                              height: `${40 + Math.sin(i * 0.9) * 35}%`,
+                              animationDuration: `${0.35 + (i % 3) * 0.15}s`,
+                            }}
+                          />
+                        ))}
+                      </div>
+                      <p className="text-xs text-zinc-400">
+                        Listen to the hosts&apos; response or prepare a follow-up.
+                      </p>
                     </div>
                   ) : (
                     /* 4. Ready for Input (Initial question OR follow-up) */
@@ -750,7 +935,7 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                           placeholder={
                             answerResponse
                               ? "Ask a follow-up to the hosts..."
-                              : "Ask Ryan and Lessac a question..."
+                              : `Ask ${hostAName} and ${hostBName} a question...`
                           }
                           className="w-full pl-3.5 pr-20 py-2.5 rounded-xl bg-zinc-900 border border-zinc-700/80 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-indigo-500"
                         />
@@ -768,32 +953,24 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                             onClick={() => void handleSubmitQuestion()}
                             disabled={!questionText.trim()}
                             title="Submit question"
-                            className="p-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 transition-colors"
+                            className="p-1.5 rounded-lg text-indigo-400 hover:text-indigo-300 hover:bg-zinc-800 disabled:opacity-40 disabled:hover:bg-transparent transition-colors"
                           >
-                            <Send size={14} />
+                            <Send size={15} />
                           </button>
                         </div>
                       </div>
 
-                      {/* Action Row: Talkback status and Return to show */}
-                      <div className="flex items-center justify-between pt-2">
-                        {answerResponse ? (
-                          <div className="flex items-center gap-2 text-xs text-indigo-300 font-medium">
-                            <Volume2 size={15} className="animate-pulse" />
-                            <span>Host talkback active</span>
-                          </div>
-                        ) : (
-                          <div className="text-xs text-zinc-400">
-                            Speak or type to ask
-                          </div>
-                        )}
+                      {/* Return to episode action */}
+                      <div className="flex items-center justify-between pt-1">
+                        <span className="text-[11px] text-zinc-400">
+                          {answerResponse ? "Satisfied with the answer?" : "Done asking questions?"}
+                        </span>
                         <button
                           type="button"
                           onClick={handleReturnToEpisode}
-                          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-all shadow-md active:scale-95"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
                         >
-                          <RotateCcw size={13} />
-                          <span>Return to Show (Resume)</span>
+                          <span>Resume Episode ({formatTime(savedPlaybackTime)})</span>
                         </button>
                       </div>
                     </div>
@@ -832,18 +1009,16 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
               ) : (
                 <div className="podcast-transcript-list reader-scroll" tabIndex={0} aria-label="Transcript dialogue lines">
                   {transcriptLines.map((line, index) => {
-                    const isHostA =
-                      line.speaker.toLowerCase().includes("host a") ||
-                      line.speaker.toLowerCase().includes("host_a") ||
-                      line.speaker.toLowerCase().includes("michael") ||
-                      line.speaker.toLowerCase().includes("ryan")
+                    const isHostA = isSpeakerHostA(line.speaker)
                     const isCurrentLine = activeLineIndex === index
 
                     return (
                       <div
                         key={index}
-                        className={`podcast-transcript-card ${isHostA ? "is-host-a" : "is-host-b"} ${
-                          isCurrentLine ? "!border-indigo-500 !bg-indigo-950/40 shadow-sm" : ""
+                        className={`podcast-transcript-card ${
+                          isHostA ? "is-host-a" : "is-host-b"
+                        } ${
+                          isCurrentLine ? (isHostA ? "is-active-host-a" : "is-active-host-b") : ""
                         }`}
                         onClick={() => handleLineClick(index)}
                         role="button"
@@ -859,7 +1034,9 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                       >
                         <div className="podcast-transcript-speaker-row">
                           <span className={`podcast-speaker-pill ${isHostA ? "pill-host-a" : "pill-host-b"}`}>
-                            {line.speaker}
+                            <span className="podcast-speaker-pill-dot" />
+                            <span className="font-semibold">{isHostA ? "Host A" : "Host B"}</span>
+                            <span className="podcast-speaker-pill-name">· {isHostA ? hostAName : hostBName}</span>
                           </span>
                           <span className="podcast-line-index">Turn #{index + 1}</span>
                         </div>
@@ -911,19 +1088,25 @@ export default function PodcastPlayerModal({ podcast, onClose }: PodcastPlayerMo
                 <span>Open in Reader</span>
               </Link>
 
+              {/* Redesigned Studio Call-In Button in Footer */}
               <button
                 type="button"
-                className={`podcast-modal-jump-btn !px-3.5 !py-1.5 ${
-                  isInterruptionOpen
-                    ? "!border-indigo-500 !bg-indigo-950/60 !text-white"
-                    : "!border-indigo-500/40 !bg-indigo-950/30 text-indigo-300 hover:bg-indigo-900/40"
-                }`}
+                className={`podcast-footer-callin-btn ${isInterruptionOpen ? "is-active" : ""}`}
                 onClick={isInterruptionOpen ? handleCloseInterruption : () => handleOpenInterruption(true)}
-                title={isInterruptionOpen ? "Leave Call-In" : "Join the conversation"}
+                title={isInterruptionOpen ? "Leave live call-in and resume episode" : "Join conversation with hosts"}
                 aria-label={isInterruptionOpen ? "Leave Call-In" : "Join Conversation"}
               >
-                <span>✋</span>
-                <span className="font-semibold">{isInterruptionOpen ? "Leave Call-In" : "Join Show"}</span>
+                {isInterruptionOpen ? (
+                  <>
+                    <PhoneOff size={14} className="podcast-footer-callin-icon" />
+                    <span>Leave Call-In</span>
+                  </>
+                ) : (
+                  <>
+                    <Mic size={14} className="podcast-footer-callin-icon" />
+                    <span>Join Conversation</span>
+                  </>
+                )}
               </button>
             </div>
 

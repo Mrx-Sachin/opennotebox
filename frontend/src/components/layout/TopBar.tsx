@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { BookOpen, LogOut, Maximize2, Minimize2, Settings, ArrowLeft } from "lucide-react"
+import { BookOpen, LogOut, Maximize2, Minimize2, Settings, ArrowLeft, Shield } from "lucide-react"
 import Link from "next/link"
 import { useQueryClient } from "@tanstack/react-query"
 import { useReader } from "@/stores/reader"
@@ -64,6 +64,16 @@ export default function TopBar({ library = false, libraryHref = "/dashboard", li
         >
           {focusMode ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
         </button>}
+        {user?.is_admin && (
+          <Link
+            href="/admin"
+            title="Admin panel"
+            aria-label="Admin panel"
+            className="rounded-md p-2 text-cream-dim transition-colors hover:bg-surface hover:text-cream"
+          >
+            <Shield className="h-4 w-4" />
+          </Link>
+        )}
         <button
           onClick={() => setSettingsOpen(true)}
           title="Settings"
