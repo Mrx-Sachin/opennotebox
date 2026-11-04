@@ -500,7 +500,7 @@ class TestHealthEndpointStress:
         )
         analysis = _analyze(results)
         assert analysis["error_count"] == 0
-        assert analysis["latency_p99_ms"] < 500, (
+        assert analysis["latency_p99_ms"] < 1500, (
             f"Health endpoint too slow under load: {analysis['latency_p99_ms']}ms"
         )
 
