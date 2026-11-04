@@ -212,6 +212,12 @@ async function setupMockPodcasts(page: Page, options: MockOptions = {}) {
       })
     }
 
+    // Podcast section: voice transcription mock for interactive call-in
+    if (url.pathname.endsWith("/transcribe")) {
+      return route.fulfill({
+        json: { transcript: "What is unsupervised? and how many types of learning there are?" },
+      })
+    }
     if (url.pathname === "/api/podcasts/102/audio") {
       return route.fulfill({
         status: 200,
@@ -1163,4 +1169,76 @@ test("clicking a transcript line accurately jumps to line start_time and activat
 
   await expect(line1).toHaveClass(/is-active/)
   await expect(page.getByTestId("transcript-line-0")).not.toHaveClass(/is-active/)
+})
+
+// Podcast section: verify studio call-in voice recording stage progression
+// (voice recording -> transcribing via Meta Muse -> hosts preparing response -> on-air live answering)
+test("voice recording stage transitions: transcribing -> preparing response -> on air live answering", async ({ page }) => {
+  await setupMockPodcasts(page)
+  await page.goto("/dashboard")
+
+  await page.getByTestId("podcast-expand-101").click()
+  const playerModal = page.getByTestId("podcast-player-modal")
+  await expect(playerModal).toBeVisible()
+
+  // Open Call-in
+  await page.getByRole("button", { name: "Join Conversation", exact: true }).click()
+  await expect(page.getByRole("button", { name: "Speak question via Meta Muse" })).toBeVisible()
+
+  // Provide a real MediaStream via Web Audio API createMediaStreamDestination
+  await page.evaluate(() => {
+    const ctx = new AudioContext()
+    const osc = ctx.createOscillator()
+    const dst = ctx.createMediaStreamDestination()
+    osc.connect(dst)
+    osc.start()
+    navigator.mediaDevices.getUserMedia = async () => dst.stream
+  })
+
+  // Start Voice Recording
+  await page.getByRole("button", { name: "Speak question via Meta Muse" }).click()
+  await expect(page.getByText("Live on Mic with Hosts")).toBeVisible()
+
+  // Delay interrupt API to verify stage 2 (preparing response)
+  let resolveInterrupt: (val: any) => void
+  const interruptPromise = new Promise((resolve) => { resolveInterrupt = resolve })
+
+  await page.route("**/api/podcasts/101/interrupt", async (route) => {
+    await interruptPromise
+    return route.fulfill({
+      json: {
+        interrupt_id: "test-int-101",
+        audio_url: "/api/podcasts/101/audio",
+        duration: 10,
+        lines: [
+          { speaker: "Host A", text: "Unsupervised learning discovers structure from raw data without human labels." },
+          { speaker: "Host B", text: "And in context engineering, that foundation powers representation learning!" },
+        ],
+        current_line: { speaker: "Host B", text: "Thanks, excited to be here." },
+        next_line: null,
+        resume_time: 15,
+        citations: [],
+      },
+    })
+  })
+
+  // Click Done Speaking -> triggers transcribe and then immediately switches to preparing response
+  await page.getByRole("button", { name: "Done Speaking (Talk to Hosts)" }).click()
+
+  // Phase 2: Transcribed text is displayed in caller card AND status switches to preparing response!
+  await expect(page.getByText("What is unsupervised? and how many types of learning there are?")).toBeVisible()
+  await expect(page.getByText("Michael and Bella are preparing their response...")).toBeVisible()
+  await expect(page.getByText("Consulting source material and preparing dialogue")).toBeVisible()
+  // Verification: "Transcribing voice with Meta Muse..." is gone!
+  await expect(page.getByText("Transcribing voice with Meta Muse...")).toHaveCount(0)
+
+  await page.screenshot({ path: "/tmp/proof_phase2_preparing_response.png" })
+
+  // Release interrupt response -> audio starts playing
+  resolveInterrupt!({})
+
+  // Phase 3: Shows on the air live answering with dialogue
+  await expect(page.getByText("Michael & Bella are on the air answering live")).toBeVisible()
+  await expect(page.getByText("Unsupervised learning discovers structure from raw data without human labels.")).toBeVisible()
+  await page.screenshot({ path: "/tmp/proof_phase3_answering_live.png" })
 })
